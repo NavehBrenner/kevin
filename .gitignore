@@ -1,0 +1,72 @@
+# Course booklet
+workshop-booklet.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Project-generated artifacts — large, regenerable
+data/raw/
+data/processed/
+runs/
+checkpoints/
+logs/
+outputs/
+wandb/
+mlruns/
+*.npz
+*.parquet
+*.pt
+*.pth
+*.ckpt
+
+# Media (allow committed assets, ignore generated)
+*.mp4
+*.avi
+*.mov
+
+# Testing / type checking
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.hypothesis/
+
+# Docs builds
+docs/_build/
+
+# Jupyter
+.ipynb_checkpoints/

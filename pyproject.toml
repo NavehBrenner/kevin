@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai_teleop"
+version = "0.0.1"
+description = "AI-assisted robotic teleoperation for precision peg-in-hole insertion (MuJoCo)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Naveh" }]
+license = { text = "MIT" }
+keywords = ["robotics", "teleoperation", "shared-autonomy", "mujoco", "behavioral-cloning"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core runtime dependencies — only what's needed for Milestone 1 (sim online).
+# Larger deps (torch, mediapipe, opencv) are pinned in the extras below
+# so they can be added when their components come online.
+dependencies = [
+    "mujoco>=3.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+    "matplotlib>=3.8",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# Phase 2 vision + ML stack. Add when policy training comes online.
+ml = [
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "pandas>=2.1",
+    "pyarrow>=15.0",
+]
+vision-input = [
+    "opencv-python>=4.9",
+    "mediapipe>=0.10",
+]
+# Dev tooling.
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.3",
+    "mypy>=1.8",
+]
+
+[project.urls]
+"Project scope" = "./project-scope.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
+ignore = ["E501"] # line length is handled by formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-ra"
