@@ -1,0 +1,80 @@
+<mujoco model="wall_with_holes">
+  <!--
+    Vertical wall in front of the robot with three through-holes in a horizontal row.
+
+    Geometry (all units metres):
+      wall thickness (along world +x)  : 0.020
+      wall extent in y                 : [-0.20, +0.20]
+      wall extent in z                 : [+0.25, +0.65]
+      hole row z                       : 0.45
+      hole y positions                 : -0.10, 0.00, +0.10
+      hole opening (square gap)        : 14 mm  (matches the chamfer rim diameter)
+      hole inner diameter (target)     : 10 mm
+      peg diameter                     : 8 mm   (1 mm radial clearance)
+
+    The wall is composed of six box primitives that leave a 14 mm square opening
+    at each hole. A short dark cylinder is placed inside each opening (collision-
+    disabled, visual-only) so the hole reads visually as a dark circle. The
+    physical chamfer rim that funnels the peg into the hole is deferred to a
+    later milestone — see project-scope.md, "primary difficulty knob".
+
+    Hole sites (`hole_0`, `hole_1`, `hole_2`) mark the centre of each opening on
+    the robot-facing wall surface (x = wall_x - 0.5 * wall_thickness). SimEnv
+    reads these for the privileged hole-pose observation.
+
+    The whole assembly sits inside a `wall` body anchored at (0.50, 0, 0.45).
+    Because the body is welded to the world (no joint declared), all child
+    geoms are static fixtures.
+  -->
+
+  <asset>
+    <material name="wall_material" rgba="0.78 0.78 0.80 1" specular="0.2" shininess="0.2"/>
+    <material name="hole_dark" rgba="0.10 0.10 0.10 1" specular="0.0" shininess="0.0"/>
+  </asset>
+
+  <default>
+    <default class="wall_solid">
+      <geom type="box" material="wall_material" condim="3"
+            friction="0.8 0.005 0.0001"/>
+    </default>
+    <default class="hole_visual">
+      <geom type="cylinder" material="hole_dark"
+            contype="0" conaffinity="0" group="2"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <body name="wall" pos="0.80 0 0.45">
+      <!-- Wall surrounds three 14 mm-wide openings centred on z = 0
+           in the body's local frame (the body itself is at world z=0.45). -->
+
+      <!-- Top piece: above the hole row. z in [0.007, 0.20], height 0.193, half-height 0.0965, centre z=0.1035 -->
+      <geom name="wall_top"    class="wall_solid" pos="0  0.000  0.1035" size="0.010 0.200 0.0965"/>
+
+      <!-- Bottom piece: below the hole row. -->
+      <geom name="wall_bottom" class="wall_solid" pos="0  0.000 -0.1035" size="0.010 0.200 0.0965"/>
+
+      <!-- Left strip (left of hole_0). y in [-0.200, -0.107], width 0.093, half 0.0465, centre -0.1535 -->
+      <geom name="wall_left"   class="wall_solid" pos="0 -0.1535 0.000" size="0.010 0.0465 0.007"/>
+
+      <!-- Between hole_0 and hole_1. y in [-0.093, -0.007], width 0.086, half 0.043, centre -0.050 -->
+      <geom name="wall_mid_01" class="wall_solid" pos="0 -0.0500 0.000" size="0.010 0.0430 0.007"/>
+
+      <!-- Between hole_1 and hole_2. -->
+      <geom name="wall_mid_12" class="wall_solid" pos="0  0.0500 0.000" size="0.010 0.0430 0.007"/>
+
+      <!-- Right strip (right of hole_2). -->
+      <geom name="wall_right"  class="wall_solid" pos="0  0.1535 0.000" size="0.010 0.0465 0.007"/>
+
+      <!-- Hole-interior visuals: thin dark cylinders along x, sized to span the wall thickness. -->
+      <geom name="hole_visual_0" class="hole_visual" fromto="-0.010 -0.100 0.000  0.010 -0.100 0.000" size="0.005"/>
+      <geom name="hole_visual_1" class="hole_visual" fromto="-0.010  0.000 0.000  0.010  0.000 0.000" size="0.005"/>
+      <geom name="hole_visual_2" class="hole_visual" fromto="-0.010  0.100 0.000  0.010  0.100 0.000" size="0.005"/>
+
+      <!-- Hole centre sites on the robot-facing wall surface (x = -0.010 in body frame). -->
+      <site name="hole_0" pos="-0.010 -0.100 0.000" size="0.003" rgba="1 1 0 0.4" group="3"/>
+      <site name="hole_1" pos="-0.010  0.000 0.000" size="0.003" rgba="1 1 0 0.4" group="3"/>
+      <site name="hole_2" pos="-0.010  0.100 0.000" size="0.003" rgba="1 1 0 0.4" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

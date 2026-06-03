@@ -1,0 +1,93 @@
+<mujoco model="full_scene">
+  <!--
+    Full scene = Franka Panda (with wrist camera/light/F-T sensor) +
+                 vertical wall with three holes +
+                 pre-grasped peg.
+
+    The Panda model from MuJoCo Menagerie is included as-is (vendored under
+    `menagerie_panda/`), with project additions made in place to that file
+    (wrist site, camera, light, F-T sensors at the wrist).
+
+    The peg is welded to the gripper at scene reset via the equality below.
+    The weld's relpose places the peg centre at (0, 0, 0.115) in the hand
+    frame — 5 mm past the fingertip plane, with the peg's long axis aligned
+    to the gripper's +z. With a 60 mm-long peg, ~25 mm sits between the
+    fingertips and the wall surface during insertion approach.
+  -->
+
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+
+  <visual>
+    <global offwidth="1280" offheight="960"/>
+    <quality shadowsize="2048"/>
+    <map fogstart="3" fogend="5"/>
+  </visual>
+
+  <include file="menagerie_panda/panda.xml"/>
+  <include file="wall_with_holes.xml"/>
+  <include file="peg.xml"/>
+
+  <asset>
+    <texture name="grid_tex" type="2d" builtin="checker"
+             rgb1="0.85 0.85 0.85" rgb2="0.65 0.65 0.65"
+             width="300" height="300"/>
+    <material name="floor_material" texture="grid_tex" texrepeat="6 6"
+              reflectance="0.05" specular="0.2" shininess="0.1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Soft ambient fill light (the wrist spot light is declared inside panda.xml). -->
+    <light name="ambient" pos="0 0 2.0" dir="0 0 -1" diffuse="0.4 0.4 0.4"
+           specular="0.05 0.05 0.05" castshadow="false"/>
+    <geom name="floor" type="plane" size="2 2 0.05" material="floor_material"/>
+
+    <!--
+      Fixed external "observation" camera. Sits front-right-above of the
+      robot and uses `mode="targetbody"` so its orientation auto-points at
+      the wall body's centre. Used for debugging videos and human-readable
+      thumbnails of training rollouts; never fed to any policy.
+    -->
+    <camera name="external_cam" mode="targetbody" target="wall"
+            pos="1.4 -1.1 1.0" fovy="50"/>
+  </worldbody>
+
+  <equality>
+    <!--
+      Welds the peg rigidly to the gripper hand. relpose = (px py pz qw qx qy qz)
+      gives the peg pose in the hand body frame: 11.5 cm along the gripper's
+      +z axis, no rotation. With the hand body's +z being the gripper-opening
+      direction (fingers at z=0.0584, fingertip plane near z=0.108), placing
+      the peg centre at z=0.115 puts ~3.5 cm of peg behind the fingertip plane
+      and the remaining ~2.5 cm out in front, ready to enter a hole.
+    -->
+    <weld name="peg_grasp" body1="hand" body2="peg"
+          relpose="0 0 0.115 1 0 0 0"
+          solref="0.005 1" solimp="0.99 0.999 0.001"/>
+  </equality>
+
+  <keyframe>
+    <!--
+      Full-scene home pose. Unlike the menagerie's `panda_home` (gripper down),
+      this places the gripper roughly horizontal pointing at the wall at world
+      +x. With the wall at x=0.80 and the gripper at (~0.28, 0, ~0.57), the
+      pre-grasped peg sits ~40 cm from the wall surface, in clear view of the
+      wrist camera — the natural starting state for an approach manoeuvre.
+
+      Joint angles were found by sweeping (j2, j4, j6) for max gripper_dir.x;
+      see scripts/smoke_test_sim.py for the search if it needs re-tuning.
+
+      The peg's free-joint pose (last 7 qpos) is the forward-kinematics solution
+      for the weld at this arm pose, so the constraint is satisfied at t=0 and
+      the integrator doesn't see a transient.
+    -->
+    <!--
+      Arm ctrl is zero because actuators 1-7 are pure torque motors (see
+      menagerie_panda/panda.xml). The controller writes joint torques every
+      tick; the keyframe just establishes initial state. Gripper ctrl=0 keeps
+      the position-PD tendon at "squeezing", holding the pre-grasped peg.
+    -->
+    <key name="home"
+         qpos="0 -1 0 -3 0 3.5 -0.7853 0.04 0.04 0.389841 0 0.560449 0.481968 0.517408 0.517357 0.482015"
+         ctrl="0 0 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

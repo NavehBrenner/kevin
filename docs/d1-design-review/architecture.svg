@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#212529"/>
+    </marker>
+    <marker id="arrow-faint" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c757d"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="800" y="60" text-anchor="middle" font-size="42" font-weight="600" fill="#212529">System Architecture</text>
+  <text x="800" y="92" text-anchor="middle" font-size="18" fill="#6c757d">Runtime control loop with swappable strategy seams; eval harness as passive observer</text>
+
+  <!-- Main pipeline: 4 components, left-to-right -->
+  <!-- Box: Input Strategy (swappable - dashed top border) -->
+  <g>
+    <rect x="60" y="180" width="320" height="220" rx="8" fill="#f8f9fa" stroke="#495057" stroke-width="2"/>
+    <line x1="60" y1="180" x2="380" y2="180" stroke="#d97706" stroke-width="4" stroke-dasharray="10,6"/>
+    <text x="220" y="220" text-anchor="middle" font-size="22" font-weight="600" fill="#212529">Input Strategy</text>
+    <text x="220" y="244" text-anchor="middle" font-size="13" font-style="italic" fill="#d97706">« swappable seam »</text>
+    <text x="80" y="284" font-size="16" fill="#343a40">• Webcam hand (MediaPipe)</text>
+    <text x="80" y="312" font-size="16" fill="#343a40">• Keyboard (fallback)</text>
+    <text x="80" y="340" font-size="16" fill="#343a40">• Scripted noisy-human</text>
+    <text x="80" y="368" font-size="13" fill="#6c757d">  (training-time)</text>
+  </g>
+
+  <!-- Arrow 1 -->
+  <line x1="380" y1="290" x2="450" y2="290" stroke="#212529" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="415" y="278" text-anchor="middle" font-size="13" fill="#495057">target EE pose</text>
+
+  <!-- Box: Assistance Strategy (swappable - dashed top border) -->
+  <g>
+    <rect x="450" y="180" width="320" height="220" rx="8" fill="#f8f9fa" stroke="#495057" stroke-width="2"/>
+    <line x1="450" y1="180" x2="770" y2="180" stroke="#d97706" stroke-width="4" stroke-dasharray="10,6"/>
+    <text x="610" y="220" text-anchor="middle" font-size="22" font-weight="600" fill="#212529">Assistance Layer</text>
+    <text x="610" y="244" text-anchor="middle" font-size="13" font-style="italic" fill="#d97706">« swappable seam »</text>
+    <text x="470" y="284" font-size="16" fill="#343a40">• Human-only (no assist)</text>
+    <text x="470" y="312" font-size="16" fill="#343a40">• Heuristic (spiral search)</text>
+    <text x="470" y="340" font-size="16" fill="#343a40">• Learned residual (BC)</text>
+    <text x="470" y="368" font-size="13" fill="#6c757d">  Phase 1: F/T-only  ·  Phase 2: + vision</text>
+  </g>
+
+  <!-- Arrow 2 -->
+  <line x1="770" y1="290" x2="840" y2="290" stroke="#212529" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="805" y="278" text-anchor="middle" font-size="13" fill="#495057">Δpose, Δgrip</text>
+
+  <!-- Box: Backbone Controller -->
+  <g>
+    <rect x="840" y="180" width="320" height="220" rx="8" fill="#f8f9fa" stroke="#495057" stroke-width="2"/>
+    <text x="1000" y="220" text-anchor="middle" font-size="22" font-weight="600" fill="#212529">Backbone Controller</text>
+    <text x="1000" y="244" text-anchor="middle" font-size="13" fill="#6c757d">always-on, deterministic</text>
+    <text x="860" y="284" font-size="16" fill="#343a40">• Differential IK + null-space</text>
+    <text x="860" y="312" font-size="16" fill="#343a40">• Direction-dep. impedance</text>
+    <text x="860" y="340" font-size="16" fill="#343a40">• Force-cap watchdog</text>
+    <text x="860" y="368" font-size="16" fill="#343a40">• Hold-lock / Park-lock FSM</text>
+  </g>
+
+  <!-- Arrow 3 -->
+  <line x1="1160" y1="290" x2="1230" y2="290" stroke="#212529" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="1195" y="278" text-anchor="middle" font-size="13" fill="#495057">joint cmds</text>
+
+  <!-- Box: Sim Env -->
+  <g>
+    <rect x="1230" y="180" width="320" height="220" rx="8" fill="#eef2ff" stroke="#3730a3" stroke-width="2"/>
+    <text x="1390" y="220" text-anchor="middle" font-size="22" font-weight="600" fill="#1e1b4b">Simulation Env</text>
+    <text x="1390" y="244" text-anchor="middle" font-size="13" fill="#4338ca">MuJoCo · Franka Panda</text>
+    <text x="1250" y="284" font-size="16" fill="#1e1b4b">• Peg (pre-grasped)</text>
+    <text x="1250" y="312" font-size="16" fill="#1e1b4b">• Wall + chamfered holes</text>
+    <text x="1250" y="340" font-size="16" fill="#1e1b4b">• Wrist RGB cam + spotlight</text>
+    <text x="1250" y="368" font-size="16" fill="#1e1b4b">• F/T sensor at wrist</text>
+  </g>
+
+  <!-- Observation feedback loop: SimEnv -> Assistance -->
+  <path d="M 1390 400 L 1390 480 L 610 480 L 610 400" fill="none" stroke="#212529" stroke-width="2.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+  <rect x="850" y="464" width="300" height="32" fill="white" stroke="none"/>
+  <text x="1000" y="487" text-anchor="middle" font-size="15" fill="#212529" font-weight="500">observation: pose · F/T · image</text>
+
+  <!-- Eval harness (passive observer) -->
+  <g>
+    <rect x="1230" y="600" width="320" height="180" rx="8" fill="#f0fdf4" stroke="#166534" stroke-width="2"/>
+    <text x="1390" y="640" text-anchor="middle" font-size="22" font-weight="600" fill="#14532d">Eval Harness</text>
+    <text x="1390" y="664" text-anchor="middle" font-size="13" font-style="italic" fill="#166534">passive observer · no controller dep.</text>
+    <text x="1250" y="700" font-size="16" fill="#14532d">• Trial start/end detection</text>
+    <text x="1250" y="728" font-size="16" fill="#14532d">• Success classification</text>
+    <text x="1250" y="756" font-size="16" fill="#14532d">• KPI computation</text>
+  </g>
+
+  <!-- Observer arrow from SimEnv -> Eval Harness -->
+  <line x1="1390" y1="400" x2="1390" y2="600" stroke="#166534" stroke-width="2" stroke-dasharray="3,4" marker-end="url(#arrow-faint)"/>
+  <text x="1410" y="510" font-size="13" fill="#166534">obs stream</text>
+
+  <!-- Training-time annotation -->
+  <g>
+    <rect x="60" y="600" width="900" height="180" rx="8" fill="#fef3c7" stroke="#92400e" stroke-width="2" stroke-dasharray="8,4"/>
+    <text x="510" y="640" text-anchor="middle" font-size="22" font-weight="600" fill="#78350f">Training-time data generation (offline)</text>
+    <text x="80" y="676" font-size="15" fill="#78350f">Scripted noisy-human → Privileged-info expert (closed-form) → Logger → behavioral-cloning dataset</text>
+    <text x="80" y="704" font-size="15" fill="#78350f">Expert sees ground-truth peg + hole geometry (asymmetric actor-critic pattern); outputs match residual interface.</text>
+    <text x="80" y="732" font-size="15" fill="#78350f">Coverage randomization per episode: hole positions, peg offset, noise pattern, (Phase 2) lighting + textures.</text>
+    <text x="80" y="762" font-size="13" fill="#92400e" font-style="italic">Produces hundreds of episodes; trained policy then drops into the « Learned residual » assistance slot.</text>
+  </g>
+
+  <!-- Legend / footnote -->
+  <g transform="translate(60, 825)">
+    <line x1="0" y1="10" x2="40" y2="10" stroke="#d97706" stroke-width="4" stroke-dasharray="10,6"/>
+    <text x="50" y="15" font-size="14" fill="#495057">swappable strategy seam</text>
+    <line x1="240" y1="10" x2="280" y2="10" stroke="#212529" stroke-width="2.5"/>
+    <text x="290" y="15" font-size="14" fill="#495057">control flow</text>
+    <line x1="400" y1="10" x2="440" y2="10" stroke="#212529" stroke-width="2.5" stroke-dasharray="6,4"/>
+    <text x="450" y="15" font-size="14" fill="#495057">observation feedback</text>
+    <line x1="620" y1="10" x2="660" y2="10" stroke="#166534" stroke-width="2" stroke-dasharray="3,4"/>
+    <text x="670" y="15" font-size="14" fill="#495057">passive observation (no coupling)</text>
+  </g>
+</svg>

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#212529"/>
+    </marker>
+    <marker id="arrow-broadcast" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#166534"/>
+    </marker>
+    <marker id="arrow-self" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#495057"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="800" y="50" text-anchor="middle" font-size="38" font-weight="600" fill="#212529">One Control Step — Sequence</text>
+  <text x="800" y="80" text-anchor="middle" font-size="16" fill="#6c757d">~10 ms tick · target loop: 100 Hz</text>
+
+  <!-- Actor headers -->
+  <g font-size="18" font-weight="600" text-anchor="middle" fill="#212529">
+    <rect x="80"   y="105" width="240" height="46" rx="6" fill="#f8f9fa" stroke="#495057" stroke-width="1.5"/>
+    <text x="200" y="135">Input Strategy</text>
+
+    <rect x="380"  y="105" width="240" height="46" rx="6" fill="#f8f9fa" stroke="#495057" stroke-width="1.5"/>
+    <text x="500" y="135">Assistance Layer</text>
+
+    <rect x="680"  y="105" width="240" height="46" rx="6" fill="#f8f9fa" stroke="#495057" stroke-width="1.5"/>
+    <text x="800" y="135">Backbone Controller</text>
+
+    <rect x="980"  y="105" width="240" height="46" rx="6" fill="#eef2ff" stroke="#3730a3" stroke-width="1.5"/>
+    <text x="1100" y="135" fill="#1e1b4b">Sim Env</text>
+
+    <rect x="1280" y="105" width="240" height="46" rx="6" fill="#f0fdf4" stroke="#166534" stroke-width="1.5"/>
+    <text x="1400" y="135" fill="#14532d">Eval Harness</text>
+  </g>
+
+  <!-- Lifelines -->
+  <g stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="4,4">
+    <line x1="200"  y1="155" x2="200"  y2="830"/>
+    <line x1="500"  y1="155" x2="500"  y2="830"/>
+    <line x1="800"  y1="155" x2="800"  y2="830"/>
+    <line x1="1100" y1="155" x2="1100" y2="830"/>
+    <line x1="1400" y1="155" x2="1400" y2="830"/>
+  </g>
+
+  <!-- ===== Messages ===== -->
+
+  <!-- Step 1: Input polls source -->
+  <g>
+    <path d="M 200 200 C 280 200, 280 230, 200 230" fill="none" stroke="#495057" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="290" y="218" font-size="14" fill="#495057">poll webcam / advance script</text>
+  </g>
+
+  <!-- Step 2: Input -> Assistance: target_pose -->
+  <g>
+    <line x1="200" y1="265" x2="500" y2="265" stroke="#212529" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="350" y="258" text-anchor="middle" font-size="15" fill="#212529" font-weight="500">target_pose</text>
+  </g>
+
+  <!-- Step 3: Assistance reads last obs -->
+  <g>
+    <path d="M 500 295 C 580 295, 580 325, 500 325" fill="none" stroke="#495057" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="590" y="313" font-size="14" fill="#495057">read prev obs: pose · F/T · image</text>
+  </g>
+
+  <!-- Step 4: Assistance computes deltas -->
+  <g>
+    <path d="M 500 350 C 580 350, 580 380, 500 380" fill="none" stroke="#495057" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="590" y="368" font-size="14" fill="#495057">compute Δpose, Δgrip (heuristic or learned)</text>
+  </g>
+
+  <!-- Step 5: Assistance -> Controller: target + deltas -->
+  <g>
+    <line x1="500" y1="415" x2="800" y2="415" stroke="#212529" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="650" y="408" text-anchor="middle" font-size="15" fill="#212529" font-weight="500">target_pose + Δpose, Δgrip</text>
+  </g>
+
+  <!-- Step 6: Controller: diff-IK + impedance -->
+  <g>
+    <path d="M 800 445 C 880 445, 880 475, 800 475" fill="none" stroke="#495057" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="890" y="463" font-size="14" fill="#495057">diff-IK + direction-dep. impedance → τ</text>
+  </g>
+
+  <!-- Step 7: Controller: watchdog -->
+  <g>
+    <path d="M 800 500 C 880 500, 880 530, 800 530" fill="none" stroke="#495057" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="890" y="518" font-size="14" fill="#495057">force-cap watchdog · lock FSM</text>
+  </g>
+
+  <!-- Step 8: Controller -> Sim: joint torques -->
+  <g>
+    <line x1="800" y1="565" x2="1100" y2="565" stroke="#212529" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="950" y="558" text-anchor="middle" font-size="15" fill="#212529" font-weight="500">set_torques(τ)</text>
+  </g>
+
+  <!-- Step 9: Sim: step physics -->
+  <g>
+    <path d="M 1100 595 C 1180 595, 1180 625, 1100 625" fill="none" stroke="#495057" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="1190" y="613" font-size="14" fill="#495057">step physics</text>
+  </g>
+
+  <!-- Step 10: Sim -> Assistance: observation (return) -->
+  <g>
+    <line x1="1100" y1="660" x2="500" y2="660" stroke="#212529" stroke-width="2.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+    <text x="800" y="653" text-anchor="middle" font-size="15" fill="#212529" font-weight="500">observation (pose · F/T · image)</text>
+  </g>
+
+  <!-- Step 11: Sim -> EvalHarness: observation (broadcast, passive) -->
+  <g>
+    <line x1="1100" y1="710" x2="1400" y2="710" stroke="#166534" stroke-width="2" stroke-dasharray="3,4" marker-end="url(#arrow-broadcast)"/>
+    <text x="1250" y="703" text-anchor="middle" font-size="14" fill="#166534" font-style="italic">passive: observation</text>
+  </g>
+
+  <!-- Step 12: Eval: trial state / KPI update -->
+  <g>
+    <path d="M 1400 740 C 1480 740, 1480 770, 1400 770" fill="none" stroke="#166534" stroke-width="2" marker-end="url(#arrow-self)"/>
+    <text x="1390" y="788" text-anchor="end" font-size="14" fill="#166534">trial-state · KPI tick</text>
+  </g>
+
+  <!-- Loop annotation -->
+  <g>
+    <rect x="60" y="178" width="32" height="660" rx="4" fill="none" stroke="#6c757d" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="76" y="508" text-anchor="middle" font-size="14" fill="#6c757d" transform="rotate(-90 76 508)">loop @ 100 Hz</text>
+  </g>
+
+  <!-- Safety branch callout -->
+  <g>
+    <rect x="60" y="850" width="1480" height="40" rx="4" fill="#fef3c7" stroke="#92400e" stroke-width="1"/>
+    <text x="80" y="876" font-size="14" fill="#78350f">
+      <tspan font-weight="600">Safety branch:</tspan> if watchdog detects F > F_cap → BackboneController enters HOLD-LOCK → emits zero-Δ τ until target retreats. Eval harness sees event passively.
+    </text>
+  </g>
+</svg>

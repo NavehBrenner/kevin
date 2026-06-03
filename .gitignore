@@ -1,6 +1,3 @@
-# Course booklet
-workshop-booklet.pdf
-
 # Python
 __pycache__/
 *.py[cod]
@@ -67,6 +64,11 @@ dmypy.json
 
 # Docs builds
 docs/_build/
+
+# Generated design-review deliverables (rebuild with build_deck.py)
+docs/d1-design-review/design-review.pptx
+docs/d1-design-review/architecture.png
+docs/d1-design-review/sequence.png
 
 # Jupyter
 .ipynb_checkpoints/

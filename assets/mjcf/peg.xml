@@ -1,0 +1,31 @@
+<mujoco model="peg">
+  <asset>
+    <material name="peg_material" rgba="0.85 0.45 0.15 1" specular="0.3" shininess="0.4"/>
+  </asset>
+
+  <default>
+    <default class="peg_default">
+      <geom type="cylinder" size="0.004 0.030" material="peg_material"
+            friction="1.0 0.005 0.0001" condim="4"
+            solref="0.005 1" solimp="0.95 0.99 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <!--
+      Cylindrical peg, 8 mm diameter, 60 mm long (size = radius, half-length).
+      Free joint so the body can be welded to the gripper via an equality
+      constraint at scene reset. Inertia computed analytically for a uniform
+      solid cylinder of mass 0.030 kg, r=0.004, L=0.060:
+        I_axial  = 1/2 * m * r^2                = 2.4e-7 kg.m^2
+        I_radial = 1/12 * m * (3 r^2 + L^2)    = 9.12e-6 kg.m^2
+      The peg's long axis is along the body's local +z.
+    -->
+    <body name="peg" pos="0.45 0 0.5">
+      <freejoint name="peg_joint"/>
+      <inertial pos="0 0 0" mass="0.030" diaginertia="9.12e-6 9.12e-6 2.4e-7"/>
+      <geom name="peg_geom" class="peg_default"/>
+      <site name="peg_tip" pos="0 0 0.030" size="0.002" rgba="0 1 1 0.4" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>
