@@ -46,6 +46,15 @@ vision-input = [
     "opencv-python>=4.9",
     "mediapipe>=0.10",
 ]
+# Offline scene generation — parametric wall/hole CAD → convex-decomposed MJCF.
+# Heavy CAD/decomposition deps; never imported by the sim runtime (assets are
+# generated offline and cached). See src/ai_teleop/sim/scenegen/.
+scenegen = [
+    "cadquery>=2.4",
+    "trimesh>=4.0",
+    "shapely>=2.0",
+    "mapbox-earcut>=1.0",
+]
 # Documentation / design-review deliverables (build the D1 .pptx from SVGs).
 docs = [
     "python-pptx>=0.6.23",
