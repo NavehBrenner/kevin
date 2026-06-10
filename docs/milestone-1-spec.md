@@ -24,7 +24,7 @@ By the end of M1 we can:
 
 ## What's not in M1 — explicit anti-scope
 
-- Any controller logic: IK, impedance, force capping, spiral search → deferred to M2.
+- Any controller logic: IK, impedance, force capping → deferred to M2.
 - Any input strategy (scripted noisy-human, keyboard, vision) → deferred to M3.
 - Any expert, policy, training, or evaluation code → deferred to M4+.
 - Domain randomization or themed lighting → stretch goals after Phase 1.

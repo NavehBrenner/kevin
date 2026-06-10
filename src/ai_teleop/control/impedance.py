@@ -136,7 +136,7 @@ def impedance_torque(
 
     # Null-space posture term — DLS pseudoinverse so the projector stays
     # well-conditioned near singularities.
-    JJT_reg = J @ J.T + (dls_damping ** 2) * np.eye(6)
+    JJT_reg = J @ J.T + (dls_damping**2) * np.eye(6)
     j_pinv = J.T @ np.linalg.solve(JJT_reg, np.eye(6))
     null_space = np.eye(7) - j_pinv @ J
     tau_posture = null_space @ (posture_gain * (q_nominal - q_arm))

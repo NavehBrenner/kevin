@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 import mujoco
+import mujoco.viewer
 import numpy as np
 
 from ai_teleop.common.observation import Observation
@@ -251,7 +252,7 @@ class SimEnv:
         if self._render_mode != "viewer":
             raise RuntimeError(f"launch_viewer() requires render_mode='viewer', got {self._render_mode!r}")
         if self._viewer is not None:
-            return
+            return None
         # Imported here so headless tests don't load GLFW.
         import mujoco.viewer as mjv  # noqa: PLC0415
 

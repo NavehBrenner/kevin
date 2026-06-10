@@ -4,7 +4,7 @@ Top-level package. See submodules:
 
 - domain   : interfaces (Protocols) and core dataclasses (Observation, Command, ...).
 - sim      : MuJoCo scene wrapper, sensor reading, rendering.
-- control  : backbone controller (operational-space IK, impedance) and heuristic assist.
+- control  : backbone controller (operational-space IK, impedance) — the always-on substrate.
 - input    : input strategies (vision, keyboard, scripted noisy-human) behind a common interface.
 - expert   : analytical privileged-info expert (data-generation supervisor).
 - policy   : residual correction policy (BC-trained neural network).

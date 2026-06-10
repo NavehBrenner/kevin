@@ -21,15 +21,15 @@ A single integrated MuJoCo simulation in which:
 - A Franka Emika Panda manipulator attempts to insert a peg into a fixtured hole on a tabletop.
 - The peg's coarse trajectory is driven by a human-issued command stream.
 - **Three input modalities** are interchangeable behind a common interface: webcam (MediaPipe Hands), keyboard fallback, and a scripted "noisy human" for repeatable benchmarking.
-- **Three assistance modes** are interchangeable behind a common interface: no assistance, heuristic assistance (impedance + spiral search + force capping), and the learned residual policy.
+- **Two assistance modes** are interchangeable behind a common interface: no assistance (Δ=0) and the learned residual policy. Both run on the always-on impedance backbone + Δ-clamp / force cap.
 - The learned residual policy is **vision-conditioned**: it reads a wrist-mounted RGB camera, plus wrist force/torque, plus proprioception, and outputs bounded pose/grip corrections. It is trained offline via behavioral cloning from a scripted privileged-info expert.
 
 ### Build order — two phases
 
 Built and evaluated incrementally to derisk the project:
 
-- **Phase 1 (Option A) — F/T-only residual + heuristic perception.** Hole pose is given to the controller at trial start with a few-cm uncertainty (representing operator pointing or fixture knowledge). Heuristic spiral search bridges from approximate to first contact. Residual policy uses F/T + proprio only. **This is the safety net — guaranteed deliverable.**
-- **Phase 2 (Option B, headline) — Vision-conditioned residual.** A wrist-mounted simulated RGB camera replaces the "approximate prior" hand-wave. The residual policy is retrained with the image as an input, on top of F/T + proprio. Spiral search becomes a fallback for cold-start, not the primary perception path.
+- **Phase 1 (Option A) — F/T-only residual, contact-reactive alignment.** No camera. The operator's coarse command brings the peg to the hole vicinity (command history encodes which hole is intended); the residual policy uses force/torque + proprioception to *feel the contact and correct alignment* as the peg seats. It cannot localize the hole from afar — its value is the last-millimeter insertion. **This is the safety net — guaranteed deliverable.**
+- **Phase 2 (Option B, headline) — Vision-conditioned residual.** A wrist-mounted simulated RGB camera lets the policy *locate the target hole and sharpen the approach* before contact; the residual is retrained with the image as an input, on top of F/T + proprio. The same contact-alignment ability then carries the peg home.
 
 If Phase 2 stalls, Phase 1 still produces a publishable project.
 
@@ -74,7 +74,7 @@ Saved as one structured file per trial (Parquet or NPZ):
 
 ## Controller architecture
 
-The control stack is layered, with the residual policy bolted on top of a fully-functional classical controller. The arm runs in any of three assistance modes by swapping just the topmost layer.
+The control stack is layered, with the residual policy bolted on top of a fully-functional classical controller. The arm runs in either of two assistance modes (off / learned policy) by swapping just the topmost layer.
 
 ### Command pipeline
 
@@ -90,12 +90,6 @@ The control stack is layered, with the residual policy bolted on top of a fully-
   - Off-axis rotation (pitch/roll): **compliant** (the peg can tilt to fit).
   - On-axis rotation (yaw): irrelevant for a round peg.
 - Peak contact force is bounded by stiffness × max deflection. The arm is *physically incapable* of generating large forces — safety by design, not by software clamps alone.
-
-### Heuristic recovery — spiral search
-
-- When the peg makes contact with flat wall (not hole), a spiral search behavior is activated in the lateral plane.
-- Termination: F/T signature changes (lateral force toward the hole rim → peg edge has caught), or max radius / time exceeded.
-- Composition with the active input command: deferred to the implementation plan; the high-level rule is *additive* (search overlays on input), not hijacking.
 
 ### Runtime state — two modes only
 
@@ -118,7 +112,7 @@ The residual policy is structured as a **pose-delta + grip-force-delta** layer, 
 
 These deltas are added to the input strategy's command before it reaches the impedance controller. Clamping is enforced *before* the controller sees the augmented command — the policy is safe-by-construction even if it outputs nonsense.
 
-Setting all deltas to zero recovers "no-assist" mode for free. The same interface supports the heuristic mode (deltas computed by hand from spiral search + force capping) and the learned mode (deltas predicted by the residual policy network).
+Setting all deltas to zero recovers "no-assist" mode for free. The same interface accepts deltas from any source: the analytical expert (deltas computed from privileged geometry, used only to generate training data) and the learned policy (deltas predicted by the residual network) share this exact output signature.
 
 ### Gripper behavior
 
@@ -131,7 +125,7 @@ Setting all deltas to zero recovers "no-assist" mode for free. The same interfac
 Two ML components, in deliberately different roles:
 
 - **MediaPipe Hands** — off-the-shelf, treated as a sensor library. Converts webcam frames into hand pose. Not a research contribution.
-- **Vision-conditioned residual correction policy** — the project's headline ML contribution. A neural network with a small frozen image-encoder backbone + an MLP head, trained via behavioral cloning. Inputs: wrist-camera image, recent force/torque, pose history. Outputs: bounded pose and grip-force deltas. This is the component the KPI evaluation centers on.
+- **Vision-conditioned residual correction policy** — the project's headline ML contribution. A multi-stream network: GRUs over the command and force/torque histories, an MLP over proprioception, and a fine-tuned CNN (pretrained init) over the wrist image, fused by an MLP head; trained via behavioral cloning. Inputs: command history, force/torque history, proprioception, and (Phase 2) the wrist-camera image — four independent streams. Outputs: bounded pose and grip-force deltas. This is the component the KPI evaluation centers on. Full architecture and rationale: [`docs/design/policy-model.md`](docs/design/policy-model.md).
 
 ## Expert and data generation
 
@@ -202,7 +196,6 @@ Layered by purpose, not pooled:
 | Wrist-mounted RGB camera | Deployed policy (Phase 2) | Locates the hole during approach; resolves "where is the world" without external cameras |
 | Wrist force/torque | Deployed policy (both phases) | Primary signal for inferring contact geometry — "where is the peg catching?" |
 | Proprioception (joint angles/velocities, EE pose) | Deployed policy (both phases) | Where the arm currently is |
-| Approximate hole prior (few-cm noise) | Heuristic search + Phase 1 fallback | Bootstraps the system before vision sees the hole |
 | Privileged true peg/hole pose | Expert (data-generation only) | Lets the scripted expert produce supervision; **never available to the deployed policy** |
 
 Deliberately **not** used: external (top-down) scene camera streaming continuous hole pose. It would trivialize perception and ruin the project's framing.
@@ -213,9 +206,9 @@ Python end-to-end, intentionally avoiding low-level layers:
 
 - **MuJoCo** via official `mujoco` Python bindings (model loading, stepping, sensors, camera rendering).
 - **MediaPipe Hands** via its Python package (webcam → 2D/3D hand keypoints).
-- **PyTorch** for the residual policy (image backbone + MLP head; behavioral cloning training loop).
+- **PyTorch** for the residual policy (per-stream encoders + fusion MLP head; fine-tuned image CNN; behavioral cloning training loop).
 - **OpenCV** for webcam I/O and image preprocessing.
-- **NumPy / SciPy** for the heuristic controller (IK refinement, spiral search, force capping, filtering).
+- **NumPy / SciPy** for the backbone controller (IK refinement, force capping, filtering).
 - **Hydra** or plain YAML for run/experiment configuration.
 - **Pytest** for tests.
 - **Matplotlib + pandas** for KPI plots and ablation tables.
@@ -226,21 +219,21 @@ No C/C++/Rust extensions; no ROS. All glue code is plain Python.
 
 - MuJoCo simulation as described in **Simulation environment** above (Franka Panda + parallel gripper + chamfered vertical-wall fixture with distractor holes + wrist camera + wrist light + pre-grasped peg, ~8 mm peg / 10 mm hole round geometry to start).
 - Three swappable input strategies (vision, keyboard, scripted noisy human).
-- Three swappable assistance modes (none, heuristic, learned residual).
+- Two swappable assistance modes (none, learned residual).
 - Wrist-mounted simulated RGB camera, rendered by MuJoCo at training and eval time.
 - Scripted privileged-info expert that produces training trajectories.
-- Behavioral cloning training pipeline for the residual policy (with frozen image backbone).
+- Behavioral cloning training pipeline for the residual policy (image CNN fine-tuned end-to-end from a pretrained init; freeze held as fallback).
 - Two trained policy variants for ablation: F/T-only (Phase 1) and vision+F/T (Phase 2).
-- KPI logging and ablation runs comparing the three assistance modes head-to-head.
+- KPI logging and ablation runs comparing assist off vs on, plus the Phase-1/Phase-2 vision ablation, head-to-head.
 - All booklet-required deliverables: design document with architecture diagram and sequence chart, design alternatives writeup, README, runnable code.
 - Self-evaluation & reflective analysis writeup (5% bonus).
 - **Public GitHub repository** with a polished project page (README + media) suitable for showcasing in a portfolio context.
-- **1–2 minute demo video** showing webcam → robot, all three assistance modes toggling, and a KPI summary montage. Embedded in the project page.
+- **1–2 minute demo video** showing webcam → robot, assistance toggling on/off, and a KPI summary montage. Embedded in the project page.
 
 ## Explicitly out of scope (anti-scope)
 
 - Real hardware. Sim only.
-- Custom-trained vision models. MediaPipe and the image backbone (pretrained) are used as-is.
+- Vision models trained from scratch. MediaPipe Hands is used as-is; the policy's image CNN is **pretrained-initialized and fine-tuned end-to-end** as part of the BC policy (a deliberate decision — see [`docs/design/policy-model.md`](docs/design/policy-model.md) Decision B — superseding the earlier "pretrained backbone used as-is" plan). No bespoke vision model is trained from random init in isolation, and a frozen backbone remains the fallback.
 - Reinforcement learning. Behavioral cloning only.
 - Multi-step assembly. One peg, one hole.
 - Multi-user studies. Human-in-the-loop runs are qualitative (a handful of demo recordings by the author); statistical comparisons use the scripted noisy-human under matched conditions.
@@ -262,9 +255,8 @@ Between trials, the runtime executes a **park lock** routine returning the arm t
 
 Three headline configurations, all driven by the same scripted noisy-human under matched conditions (~100 trials each):
 
-1. **Human-only** — no assistance layer. Baseline.
-2. **Human + heuristic** — impedance control + spiral-search recovery + force capping.
-3. **Human + residual policy (vision + F/T)** — headline configuration.
+1. **Human-only (off)** — no assistance layer, Δ=0. Baseline.
+2. **Human + residual policy (vision + F/T)** — policy on. Headline configuration.
 
 Plus one **ablation**: the Phase 1 F/T-only residual, evaluated on the same trial set, to isolate the contribution of vision.
 
@@ -274,10 +266,10 @@ What changes per trial (to make 100 trials statistically meaningful):
 
 - **Hole pose**: small random offset from the "known" position given to the controller — represents prior uncertainty.
 - **Initial peg pose**: randomized starting position for the arm.
-- **Noisy-human command stream**: target pose + Gaussian noise on position and orientation, with realistic update rate (~5–10 Hz). Same noise seeds across configurations for paired comparisons.
+- **Noisy-human command stream**: a biased coarse trajectory toward the target with **structured low-frequency noise** (per-episode constant bias + correlated drift on position and orientation), at a realistic update rate (~5–10 Hz) — *not* per-step i.i.d. Gaussian noise (which would make the expert a trivial noise-negator). Same noise seeds across configurations for paired comparisons. See [`docs/design/human-generation.md`](docs/design/human-generation.md).
 - **Fixed master seed list** so results are reproducible.
 
-> Specific magnitudes (hole-noise σ, human-noise σ, force cap, trial timeout) are deliberately left as placeholders. They will be **calibrated after the Phase 1 heuristic baseline runs**, so they describe a problem that is genuinely hard for the unassisted human-only baseline — not trivially easy and not trivially impossible.
+> Specific magnitudes (hole-noise σ, human-noise σ, force cap, trial timeout) are deliberately left as placeholders. They will be **calibrated after the human-only baseline runs**, so they describe a problem that is genuinely hard for the unassisted human-only baseline — not trivially easy and not trivially impossible.
 
 ### Per-trial KPIs
 
@@ -292,8 +284,8 @@ Plus a small qualitative section: 3–5 recorded vision-input demos showing the 
 ## Success criteria
 
 - Working integrated demo: webcam-driven teleop produces visible insertion attempts in MuJoCo, with assistance mode toggleable at runtime.
-- Phase 1 (F/T-only residual) outperforms human-only on success rate; ties or beats heuristic on peak force.
-- Phase 2 (vision-conditioned residual) outperforms heuristic on success rate **and** peak force, statistically meaningful.
+- Phase 1 (F/T-only residual) outperforms human-only on success rate; peak force bounded by construction.
+- Phase 2 (vision-conditioned residual) outperforms human-only on success rate **and** peak force, statistically meaningful; and beats Phase 1 (the vision ablation).
 - Architecture cleanly separates input layer / backbone controller / assistance layer; Strategy pattern at each seam; SOLID compliance defensible during the design review.
 - All booklet-required deliverables submitted on time and to professional quality, including self-evaluation writeup.
 
@@ -307,17 +299,17 @@ Plus a small qualitative section: 3–5 recorded vision-input demos showing the 
 
 ## Deferred design — components 4–7
 
-The following components still have open design decisions, deferred to subsequent scoping passes. The interface contracts established by components 1–3 (sim environment, controller, expert/data generation) are sufficient to begin implementation without locking these down.
+Components 4 and 5 have since been **designed in detail** — see the design docs in [`docs/design/`](docs/design/) ([problem structure](docs/design/problem-structure.md), [human generation](docs/design/human-generation.md), [expert corrections](docs/design/expert-corrections.md), [policy model](docs/design/policy-model.md)). Components 6 and 7 still have open decisions. The interface contracts established by components 1–3 (sim environment, controller, expert/data generation) are sufficient to begin implementation regardless.
 
-### Component 4 — Residual policy
+### Component 4 — Residual policy  *(designed — see [`docs/design/policy-model.md`](docs/design/policy-model.md))*
 
-- **Pending**: network architecture (image-backbone choice, MLP head shape, attention or not), input feature engineering (force-history length, pose-history length, image preprocessing), training loop details (loss shape, augmentation, validation protocol), inference-latency budget.
-- **Already settled**: input signature (sensors + noisy-human command), output signature (clamped Δpose + Δgrip-force), training method (behavioral cloning from expert).
+- **Settled**: input signature (four streams — command history, F/T history, proprioception, wrist image), output signature (clamped Δpose + Δgrip-force), training method (BC from the expert); multi-stream-encoder + fusion-head architecture; **GRU** temporal encoders (1D-CNN fallback); **fine-tuned image CNN** (pretrained init, freeze fallback) with an optional all-holes auxiliary loss; **implicit** goal (no explicit goal input); per-channel rotation-aware Huber loss with episode-level train/val split.
+- **Still open** (tuning, not architecture): history lengths, image resolution, loss weights, aux-loss `λ` schedule, GRU sizing, measured inference latency.
 
 ### Component 5 — Input strategies
 
-- **Pending**: workspace calibration for MediaPipe vision input (camera-space → robot-workspace mapping, clutching, gain tuning, jitter filter design), scripted noisy-human noise model details (Gaussian vs structured noise, drift dynamics), keyboard control bindings.
-- **Already settled**: three swappable strategies (vision, keyboard, scripted noisy-human) behind a common interface; vision uses pretrained MediaPipe Hands.
+- **Settled**: three swappable strategies (vision, keyboard, scripted noisy-human) behind a common interface; vision uses pretrained MediaPipe Hands; scripted noisy-human noise model is **structured low-frequency biased noise** (per-episode bias + correlated drift), per [`docs/design/human-generation.md`](docs/design/human-generation.md).
+- **Still open**: workspace calibration for MediaPipe vision input (camera-space → robot-workspace mapping, clutching, gain tuning, jitter filter design), noise magnitudes (deferred to post-baseline calibration), keyboard control bindings.
 
 ### Component 6 — Evaluation harness
 
@@ -335,13 +327,13 @@ The scope-level design for components 1–3 is locked. Implementation can procee
 
 **Milestone 1 — Sim environment online.** MuJoCo scene with Franka Panda + chamfered wall + holes loads. Viewer runs; headless renderer runs. Peg-pre-grasp logic working. F/T sensor + wrist camera return values. *(Component 1.)*
 
-**Milestone 2 — Controller online.** Operational-space differential IK + direction-dependent impedance controller working end-to-end. Manual pose commands move the arm. Force-cap watchdog working. Park-lock / hold-lock implemented. *(Component 2 minus spiral search.)*
+**Milestone 2 — Controller online.** Operational-space differential IK + direction-dependent impedance controller working end-to-end. Manual pose commands move the arm. Force-cap watchdog working. Park-lock / hold-lock implemented. *(Component 2 — backbone controller.)*
 
-**Milestone 3 — Heuristic assist online.** Spiral-search behavior layered on the controller. With a scripted noisy-human commanding poses, the heuristic-assist mode produces visible insertion attempts. *(Component 2 complete + a stub scripted noisy-human.)*
+**Milestone 3 — Assistance seam + scripted input online.** The assistance Strategy seam is wired so deltas can come from any source (none / expert / policy), and a stub scripted noisy-human drives the system. The no-assist (zero-Δ) mode is runnable for contrast. *(Assistance seam + a stub scripted noisy-human.)*
 
 **Milestone 4 — Expert and data generation online.** Analytical expert implemented. Full data-generation pipeline runs unattended: hundreds of episodes → structured log files on disk. Spot-check: a few example episodes are visually sane. *(Component 3.)*
 
-By Milestone 4 we have: the human-only baseline mode (zero correction), the heuristic-assist mode (Phase 1 perception bridge), and a data-generation pipeline ready for when the residual policy lands. That's already a working system — Phase 1 of the project is feasible from this state without any of the deferred components.
+By Milestone 4 we have: the human-only baseline mode (zero correction), the assistance seam wired with the analytical expert, and a data-generation pipeline ready for when the residual policy lands. That's already a working system — Phase 1 of the project is feasible from this state without any of the deferred components.
 
 ## Stretch goals (prioritized, only if time remains)
 
@@ -365,7 +357,7 @@ By Milestone 4 we have: the human-only baseline mode (zero correction), the heur
 - **Workspace calibration for vision input.** Mapping camera-space hand motion to robot workspace needs a clutch + scaling system.
 - **Vision-conditioned BC data hunger.** Likely needs more demonstrations than F/T-only — risk of underfitting.
 - **MuJoCo camera rendering throughput.** Rendering at every step slows training; may need to batch or downsample.
-- **Residual policy fails to outperform heuristic.** Mitigation: the heuristic is implemented first, so we have a calibrated baseline to set realistic targets.
+- **Residual policy fails to outperform human-only.** Mitigation: the paired-seed design has high power to detect even small gains, and difficulty is calibrated to leave headroom above the human-only baseline.
 - **Scope creep toward RL.** Tempting but time-fatal; held as explicit anti-scope.
 
 ---

@@ -54,12 +54,7 @@ def main() -> int:
         action="store_true",
         help="Skip the interactive viewer step (use in CI / over SSH without a display).",
     )
-    parser.add_argument(
-        "--viewer-seconds",
-        type=float,
-        default=20.0,
-        help="How long to keep the viewer open for manual inspection.",
-    )
+
     args = parser.parse_args()
 
     if not SCENE_PATH.exists():
@@ -93,7 +88,7 @@ def main() -> int:
         [env.model.joint(n).id for n in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7")]
     ]
     for step in range(SETTLE_STEPS):
-        env.data.ctrl[:7] = env.data.qfrc_bias[arm_dof]
+        env.data.ctrl[:7] = env.data.qfrc_bias[arm_dof] - env.data.qfrc_constraint[arm_dof]
         env.step()
         if (step + 1) % PRINT_EVERY == 0:
             print(_format_obs(env.get_observation(), f"step {step + 1:3d}"))
@@ -130,24 +125,18 @@ def main() -> int:
     if args.no_viewer:
         print("\n--no-viewer passed; skipping interactive viewer.")
     else:
-        print(
-            f"\nOpening interactive viewer for {args.viewer_seconds:.0f}s — "
-            f"mouse-drag to rotate, scroll to zoom, ESC to close early."
-        )
+        print("\nOpening interactive viewer — mouse-drag to rotate, scroll to zoom, ESC to close.")
         env_v = SimEnv(str(SCENE_PATH), render_mode="viewer")
         env_v.reset()
         try:
             env_v.launch_viewer()
-            t0 = time.time()
-            while time.time() - t0 < args.viewer_seconds:
+            while env_v.viewer is not None and env_v.viewer.is_running():
+                env_v.data.ctrl[:7] = env_v.data.qfrc_bias[arm_dof] - env_v.data.qfrc_constraint[arm_dof]
                 env_v.step()
                 # Mujoco's default timestep is 2 ms; sleep proportionally so
                 # the viewer runs at roughly real-time rather than as fast as
                 # the CPU can chew through frames.
                 time.sleep(env_v.model.opt.timestep)
-                if env_v.viewer is not None and not env_v.viewer.is_running():
-                    print("Viewer closed by user.")
-                    break
         finally:
             env_v.close()
 

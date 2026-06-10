@@ -1,8 +1,8 @@
-"""Backbone controller and heuristic assistance layer.
+"""Backbone controller.
 
 Operational-space differential IK, direction-dependent impedance control,
-spiral-search recovery, force-cap watchdog, hold-lock / park-lock states.
-M2 populates the backbone; M3 adds the spiral-search recovery layer.
+force-cap watchdog, hold-lock / park-lock states. This is the always-on
+substrate any assistance mode runs on; M2 populates it.
 """
 
 from ai_teleop.control.backbone import Controller

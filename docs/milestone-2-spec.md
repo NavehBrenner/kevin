@@ -1,6 +1,6 @@
 # Milestone 2 — Backbone Controller Online
 
-**Goal**: turn an EE-pose command into compliant arm motion. The arm tracks an externally-supplied 6-DoF pose target each control tick, behaves like a spring on contact (direction-dependent stiffness), and self-protects via a force-cap watchdog plus two lock states. **No assistance logic, no inputs, no spiral search** — just a backbone that any future mode (heuristic, scripted noisy-human, learned residual) can drive.
+**Goal**: turn an EE-pose command into compliant arm motion. The arm tracks an externally-supplied 6-DoF pose target each control tick, behaves like a spring on contact (direction-dependent stiffness), and self-protects via a force-cap watchdog plus two lock states. **No assistance logic, no inputs** — just a backbone that any future Δ source (no-assist, expert, learned residual) and command stream (scripted noisy-human, keyboard, vision) can drive.
 
 This milestone takes the static MuJoCo scene produced in M1 and adds the layer that makes the arm *move on command*. By the time we hand off to M3, the only question still open should be "what produces the command stream", not "does the controller track the command".
 
@@ -27,7 +27,7 @@ By the end of M2 we can:
 
 ## What's not in M2 — explicit anti-scope
 
-- **Spiral-search recovery** → M3 (heuristic assist).
+- **The assistance seam** (the Δ-source interface) → M3.
 - **Any input strategy** (scripted noisy-human, keyboard, vision) → M3 / M8. M2's harness uses hardcoded waypoints; the production command source comes later.
 - **Expert, policy, training, evaluation, data logging** → M4+. Per-step trajectory logging exists only in the dev harness for tuning, not in the controller itself.
 - **Trial-level concepts** (success, failure, timeout). The controller is mode-less in the autonomy sense — see `project-scope.md` *Runtime state — two modes only*. Trial bookkeeping lives in the (future) eval harness.
@@ -246,7 +246,6 @@ outputs/
 M3 takes the `Controller` produced here and adds:
 
 - A `ScriptedNoisyHuman` stub input strategy that supplies the `Command` stream `Controller.compute` currently gets from a hardcoded waypoint list.
-- A **spiral-search recovery** layer composed *additively* on top of the input command (per `project-scope.md` *Heuristic recovery — spiral search*), engaging when the F/T signature says "flat-wall contact, not hole".
-- The assistance-mode seam (Strategy pattern): the same `Controller` is driven either by raw input (human-only mode) or input + heuristic (heuristic-assist mode), and later input + learned residual (M5).
+- The assistance seam (Strategy pattern): one interface through which the Δ source plugs in. The same `Controller` is driven either by raw input (no-assist mode, zero Δ) or input + a Δ source, and later input + learned residual (M5). Swapping the Δ source touches nothing upstream or downstream.
 
 M3 does **not** require the M2 impedance gains to be final — only the API contract above (`Controller.compute(obs, command)`, lock requests, `LockStatus`) needs to be stable. Gains can keep being tuned through M3 and M4 as we see real contact patterns.

@@ -107,7 +107,7 @@ def differential_ik(
 
     J = jacobian
     # Solve (J Jᵀ + λ² I) x = e once instead of forming the inverse explicitly.
-    JJT_reg = J @ J.T + (damping ** 2) * np.eye(6)
+    JJT_reg = J @ J.T + (damping**2) * np.eye(6)
     j_pinv = J.T @ np.linalg.solve(JJT_reg, np.eye(6))
 
     qdot_task = j_pinv @ (e / dt)

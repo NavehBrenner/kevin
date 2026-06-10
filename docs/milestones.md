@@ -19,7 +19,7 @@ milestone is started.
 |---|-----------|-------|--------------|--------|
 | M1 | Sim environment online | Foundation | 1 | ✅ done |
 | M2 | Backbone controller online | Foundation | 2 (partial) | ⬜ next |
-| M3 | Heuristic assist online | Foundation | 2, 5 (stub) | ⬜ |
+| M3 | Assistance seam + scripted input online | Foundation | seam, 5 (stub) | ⬜ |
 | M4 | Expert + data generation online | Foundation | 3 | ⬜ |
 | M5 | Residual policy — Phase 1 (F/T-only) | Phase 1 | 4 | ⬜ |
 | M6 | Evaluation harness + Phase 1 results | Phase 1 | 6 | ⬜ |
@@ -58,36 +58,38 @@ pose targets and behaves safely on contact.
 - Force-cap watchdog; `hold-lock` / `park-lock` runtime states.
 - Manual pose commands (a dev harness) to drive the arm for visual confirmation.
 
-**Deferred (anti-scope)**: spiral search (M3), any input strategy (M3), expert/policy.
+**Deferred (anti-scope)**: any input strategy (M3), the assistance seam (M3), expert/policy.
 
 **Acceptance**: commanded EE pose is tracked smoothly; pushing the peg into the wall
 produces bounded forces (impedance gives, doesn't crush); force-cap trip → hold-lock;
 park-lock returns to base pose.
 
-**Depends on**: M1. **Component**: 2 (minus spiral search). **Rough effort**: 12–16 h.
+**Depends on**: M1. **Component**: 2 (backbone controller). **Rough effort**: 12–16 h.
 
 ---
 
-### M3 — Heuristic assist online
+### M3 — Assistance seam + scripted input online
 
-**Goal**: the first complete *assistance mode* — a hand-coded controller that produces
-visible insertion attempts when driven by a (stub) automated command stream.
+**Goal**: establish the assistance seam — one interface through which *any* Δ source
+(none, expert, or learned policy) plugs in — and a stub automated command stream to
+drive the system end-to-end without a real human.
 
 **In scope**:
-- Spiral-search recovery (engages when the peg contacts flat wall, not hole).
+- Wire the assistance seam so deltas can come from any source (no-assist now; expert and
+  policy later) behind one interface — dependency inversion, so swapping the Δ source
+  touches nothing upstream or downstream.
 - A stub `ScriptedNoisyHuman` input strategy (target pose + simple noise) — just enough
   to drive the system without a real human.
-- Wire the assistance interface so deltas can come from the heuristic (and later the
-  policy) behind one seam.
+- The no-assist (zero Δ) mode runnable end-to-end through the seam.
 
 **Deferred**: the full noisy-human noise model (refined in M4), vision/keyboard input,
-the learned policy.
+the expert and the learned policy.
 
-**Acceptance**: with the stub noisy-human commanding, the heuristic-assist mode lands
-pegs in holes some of the time; the human-only mode (zero assist) is also runnable for
-contrast.
+**Acceptance**: with the stub noisy-human commanding, the system runs end-to-end in
+no-assist mode through the seam; the seam accepts an injected Δ from a dummy source
+(proving the interface) without upstream/downstream changes.
 
-**Depends on**: M2. **Components**: 2 (complete), 5 (stub). **Rough effort**: 8–12 h.
+**Depends on**: M2. **Components**: assistance seam, 5 (stub). **Rough effort**: 6–10 h.
 
 ---
 
@@ -112,9 +114,9 @@ train against.
 
 **Depends on**: M3. **Component**: 3. **Rough effort**: 10–14 h.
 
-> **End of Foundation**: at this point we have a human-only baseline mode, a working
-> heuristic-assist mode, and a data-generation pipeline. This is already enough to drive
-> the **Design Review (D1)** with a real preliminary prototype.
+> **End of Foundation**: at this point we have a human-only baseline mode, the analytical
+> expert wired into the assistance seam, and a data-generation pipeline. This is already
+> enough to drive the **Design Review (D1)** with a real preliminary prototype.
 
 ---
 
@@ -127,7 +129,8 @@ the noisy-human command using force/torque + proprioception (no vision yet).
 
 **In scope**:
 - BC training pipeline (dataset loader, model, train/val loop, checkpointing).
-- Policy: (F/T history + pose history + noisy-human command) → clamped Δpose + Δgrip.
+- Policy (Phase-1, no image): GRU encoders over command history + F/T history, MLP over
+  proprioception, fused → clamped Δpose + Δgrip. See [`design/policy-model.md`](design/policy-model.md).
 - Integrate the trained policy as the "learned assist" mode behind the assistance seam.
 
 **Deferred**: vision conditioning (M7), RL (anti-scope).
@@ -146,15 +149,14 @@ qualitatively improves insertion over human-only; training/validation curves are
 **In scope**:
 - Passive-observer eval harness (trial start/end detection, success/failure
   classification, KPI computation) — no controller→harness dependency.
-- Ablation orchestration: run human-only vs heuristic vs F/T-residual under matched
+- Ablation orchestration: run human-only vs F/T-residual under matched
   noisy-human conditions (~100 trials each, paired seeds).
 - **Calibrate** the deferred eval-randomization magnitudes (hole-noise σ, human-noise σ,
   force cap, timeout) so the task is genuinely hard for human-only.
 - KPI tables + plots (success rate, time-to-insert, peak force, contacts, smoothness).
 
-**Acceptance**: a reproducible three-way KPI comparison with the F/T residual measurably
-beating human-only (and ideally competitive with / beating heuristic). **This is the first
-publishable result — Phase 1 complete.**
+**Acceptance**: a reproducible two-way KPI comparison with the F/T residual measurably
+beating human-only. **This is the first publishable result — Phase 1 complete.**
 
 **Depends on**: M5. **Component**: 6. **Rough effort**: 10–14 h.
 
@@ -169,8 +171,10 @@ main ML contribution.
 
 **In scope**:
 - Wrist-camera frames rendered into the data pipeline + fed to the policy.
-- Vision-conditioned policy (frozen pretrained image backbone + MLP head over
-  image + F/T + pose + command).
+- Vision-conditioned policy: add a **fine-tuned image CNN** (pretrained init, trained
+  end-to-end with the rest; freeze fallback) over the existing GRU/MLP streams
+  (image + F/T + proprioception + command). Optional all-holes auxiliary loss as a
+  training stabilizer. See [`design/policy-model.md`](design/policy-model.md) Decision B.
 - Regenerate data with images; retrain; ablate vision+F/T vs F/T-only on the same trials.
 - Optional: training-time domain randomization (lighting/texture) for robustness.
 
@@ -214,7 +218,7 @@ the final demo video.)*
 **In scope**:
 - Full final KPI runs across all configurations; statistical analysis.
 - 3–5 recorded webcam-driven qualitative demo runs.
-- Demo video (webcam → robot, three assist modes toggling, KPI montage).
+- Demo video (webcam → robot, assistance toggled on/off, KPI montage).
 - README polish; public repo finalization; reproducibility check (clean clone → run).
 - Self-evaluation & reflective analysis writeup (5% bonus).
 
@@ -238,7 +242,7 @@ definitions, challenges/risks, a preliminary prototype/demo, evaluation criteria
 
 **Source material**: most of this already exists in [`../project-scope.md`](../project-scope.md);
 D1 is largely repackaging it into review form + adding diagrams + a live demo.
-**Milestone readiness target**: M1–M4 done (working heuristic prototype to demo); M5–M6
+**Milestone readiness target**: M1–M4 done (working expert-driven prototype to demo); M5–M6
 in progress is a bonus. **Rough effort**: 8–12 h (mostly writing + diagrams).
 
 ### D2 — Final Submission (2026-08-31, ~65% of grade)
@@ -264,7 +268,7 @@ Solo, ~10–15 h/week, today ≈ 2026-05-21 → deadline 2026-08-31 (~15 weeks).
 | ~June 8 | *Topic approval* — covered by `project-scope.md` |
 | late June | M5 |
 | early July | M6 (**Phase 1 complete — publishable**) |
-| ~mid July | **D1 Design Review** (demo the heuristic + early policy) |
+| ~mid July | **D1 Design Review** (demo the expert-driven prototype + early policy) |
 | mid–late July | M7 (vision) |
 | early August | M8 (human teleop) |
 | mid–late August | M9 (final eval + polish) |
@@ -273,7 +277,7 @@ Solo, ~10–15 h/week, today ≈ 2026-05-21 → deadline 2026-08-31 (~15 weeks).
 ## Sequencing & risk notes
 
 - **Critical path to a passing project**: M1→M6 (Phase 1). If time gets tight, a polished
-  Phase-1 project (heuristic + F/T residual + clean three-way KPI comparison + good
+  Phase-1 project (F/T residual + clean off-vs-on KPI comparison + good
   engineering) is a complete, defensible submission. M7–M8 are the upside.
 - **Biggest risk milestone**: M7 (vision-conditioned BC is data-hungry and the place solo
   projects most often miss KPI targets). Mitigation: M5/M6 give a working F/T baseline and
