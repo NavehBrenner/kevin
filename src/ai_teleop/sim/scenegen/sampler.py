@@ -45,22 +45,26 @@ def sample_wall_spec(
     """Resolve the request into a concrete WallSpec (no disk I/O)."""
     resolved_seed, seed_was_given = resolve_seed(seed)
     rng = np.random.default_rng(resolved_seed)
-    wall_size = tuple(wall_size) if wall_size is not None else DEFAULT_WALL_SIZE
+    resolved_wall_size: tuple[float, float, float] = (
+        DEFAULT_WALL_SIZE
+        if wall_size is None
+        else (float(wall_size[0]), float(wall_size[1]), float(wall_size[2]))
+    )
 
     requests = _collect_requests(rng, true_hole, distractors)
 
     # Resolve shape/size/chamfer for every hole up front (placement needs the
     # bounding radius); pos stays None until the placement pass.
-    holes: list[HoleSpec] = []
+    holes: list[_PendingHole] = []
     for given, is_target in requests:
         shape, size, chamfer = _resolve_shape_size_chamfer(rng, ranges, given)
         pos = tuple(given["pos"]) if (given and given.get("pos") is not None) else None
         holes.append(_PendingHole(shape, pos, size, chamfer, is_target))
 
-    placed = _place_holes(rng, holes, wall_size, ranges)
+    placed = _place_holes(rng, holes, resolved_wall_size, ranges)
     return WallSpec(
         seed=resolved_seed,
-        wall_size=wall_size,
+        wall_size=resolved_wall_size,
         holes=placed,
         ranges=ranges,
         seed_was_given=seed_was_given,

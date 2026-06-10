@@ -13,6 +13,8 @@ that they are.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import trimesh.creation
 from shapely.geometry import Polygon
@@ -38,5 +40,8 @@ def convex_pieces(
     for outline in hole_outlines:
         face = face.difference(Polygon(outline))
 
-    vertices, faces = trimesh.creation.triangulate_polygon(face, engine="earcut")
+    vertices, faces = cast(
+        "tuple[np.ndarray, np.ndarray]",
+        trimesh.creation.triangulate_polygon(face, engine="earcut"),
+    )
     return [vertices[triangle] for triangle in faces]

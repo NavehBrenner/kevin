@@ -17,6 +17,8 @@ the ``<X`` face's local +x axis points along world **-Y**, so a hole at world
 
 from __future__ import annotations
 
+from typing import cast
+
 import cadquery as cq
 
 from .config import HoleSpec, WallSpec
@@ -91,6 +93,8 @@ def tessellate_to_metres(
 
     Vertices are converted mm -> metres. Triangles index into ``vertices_m``.
     """
-    verts_mm, tris = workpiece.val().tessellate(tolerance=tolerance_mm)
+    # .val() is typed as a union (Vector|Location|Shape|Sketch); a built solid
+    # is always a Shape, which is what carries .tessellate().
+    verts_mm, tris = cast(cq.Shape, workpiece.val()).tessellate(tolerance=tolerance_mm)
     vertices_m = [(v.x * M_PER_MM, v.y * M_PER_MM, v.z * M_PER_MM) for v in verts_mm]
     return vertices_m, tris
