@@ -9,6 +9,7 @@ this contract — see `docs/milestone-1-spec.md`.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -31,7 +32,11 @@ _ARM_JOINT_NAMES = (
     "joint6",
     "joint7",
 )
-_HOLE_SITE_NAMES = ("hole_0", "hole_1", "hole_2")
+# Hole sites are discovered by name at load time — any number of `hole_<i>`
+# sites — so procedurally generated walls with arbitrary hole counts load
+# unchanged. The hand-written full_scene.xml exposes hole_0/1/2; generated
+# walls put the target at hole_0.
+_HOLE_SITE_PATTERN = re.compile(r"^hole_(\d+)$")
 _TCP_SITE_NAME = "tcp_site"
 _PEG_JOINT_NAME = "peg_joint"
 _WRIST_FORCE_SENSOR = "wrist_force"
@@ -46,6 +51,24 @@ def _name2id(model: mujoco.MjModel, objtype: int, name: str) -> int:
     if obj_id == -1:
         raise KeyError(f"MJCF object not found: type={objtype} name={name!r}")
     return obj_id
+
+
+def _discover_hole_site_ids(model: mujoco.MjModel) -> np.ndarray:
+    """Return site IDs for every `hole_<i>` site, ordered by index `i`.
+
+    Lets one SimEnv serve the fixed full_scene wall and any generated wall
+    without knowing the hole count ahead of time.
+    """
+    found: list[tuple[int, int]] = []
+    for site_id in range(model.nsite):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SITE, site_id)
+        match = _HOLE_SITE_PATTERN.match(name) if name else None
+        if match:
+            found.append((int(match.group(1)), site_id))
+    if not found:
+        raise KeyError("scene contains no `hole_<i>` sites")
+    found.sort()
+    return np.array([site_id for _, site_id in found], dtype=np.int32)
 
 
 def _mat3_to_quat(mat_flat: np.ndarray) -> np.ndarray:
@@ -96,13 +119,14 @@ class SimEnv:
         self._rng = np.random.default_rng(seed)
         self._seed = seed
 
-        n_holes = len(_HOLE_SITE_NAMES)
+        # Cache MuJoCo IDs once.
+        model = self._model
+        self._hole_site_ids = _discover_hole_site_ids(model)
+        n_holes = len(self._hole_site_ids)
         if not (0 <= target_hole_index < n_holes):
             raise ValueError(f"target_hole_index must be in [0, {n_holes}), got {target_hole_index}")
         self._target_hole_index = target_hole_index
 
-        # Cache MuJoCo IDs once.
-        model = self._model
         self._arm_joint_qadr = np.array(
             [model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in _ARM_JOINT_NAMES],
             dtype=np.int32,
@@ -113,10 +137,6 @@ class SimEnv:
         )
         self._peg_qadr = model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, _PEG_JOINT_NAME)]
         self._tcp_site_id = _name2id(model, mujoco.mjtObj.mjOBJ_SITE, _TCP_SITE_NAME)
-        self._hole_site_ids = np.array(
-            [_name2id(model, mujoco.mjtObj.mjOBJ_SITE, n) for n in _HOLE_SITE_NAMES],
-            dtype=np.int32,
-        )
         self._force_sensor_adr = model.sensor_adr[_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_FORCE_SENSOR)]
         self._torque_sensor_adr = model.sensor_adr[_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_TORQUE_SENSOR)]
         self._home_keyframe_id = _name2id(model, mujoco.mjtObj.mjOBJ_KEY, _HOME_KEYFRAME)
@@ -198,7 +218,7 @@ class SimEnv:
     # Sensing.
     # ------------------------------------------------------------------
     def get_observation(self) -> Observation:
-        model, data = self._model, self._data
+        data = self._data
 
         joint_positions = data.qpos[self._arm_joint_qadr].copy()
         joint_velocities = data.qvel[self._arm_joint_vadr].copy()
