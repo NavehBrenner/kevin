@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Block pushes that don't type-check. Use `python -m mypy` (not .venv/bin/mypy)
+# because this project's relocated .venv has stale console-script shebangs.
+set -euo pipefail
+
+if [ ! -x .venv/bin/python ]; then
+    echo "pre-push: no .venv — run 'uv venv && uv pip install -e .[dev,scenegen]'; skipping." >&2
+    exit 0
+fi
+
+echo "pre-push: type-checking with mypy..."
+.venv/bin/python -m mypy

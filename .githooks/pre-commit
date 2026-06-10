@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Auto-format staged Python with ruff, then re-stage what it touched.
+# Calls the project venv directly (no `uv run`) to avoid a dependency re-sync
+# on every commit.
+set -euo pipefail
+
+if [ ! -x .venv/bin/ruff ]; then
+    echo "pre-commit: no .venv/bin/ruff — run 'uv pip install -e .[dev]'; skipping." >&2
+    exit 0
+fi
+
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM -- '*.py')
+if [ ${#files[@]} -eq 0 ]; then
+    exit 0
+fi
+
+echo "pre-commit: ruff format on ${#files[@]} staged file(s)..."
+.venv/bin/ruff format "${files[@]}"
+git add "${files[@]}"

@@ -1,0 +1,30 @@
+name: CI
+
+# Gate every PR into master on type checks + tests. Runs on the PR branch,
+# which carries the scenegen extra, so the CAD geometry tests run for real
+# (rather than being skipped via importorskip).
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python + dependencies
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[dev,scenegen]"
+
+      - name: Type check (mypy)
+        run: uv run python -m mypy
+
+      - name: Tests (pytest)
+        run: uv run pytest -q

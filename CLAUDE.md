@@ -33,6 +33,23 @@ Managed with [uv](https://github.com/astral-sh/uv). The virtualenv lives at `.ve
   do the work there, and merge when it's complete and reviewed.
 - Keep a branch scoped to a single feature; unrelated fixes get their own branch.
 
+### Hooks and CI
+
+Local git hooks live in `.githooks/` (version-controlled). Activate them once
+per clone — they are *not* enabled automatically:
+
+```
+git config core.hooksPath .githooks
+```
+
+- **pre-commit** — `ruff format` on staged Python, re-staging what it changed.
+- **pre-push** — blocks the push unless `mypy` passes.
+
+CI (`.github/workflows/ci.yml`) gates every **PR into `master`**: it installs
+`.[dev,scenegen]` and must pass `mypy` and `pytest`. The hooks run the same
+tools via `uv run` (mypy as `uv run python -m mypy`, since the relocated
+`.venv` has stale console-script shebangs).
+
 ## Code conventions
 
 - Python ≥ 3.10. Favor high-level Python; **no C/C++/Rust extensions, no ROS.**
