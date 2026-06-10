@@ -25,6 +25,14 @@ Managed with [uv](https://github.com/astral-sh/uv). The virtualenv lives at `.ve
 - `uv pip install -e ".[dev,ml,vision-input]"` — full stack incl. torch + mediapipe.
 - `uv run python scripts/<script>.py` — run inside the venv.
 
+## Git workflow
+
+- **One branch per feature.** Never commit feature work directly to the default
+  branch (`master`) — it stays clean and releasable. For each new feature or
+  change, create a dedicated branch first (`git checkout -b feat/<short-name>`),
+  do the work there, and merge when it's complete and reviewed.
+- Keep a branch scoped to a single feature; unrelated fixes get their own branch.
+
 ## Code conventions
 
 - Python ≥ 3.10. Favor high-level Python; **no C/C++/Rust extensions, no ROS.**
