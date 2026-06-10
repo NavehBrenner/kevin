@@ -66,6 +66,7 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.3",
     "mypy>=1.8",
+    "poethepoet>=0.24",
 ]
 
 [project.urls]
@@ -93,3 +94,15 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-ra"
+
+# Project task runner (poethepoet) — the "project CLI". Run with `uv run poe <task>`.
+# mypy/pytest go through `python -m` because this box's relocated .venv has stale
+# console-script shebangs (ruff is a standalone binary, so it's called directly).
+[tool.poe.tasks]
+fmt = "ruff format src tests scripts"
+lint = "ruff check src tests"
+typecheck = "python -m mypy"
+test = "python -m pytest -q"
+check = ["lint", "typecheck", "test"]          # the full gate, same as CI
+sim = "python scripts/view_generated_wall.py"  # extra args pass through, e.g. poe sim --seed 7
+smoke = "python scripts/smoke_test_sim.py"

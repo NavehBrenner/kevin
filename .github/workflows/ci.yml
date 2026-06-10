@@ -23,8 +23,12 @@ jobs:
           uv venv --python 3.12
           uv pip install -e ".[dev,scenegen]"
 
+      # Same tasks the local `poe check` runs, so CI and dev share one definition.
+      - name: Lint (ruff)
+        run: uv run poe lint
+
       - name: Type check (mypy)
-        run: uv run python -m mypy
+        run: uv run poe typecheck
 
       - name: Tests (pytest)
-        run: uv run pytest -q
+        run: uv run poe test
