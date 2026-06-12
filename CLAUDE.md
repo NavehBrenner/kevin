@@ -49,12 +49,28 @@ shebangs — see the hooks note below.)
 
 - **One branch per feature.** Never commit feature work directly to the default
   branch (`master`) — it stays clean and releasable. For each new feature or
-  change, create a dedicated branch first (`git switch -c feat/<short-name>`),
+  change, create a dedicated branch first (`git switch -c feat/lab-<NN>-<short-name>`, named after its Linear issue — see *Linking PRs to Linear*),
   do the work there, and merge when it's complete and reviewed.
 - Keep a branch scoped to a single feature; unrelated fixes get their own branch.
 - **Use `git switch` for branch navigation** — `git switch <branch>` to move,
   `git switch -c <branch>` to create. Prefer it over `git checkout` /
   `git checkout -b` (and `git branch` is for listing/deleting, not moving).
+
+### Linking PRs to Linear
+
+Issues are tracked in Linear (team **Lab**, key `LAB`). A PR appears on its
+Linear issue automatically **only if the issue identifier is present** in
+either:
+
+- the **branch name** — embed it, e.g. `feat/lab-42-impedance-tuning`
+  (Linear matches the `lab-NN` substring; the `feat/` prefix and trailing
+  slug stay free-form). Linear's *Copy git branch name* yields exactly this.
+- the **PR title or description** — e.g. a `Fixes LAB-42` / `Part of LAB-42`
+  line. `Fixes`/`Closes` additionally moves the issue to Done on merge.
+
+One PR per issue is the norm; reference every issue a PR addresses. (Requires
+the workspace GitHub integration to be connected once, in Linear → Settings →
+Features → Integrations → GitHub.)
 
 ### Hooks and CI
 
