@@ -89,6 +89,8 @@ the expert and the learned policy.
 no-assist mode through the seam; the seam accepts an injected Δ from a dummy source
 (proving the interface) without upstream/downstream changes.
 
+**Detailed spec**: [`milestone-3-spec.md`](milestone-3-spec.md).
+
 **Depends on**: M2. **Components**: assistance seam, 5 (stub). **Rough effort**: 6–10 h.
 
 ---
