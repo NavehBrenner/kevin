@@ -60,7 +60,9 @@ def generate_from_spec(
     out_dir = Path(out_dir)
 
     workpiece = solid.build_wall_solid(spec)
-    vertices, triangles = solid.tessellate_to_metres(workpiece, tolerance_mm=tessellation_tolerance_mm)
+    vertices, triangles = solid.tessellate_to_metres(
+        workpiece, tolerance_mm=tessellation_tolerance_mm
+    )
 
     visual_mesh = to_trimesh(vertices, triangles)
     collision_parts = wall_collision_parts(spec)

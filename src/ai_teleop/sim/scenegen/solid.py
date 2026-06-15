@@ -32,11 +32,7 @@ def _drill_circle(workpiece: cq.Workplane, hole: HoleSpec) -> cq.Workplane:
     y_mm, z_mm = hole.pos[0] * MM_PER_M, hole.pos[1] * MM_PER_M
     diameter_mm = hole.size["diameter"] * MM_PER_M
     # Local +x on the <X face is world -Y, so negate y to land at world (y, z).
-    return (
-        workpiece.faces("<X").workplane()
-        .pushPoints([(-y_mm, z_mm)])
-        .hole(diameter_mm)
-    )
+    return workpiece.faces("<X").workplane().pushPoints([(-y_mm, z_mm)]).hole(diameter_mm)
 
 
 # Dispatch by shape. The shape library beyond "circle" is filled in during the
@@ -50,9 +46,7 @@ def _cut_hole(workpiece: cq.Workplane, hole: HoleSpec) -> cq.Workplane:
     try:
         cutter = _CUTTERS[hole.shape]
     except KeyError:
-        raise NotImplementedError(
-            f"hole shape {hole.shape!r} not implemented yet"
-        ) from None
+        raise NotImplementedError(f"hole shape {hole.shape!r} not implemented yet") from None
     return cutter(workpiece, hole)
 
 

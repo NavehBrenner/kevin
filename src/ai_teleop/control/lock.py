@@ -47,6 +47,7 @@ class LockStatus:
     The fields are kept narrow on purpose — the eval harness should be
     able to log this without depending on the controller's internals.
     """
+
     state: LockState
     last_transition_reason: str
     last_transition_sim_time: float
@@ -139,9 +140,7 @@ class LockController:
             mujoco.mju_subQuat(rot_err_axis, self.home_pose[3:], obs.ee_pose[3:])
             rot_err = float(np.linalg.norm(rot_err_axis))
             if pos_err < self.park_pos_tol_m and rot_err < self.park_quat_tol_rad:
-                self._transition_to_hold(
-                    obs.sim_time, "park_complete", current_pose=obs.ee_pose
-                )
+                self._transition_to_hold(obs.sim_time, "park_complete", current_pose=obs.ee_pose)
 
         if self._state == LockState.ACTIVE:
             return external_target_pos, external_target_quat

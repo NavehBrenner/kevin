@@ -31,11 +31,22 @@ from ai_teleop.control.lock import LockController, LockStatus
 
 # Names must match the M1 scene contract (see ai_teleop.sim.scene).
 _ARM_JOINT_NAMES = (
-    "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7",
+    "joint1",
+    "joint2",
+    "joint3",
+    "joint4",
+    "joint5",
+    "joint6",
+    "joint7",
 )
 _ARM_ACTUATOR_NAMES = (
-    "actuator1", "actuator2", "actuator3", "actuator4",
-    "actuator5", "actuator6", "actuator7",
+    "actuator1",
+    "actuator2",
+    "actuator3",
+    "actuator4",
+    "actuator5",
+    "actuator6",
+    "actuator7",
 )
 _GRIPPER_ACTUATOR_NAME = "actuator8"
 _TCP_SITE_NAME = "tcp_site"
@@ -56,14 +67,16 @@ _DEFAULT_STIFFNESS_TCP = np.array([400.0, 400.0, 500.0, 3.0, 3.0, 3.0])
 # Too-stiff orientation coupling fights the position dynamics and drives a
 # slow limit cycle (observed during tuning: pos err grew to >50 mm at K_rot=25
 # even with critically-damped D_rot; dropping K_rot to 3 collapsed it to <1 mm).
-_DEFAULT_DAMPING_TCP = np.array([
-    2 * np.sqrt(4.0 * 400.0),  # x  ≈ 80
-    2 * np.sqrt(4.0 * 400.0),  # y  ≈ 80
-    2 * np.sqrt(4.0 * 500.0),  # z  ≈ 89
-    4.0,                       # rx — slightly overdamped vs nominal
-    4.0,                       # ry
-    4.0,                       # rz
-])
+_DEFAULT_DAMPING_TCP = np.array(
+    [
+        2 * np.sqrt(4.0 * 400.0),  # x  ≈ 80
+        2 * np.sqrt(4.0 * 400.0),  # y  ≈ 80
+        2 * np.sqrt(4.0 * 500.0),  # z  ≈ 89
+        4.0,  # rx — slightly overdamped vs nominal
+        4.0,  # ry
+        4.0,  # rz
+    ]
+)
 
 _DEFAULT_POSTURE_GAIN = 1.0
 _DEFAULT_DLS_DAMPING = 0.05
@@ -76,12 +89,12 @@ _DEFAULT_DLS_DAMPING = 0.05
 # hold further but stalls long-distance approach.
 _DEFAULT_JOINT_DAMPING = 4.0
 
-_DEFAULT_MAX_DPOS = 0.02                       # m / control step
-_DEFAULT_MAX_DROT = np.deg2rad(10.0)           # rad / control step
-_DEFAULT_MAX_DGRIP_FORCE = 5.0                 # N  / control step
+_DEFAULT_MAX_DPOS = 0.02  # m / control step
+_DEFAULT_MAX_DROT = np.deg2rad(10.0)  # rad / control step
+_DEFAULT_MAX_DGRIP_FORCE = 5.0  # N  / control step
 
-_GRIPPER_BASELINE_CTRL = 0.0                   # squeezing/closed; see panda.xml comment
-_GRIPPER_FORCE_TO_CTRL = 255.0 / 4.0           # invert the panda.xml gain=4/255 mapping
+_GRIPPER_BASELINE_CTRL = 0.0  # squeezing/closed; see panda.xml comment
+_GRIPPER_FORCE_TO_CTRL = 255.0 / 4.0  # invert the panda.xml gain=4/255 mapping
 
 
 def _name2id(model: mujoco.MjModel, objtype: int, name: str) -> int:
@@ -214,7 +227,8 @@ class Controller:
         target_pos, target_quat = self._lock.resolve_target(obs, clamped_pos, clamped_quat)
 
         tau = impedance_torque(
-            self._model, self._data,
+            self._model,
+            self._data,
             target_pos=target_pos,
             target_quat=target_quat,
             K_diag_tcp=self.stiffness_tcp,
@@ -229,11 +243,13 @@ class Controller:
         )
         self._data.ctrl[self._arm_act_idx] = tau
 
-        dgrip = float(np.clip(
-            command.delta_grip_force,
-            -self.max_dgrip_force_per_step,
-            self.max_dgrip_force_per_step,
-        ))
+        dgrip = float(
+            np.clip(
+                command.delta_grip_force,
+                -self.max_dgrip_force_per_step,
+                self.max_dgrip_force_per_step,
+            )
+        )
         self._data.ctrl[self._gripper_act_idx] = (
             _GRIPPER_BASELINE_CTRL + dgrip * _GRIPPER_FORCE_TO_CTRL
         )

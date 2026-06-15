@@ -47,6 +47,7 @@ COLLISION_FACETS: int = 16
 # The active SamplingRanges instance is snapshotted into header.json so a scene
 # stays reproducible even if these module defaults change later.
 
+
 @dataclass(frozen=True)
 class SamplingRanges:
     """Bounds used to draw any hole field the caller leaves unspecified."""
@@ -74,6 +75,7 @@ DEFAULT_RANGES = SamplingRanges()
 
 # --- Resolved spec --------------------------------------------------------
 
+
 @dataclass
 class HoleSpec:
     """A fully-resolved hole. Every field is concrete (nothing left to sample).
@@ -87,9 +89,9 @@ class HoleSpec:
     """
 
     shape: HoleShape
-    pos: tuple[float, float]          # (y, z) in metres, wall-centre origin
+    pos: tuple[float, float]  # (y, z) in metres, wall-centre origin
     size: dict[str, float]
-    chamfer: float                    # rim chamfer width (m)
+    chamfer: float  # rim chamfer width (m)
     is_target: bool = False
 
     def bounding_radius(self) -> float:
@@ -124,7 +126,7 @@ class WallSpec:
 
     seed: int
     wall_size: tuple[float, float, float]
-    holes: list[HoleSpec]                       # holes[0] is always the target
+    holes: list[HoleSpec]  # holes[0] is always the target
     ranges: SamplingRanges = field(default_factory=lambda: DEFAULT_RANGES)
     seed_was_given: bool = True
 

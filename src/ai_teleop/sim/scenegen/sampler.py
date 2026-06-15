@@ -76,7 +76,7 @@ class _PendingHole:
 
     def __init__(self, shape, pos, size, chamfer, is_target):
         self.shape = shape
-        self.pos = pos          # tuple | None
+        self.pos = pos  # tuple | None
         self.size = size
         self.chamfer = chamfer
         self.is_target = is_target
@@ -123,9 +123,7 @@ def _resolve_shape_size_chamfer(
     return shape, size, float(chamfer)
 
 
-def _sample_size(
-    rng: np.random.Generator, ranges: SamplingRanges, shape: str
-) -> dict[str, float]:
+def _sample_size(rng: np.random.Generator, ranges: SamplingRanges, shape: str) -> dict[str, float]:
     if shape == "circle":
         return {"diameter": float(rng.uniform(*ranges.diameter))}
     raise NotImplementedError(f"size sampling for {shape!r} not implemented yet")
@@ -153,9 +151,7 @@ def _place_holes(
         )
 
     def clear_of_placed(center: np.ndarray, radius: float) -> bool:
-        return all(
-            np.linalg.norm(center - c) >= radius + r + gap for c, r in placed_centers
-        )
+        return all(np.linalg.norm(center - c) >= radius + r + gap for c, r in placed_centers)
 
     # Pass 1: explicit positions, validated loudly.
     for index, hole in enumerate(pending):
@@ -166,13 +162,13 @@ def _place_holes(
         if not fits_edges(center, radius):
             raise ValueError(
                 f"hole {index} at {hole.pos} (radius {radius:.4f} m incl. chamfer) "
-                f"breaches the {margin*1000:.0f} mm edge margin of the "
+                f"breaches the {margin * 1000:.0f} mm edge margin of the "
                 f"{wall_size[1]:.3f}x{wall_size[2]:.3f} m wall face."
             )
         if not clear_of_placed(center, radius):
             raise ValueError(
                 f"explicit hole {index} at {hole.pos} overlaps a previously given "
-                f"hole (need >= {gap*1000:.0f} mm gap between rims). Adjust the "
+                f"hole (need >= {gap * 1000:.0f} mm gap between rims). Adjust the "
                 f"positions or remove one."
             )
         placed_centers.append((center, radius))
@@ -188,7 +184,7 @@ def _place_holes(
         if free_y < 0 or free_z < 0:
             raise ValueError(
                 f"hole {index} (radius {radius:.4f} m incl. chamfer) is too large "
-                f"to fit the wall face with a {margin*1000:.0f} mm margin."
+                f"to fit the wall face with a {margin * 1000:.0f} mm margin."
             )
         for _ in range(_MAX_PLACEMENT_ATTEMPTS):
             center = np.array([rng.uniform(-free_y, free_y), rng.uniform(-free_z, free_z)])

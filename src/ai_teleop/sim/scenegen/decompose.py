@@ -99,12 +99,10 @@ def _ring_wedges(
     return wedges
 
 
-def wall_collision_parts(
-    spec: WallSpec, facets: int = COLLISION_FACETS
-) -> list[trimesh.Trimesh]:
+def wall_collision_parts(spec: WallSpec, facets: int = COLLISION_FACETS) -> list[trimesh.Trimesh]:
     """Return the full list of convex collision parts for ``spec``."""
     thickness = spec.wall_size[0]
-    front_x = -0.5 * thickness   # robot-facing face
+    front_x = -0.5 * thickness  # robot-facing face
     back_x = +0.5 * thickness
 
     rim_outlines = [outer_outline(hole, facets) for hole in spec.holes]
@@ -118,9 +116,7 @@ def wall_collision_parts(
         # 45-degree chamfer: depth equals its width, clamped to the thickness.
         chamfer_x = min(front_x + hole.chamfer, back_x)
         # Straight section: bore..rim annulus from chamfer plane to back face.
-        parts += _ring_wedges(
-            inner, outer, bore_x=(chamfer_x, back_x), rim_x=(chamfer_x, back_x)
-        )
+        parts += _ring_wedges(inner, outer, bore_x=(chamfer_x, back_x), rim_x=(chamfer_x, back_x))
         # Funnel: a solid wedge bounded inside by the cone (bore ring at the
         # chamfer plane, collapsing to the rim ring at the front face) and
         # outside by the rim cylinder spanning chamfer plane .. front face.
