@@ -21,15 +21,15 @@ import numpy as np
 @dataclass(frozen=True)
 class Observation:
     # --- Proprioception (always available to the policy) -----------------
-    joint_positions: np.ndarray   # shape (7,)    rad,  panda joints 1..7
+    joint_positions: np.ndarray  # shape (7,)    rad,  panda joints 1..7
     joint_velocities: np.ndarray  # shape (7,)    rad/s
-    ee_pose: np.ndarray           # shape (7,)    (px,py,pz,qw,qx,qy,qz) of the gripper TCP
-    wrist_ft: np.ndarray          # shape (6,)    (Fx,Fy,Fz,Mx,My,Mz) at the wrist site
+    ee_pose: np.ndarray  # shape (7,)    (px,py,pz,qw,qx,qy,qz) of the gripper TCP
+    wrist_ft: np.ndarray  # shape (6,)    (Fx,Fy,Fz,Mx,My,Mz) at the wrist site
 
     # --- Privileged ground truth (training & evaluation only) ------------
-    peg_pose: np.ndarray          # shape (7,)    peg body pose in world
-    hole_poses: np.ndarray        # shape (N, 7)  every hole's pose in world
-    target_hole_index: int        # which hole is the active target this trial
+    peg_pose: np.ndarray  # shape (7,)    peg body pose in world
+    hole_poses: np.ndarray  # shape (N, 7)  every hole's pose in world
+    target_hole_index: int  # which hole is the active target this trial
 
     # --- Timing ----------------------------------------------------------
-    sim_time: float               # seconds since reset
+    sim_time: float  # seconds since reset

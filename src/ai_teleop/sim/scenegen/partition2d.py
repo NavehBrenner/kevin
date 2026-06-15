@@ -20,9 +20,7 @@ import trimesh.creation
 from shapely.geometry import Polygon
 
 
-def convex_pieces(
-    width: float, height: float, hole_outlines: list[np.ndarray]
-) -> list[np.ndarray]:
+def convex_pieces(width: float, height: float, hole_outlines: list[np.ndarray]) -> list[np.ndarray]:
     """Partition the ``width x height`` face (centred on origin) minus the given
     hole rim polygons into convex 2D pieces.
 
@@ -34,9 +32,7 @@ def convex_pieces(
         list of ``(m, 2)`` convex polygons (counter-clockwise) tiling the face.
     """
     half_w, half_h = 0.5 * width, 0.5 * height
-    face = Polygon(
-        [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
-    )
+    face = Polygon([(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)])
     for outline in hole_outlines:
         face = face.difference(Polygon(outline))
 

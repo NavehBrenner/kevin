@@ -43,6 +43,6 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Command:
-    target_position: np.ndarray       # shape (3,)  world frame, metres
-    target_quaternion: np.ndarray     # shape (4,)  world frame, (w, x, y, z), unit quat
-    delta_grip_force: float = 0.0     # newtons, additive on top of baseline grip
+    target_position: np.ndarray  # shape (3,)  world frame, metres
+    target_quaternion: np.ndarray  # shape (4,)  world frame, (w, x, y, z), unit quat
+    delta_grip_force: float = 0.0  # newtons, additive on top of baseline grip

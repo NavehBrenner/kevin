@@ -14,6 +14,7 @@ from ai_teleop.sim.scenegen import HoleSpec, sample_wall_spec
 
 # --- Sampler (always runs) -----------------------------------------------
 
+
 def test_seed_is_reproducible():
     a = sample_wall_spec(seed=42)
     b = sample_wall_spec(seed=42)
@@ -78,6 +79,7 @@ def test_bounding_radius_includes_chamfer():
 
 # --- Geometry round-trip (needs the scenegen extra) ----------------------
 
+
 @pytest.fixture(scope="module")
 def mujoco_mod():
     return pytest.importorskip("mujoco")
@@ -114,8 +116,9 @@ def test_generated_bore_is_open_and_wall_is_solid(tmp_path, mujoco_mod):
     def ray_hits(y, z):  # along +x through the wall body at (0.80, 0, 0.45)
         origin = np.array([0.70, y, 0.45 + z])
         geomid = np.array([-1], dtype=np.int32)
-        return mujoco_mod.mj_ray(model, data, origin, np.array([1.0, 0, 0]),
-                                 None, 1, -1, geomid) >= 0
+        return (
+            mujoco_mod.mj_ray(model, data, origin, np.array([1.0, 0, 0]), None, 1, -1, geomid) >= 0
+        )
 
-    assert not ray_hits(0.10, 0.05)   # through the bore -> open
-    assert ray_hits(-0.10, -0.10)     # through solid wall -> blocked
+    assert not ray_hits(0.10, 0.05)  # through the bore -> open
+    assert ray_hits(-0.10, -0.10)  # through solid wall -> blocked

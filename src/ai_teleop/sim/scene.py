@@ -124,21 +124,35 @@ class SimEnv:
         self._hole_site_ids = _discover_hole_site_ids(model)
         n_holes = len(self._hole_site_ids)
         if not (0 <= target_hole_index < n_holes):
-            raise ValueError(f"target_hole_index must be in [0, {n_holes}), got {target_hole_index}")
+            raise ValueError(
+                f"target_hole_index must be in [0, {n_holes}), got {target_hole_index}"
+            )
         self._target_hole_index = target_hole_index
 
         self._arm_joint_qadr = np.array(
-            [model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in _ARM_JOINT_NAMES],
+            [
+                model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
+                for n in _ARM_JOINT_NAMES
+            ],
             dtype=np.int32,
         )
         self._arm_joint_vadr = np.array(
-            [model.jnt_dofadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in _ARM_JOINT_NAMES],
+            [
+                model.jnt_dofadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
+                for n in _ARM_JOINT_NAMES
+            ],
             dtype=np.int32,
         )
-        self._peg_qadr = model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, _PEG_JOINT_NAME)]
+        self._peg_qadr = model.jnt_qposadr[
+            _name2id(model, mujoco.mjtObj.mjOBJ_JOINT, _PEG_JOINT_NAME)
+        ]
         self._tcp_site_id = _name2id(model, mujoco.mjtObj.mjOBJ_SITE, _TCP_SITE_NAME)
-        self._force_sensor_adr = model.sensor_adr[_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_FORCE_SENSOR)]
-        self._torque_sensor_adr = model.sensor_adr[_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_TORQUE_SENSOR)]
+        self._force_sensor_adr = model.sensor_adr[
+            _name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_FORCE_SENSOR)
+        ]
+        self._torque_sensor_adr = model.sensor_adr[
+            _name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_TORQUE_SENSOR)
+        ]
         self._home_keyframe_id = _name2id(model, mujoco.mjtObj.mjOBJ_KEY, _HOME_KEYFRAME)
         self._wrist_camera_id = _name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, _WRIST_CAMERA_NAME)
 
@@ -258,7 +272,9 @@ class SimEnv:
     def render_wrist_camera(self) -> np.ndarray:
         """Return a (H, W, 3) uint8 RGB frame from the wrist camera."""
         if self._renderer is None:
-            self._renderer = mujoco.Renderer(self._model, height=self._camera_height, width=self._camera_width)
+            self._renderer = mujoco.Renderer(
+                self._model, height=self._camera_height, width=self._camera_width
+            )
         self._renderer.update_scene(self._data, camera=self._wrist_camera_id)
         return self._renderer.render()
 
@@ -270,7 +286,9 @@ class SimEnv:
         being available.
         """
         if self._render_mode != "viewer":
-            raise RuntimeError(f"launch_viewer() requires render_mode='viewer', got {self._render_mode!r}")
+            raise RuntimeError(
+                f"launch_viewer() requires render_mode='viewer', got {self._render_mode!r}"
+            )
         if self._viewer is not None:
             return None
         # Imported here so headless tests don't load GLFW.
