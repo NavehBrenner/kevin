@@ -41,6 +41,7 @@ _TCP_SITE_NAME = "tcp_site"
 _PEG_JOINT_NAME = "peg_joint"
 _PEG_BODY_NAME = "peg"
 _HAND_BODY_NAME = "hand"
+_FINGER_JOINT_NAMES = ("finger_joint1", "finger_joint2")
 _WRIST_FORCE_SENSOR = "wrist_force"
 _WRIST_TORQUE_SENSOR = "wrist_torque"
 _WRIST_CAMERA_NAME = "wrist_cam"
@@ -160,6 +161,13 @@ class SimEnv:
         self._peg_qadr = model.jnt_qposadr[
             _name2id(model, mujoco.mjtObj.mjOBJ_JOINT, _PEG_JOINT_NAME)
         ]
+        self._finger_qadr = np.array(
+            [
+                model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
+                for n in _FINGER_JOINT_NAMES
+            ],
+            dtype=np.int32,
+        )
         self._tcp_site_id = _name2id(model, mujoco.mjtObj.mjOBJ_SITE, _TCP_SITE_NAME)
         self._hand_body_id = _name2id(model, mujoco.mjtObj.mjOBJ_BODY, _HAND_BODY_NAME)
         self._peg_body_id = _name2id(model, mujoco.mjtObj.mjOBJ_BODY, _PEG_BODY_NAME)
@@ -313,6 +321,7 @@ class SimEnv:
         ee_pose = np.concatenate([tcp_pos, tcp_quat])
 
         peg_pose = data.qpos[self._peg_qadr : self._peg_qadr + 7].copy()
+        gripper_width = float(data.qpos[self._finger_qadr].sum())
 
         hole_poses = np.zeros((len(self._hole_site_ids), 7))
         for i, site_id in enumerate(self._hole_site_ids):
@@ -331,6 +340,7 @@ class SimEnv:
             joint_velocities=joint_velocities,
             ee_pose=ee_pose,
             wrist_ft=wrist_ft,
+            gripper_width=gripper_width,
             peg_pose=peg_pose,
             hole_poses=hole_poses,
             target_hole_index=self._target_hole_index,

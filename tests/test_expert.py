@@ -51,6 +51,7 @@ def _make_observation(
         joint_velocities=np.zeros(7),
         ee_pose=np.concatenate([body_position, peg_quat]),
         wrist_ft=np.zeros(6) if wrist_ft is None else wrist_ft,
+        gripper_width=0.08,
         peg_pose=np.concatenate([body_position, peg_quat]),
         hole_poses=np.concatenate([hole_position, _HOLE_QUAT]).reshape(1, 7),
         target_hole_index=0,

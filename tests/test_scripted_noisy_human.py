@@ -33,6 +33,7 @@ def _make_observation() -> Observation:
         joint_velocities=np.zeros(7),
         ee_pose=np.array([0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0]),
         wrist_ft=np.zeros(6),
+        gripper_width=0.08,
         peg_pose=np.zeros(7),
         hole_poses=np.zeros((1, 7)),
         target_hole_index=0,
