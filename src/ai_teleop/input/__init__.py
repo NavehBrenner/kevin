@@ -9,3 +9,7 @@ Three concrete implementations share a common interface (defined in `domain`):
 
 To be populated as needed across Milestones 3-5.
 """
+
+from ai_teleop.input.scripted_noisy_human import ScriptedNoisyHuman
+
+__all__ = ["ScriptedNoisyHuman"]
