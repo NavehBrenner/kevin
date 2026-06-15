@@ -23,9 +23,9 @@ coordinates (so `R⁻¹ = Rᵀ` maps the other way). For a unit-quaternion
 EE orientation this is just `data.site_xmat`.
 
 `N = I − J⁺ J` is the null-space projector for the arm joints, with
-`J⁺` the DLS pseudoinverse used by `diff_ik.differential_ik` — the same
-`dls_damping` controls regularisation in both modules so a tuned λ
-behaves consistently.
+`J⁺` the DLS pseudoinverse, computed inline below. `dls_damping`
+controls its regularisation λ so the task and posture terms stay
+consistent.
 
 The function takes cached MuJoCo IDs (TCP site, per-joint qpos/qvel
 addresses) as keyword args — the `Controller` (see `backbone.py`)
@@ -81,8 +81,7 @@ def impedance_torque(
         Cached `qpos` / `qvel` addresses for the seven arm hinge joints.
     dls_damping : float
         Regularisation `λ` for the DLS pseudoinverse used to build the
-        null-space projector `N = I − J⁺ J`. Same role as in
-        `diff_ik.differential_ik`.
+        null-space projector `N = I − J⁺ J`.
     joint_damping : float
         Optional flat joint-space velocity damping `−kd · qdot`. Stabilises
         slow null-space modes the Cartesian D-term can't see. Recommended
