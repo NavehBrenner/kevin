@@ -49,7 +49,7 @@ jobs:
           # (the code-review extension below) doesn't block on the "trust this workspace?"
           # prompt and time out. Safe here because this workflow runs on trusted input
           # (our own PRs). See google-github-actions/run-gemini-cli advisory GHSA-wpqr-6v78-jr5g.
-          GEMINI_TRUST_WORKSPACE: 'true'
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
           GITHUB_TOKEN: '${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}'
           ISSUE_TITLE: '${{ github.event.pull_request.title || github.event.issue.title }}'
           ISSUE_BODY: '${{ github.event.pull_request.body || github.event.issue.body }}'
