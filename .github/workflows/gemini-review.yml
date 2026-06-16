@@ -41,8 +41,11 @@ jobs:
       - name: 'Checkout repository'
         uses: 'actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8' # ratchet:actions/checkout@v6
 
+      - name: 'Pre-install code-review extension (non-interactive)'
+        run: gemini extensions install https://github.com/gemini-cli-extensions/code-review --consent
+
       - name: 'Run Gemini pull request review'
-        uses: 'google-github-actions/run-gemini-cli@v1' # ratchet:exclude
+        uses: 'google-github-actions/run-gemini-cli@v0' # ratchet:exclude
         id: 'gemini_pr_review'
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
@@ -110,8 +113,4 @@ jobs:
                 ]
               }
             }
-          extensions: |
-            [
-              "https://github.com/gemini-cli-extensions/code-review"
-            ]
           prompt: '/pr-code-review'
