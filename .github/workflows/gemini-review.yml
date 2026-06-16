@@ -74,6 +74,9 @@ jobs:
           workflow_name: 'gemini-review'
           # Explicitly set the PR number to handle `issue_comment` triggers (which GitHub treats as issues, not PRs)
           github_pr_number: '${{ github.event.pull_request.number }}'
+          # NOTE: the "mcpServers" (github via docker) block is temporarily removed to
+          # diagnose a CI hang. If the run now completes instead of timing out, the Docker
+          # github MCP server was the cause — restore the block and fix its auth/startup.
           settings: |-
             {
               "model": {
@@ -83,27 +86,6 @@ jobs:
                 "enabled": true,
                 "target": "local",
                 "outfile": ".gemini/telemetry.log"
-              },
-              "mcpServers": {
-                "github": {
-                  "command": "docker",
-                  "args": [
-                    "run",
-                    "-i",
-                    "--rm",
-                    "-e",
-                    "GITHUB_PERSONAL_ACCESS_TOKEN",
-                    "ghcr.io/github/github-mcp-server:v0.27.0"
-                  ],
-                  "includeTools": [
-                    "add_comment_to_pending_review",
-                    "pull_request_read",
-                    "pull_request_review_write"
-                  ],
-                  "env": {
-                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-                  }
-                }
               },
               "tools": {
                 "core": [
