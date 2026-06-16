@@ -17,7 +17,30 @@ Course project for *Workshop in Autonomous Systems Simulation* (OpenU course 209
 
 ## Quick start
 
-Not yet — implementation begins at Milestone 1. Once M1 lands, this section will document setup and the smoke test.
+Requires [uv](https://github.com/astral-sh/uv) (Python 3.12). **After cloning, run
+the one-time setup** from this directory:
+
+```bash
+./scripts/setup.sh
+```
+
+That creates the `.venv`, installs the package + dev tooling, enables the git
+hooks, and puts a `kvn` launcher on your PATH. Then:
+
+```bash
+kvn                       # list every command
+kvn smoke --no-viewer     # M1 scene smoke test, headless
+kvn sim --seed 7          # generate and view a procedural wall
+kvn check                 # the full lint + typecheck + test gate
+```
+
+`kvn` (pronounced *"Kevin"*) is the project's command-line front door — one entry
+point for the whole workflow instead of `uv run python scripts/...`. `kvn` (or
+`kvn --help`) lists commands; `kvn <command> --help` shows a command's flags. Full
+reference: **[docs/cli.md](./docs/cli.md)**.
+
+> Don't want the PATH launcher? Everything also works as `uv run kvn <command>`
+> straight after `uv pip install -e ".[dev]"`.
 
 ## License
 
