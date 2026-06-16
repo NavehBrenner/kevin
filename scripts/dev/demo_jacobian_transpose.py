@@ -47,7 +47,7 @@ def main() -> int:
     def tau_for(wrench, label):
         tau = J.T @ wrench
         print(f"\n[{label}]  F = {wrench[:3].round(3)} N,  M = {wrench[3:].round(3)} N·m")
-        print("    " + "  ".join(f"j{i+1}:{tau[i]:+7.4f}" for i in range(7)))
+        print("    " + "  ".join(f"j{i + 1}:{tau[i]:+7.4f}" for i in range(7)))
 
     print("tau = J^T @ F   (joint torques, N·m, that realise an EE wrench F)")
     # 1) Peg weight: a downward (world -z) force at the gripper.

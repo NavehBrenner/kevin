@@ -46,6 +46,12 @@ vision-input = [
     "opencv-python>=4.9",
     "mediapipe>=0.10",
 ]
+# Visualisation / recording for dev scripts (MP4 + GIF episode captures).
+# Not imported by the sim runtime; only the scripts/dev recorders use it.
+viz = [
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+]
 # Offline scene generation — parametric wall/hole CAD → convex-decomposed MJCF.
 # Heavy CAD/decomposition deps; never imported by the sim runtime (assets are
 # generated offline and cached). See src/ai_teleop/sim/scenegen/.
@@ -83,6 +89,9 @@ target-version = "py310"
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 ignore = ["E501"] # line length is handled by formatter
 
+[tool.ruff.lint.isort]
+known-first-party = ["ai_teleop"]
+
 [tool.mypy]
 python_version = "3.10"
 files = ["src"]
@@ -99,8 +108,11 @@ addopts = "-ra"
 # mypy/pytest go through `python -m` because this box's relocated .venv has stale
 # console-script shebangs (ruff is a standalone binary, so it's called directly).
 [tool.poe.tasks]
-fmt = "ruff format src tests scripts"
-lint = "ruff check src tests"
+# Organize/strip imports (ruff check --fix, incl. the I rule) then format.
+# `;` not `&&` so formatting still runs if check leaves an unfixable lint;
+# the `lint` task and CI are the real gate.
+fmt = { shell = "ruff check --fix src tests scripts; ruff format src tests scripts" }
+lint = "ruff check --fix src tests scripts"
 typecheck = "python -m mypy"
 test = "python -m pytest -q"
 check = ["lint", "typecheck", "test"]          # the full gate, same as CI

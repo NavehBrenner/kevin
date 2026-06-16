@@ -32,6 +32,8 @@ import numpy as np
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from run_episode import run_episode  # noqa: E402
+
 from ai_teleop.common.observation import Observation  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data import EpisodeRecorder, TerminalReason  # noqa: E402
@@ -39,8 +41,6 @@ from ai_teleop.domain import Delta  # noqa: E402
 from ai_teleop.expert import Expert  # noqa: E402
 from ai_teleop.input import ScriptedNoisyHuman  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
-
-from run_episode import run_episode  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENE_PATH = REPO_ROOT / "assets" / "mjcf" / "full_scene.xml"
@@ -50,6 +50,36 @@ DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
 DEFAULT_LATERAL_TOLERANCE = 0.006  # max lateral error for a "seated" peg (m)
 DEFAULT_FORCE_CAP = 50.0  # wrist force magnitude that aborts the episode (N)
+DEFAULT_MAX_DPOS = 0.025  # controller command clamp (m/step); approach-speed knob
+DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
+
+
+def _episode_fingerprint(
+    *, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, scene_path: str
+) -> str:
+    """Stable hash of every input that determines an episode's trajectory.
+
+    Two runs with the same fingerprint produce byte-identical episodes, so a
+    cached file carrying this fingerprint can be reused instead of re-simulated.
+    """
+    import hashlib
+
+    payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{Path(scene_path).name}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _cached_matches(path: Path, fingerprint: str) -> bool:
+    """True if ``path`` is a readable episode whose stored fingerprint matches."""
+    import json
+
+    if not path.exists():
+        return False
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            metadata = json.loads(str(data["metadata"]))
+    except (OSError, ValueError, KeyError):
+        return False  # unreadable / truncated → regenerate
+    return bool(metadata.get("fingerprint") == fingerprint)
 
 
 def _peg_tip_and_axis(peg_pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -138,25 +168,46 @@ def generate_dataset(
     success_depth: float = DEFAULT_SUCCESS_DEPTH,
     lateral_tolerance: float = DEFAULT_LATERAL_TOLERANCE,
     force_cap: float = DEFAULT_FORCE_CAP,
+    max_dpos: float = DEFAULT_MAX_DPOS,
+    expert_d_far: float = DEFAULT_EXPERT_D_FAR,
     scene_path: str | Path = SCENE_PATH,
+    cache: bool = True,
     progress: bool = False,
 ) -> list[Path]:
     """Generate ``n_episodes`` trajectory files; return the written paths.
 
     Keeps every episode (success or failure). Each is reproducible from
-    ``(seed, episode_index)``: the scene randomization and the noisy human both
-    derive from it.
+    ``(seed, episode_index)`` plus the controller/expert config: the scene
+    randomization and the noisy human both derive from the seed. When
+    ``cache`` is set, an existing episode file whose stored ``fingerprint``
+    matches the current config is reused instead of being re-simulated.
     """
     out_dir = Path(out_dir)
     environment = SimEnv(str(scene_path), render_mode="headless", seed=seed, randomize=True)
-    controller = Controller(environment)
-    expert = Expert()
+    controller = Controller(environment, max_dpos_per_step=max_dpos)
+    expert = Expert(d_far=expert_d_far)
     home_quaternion = controller.home_pose[3:]
+    fingerprint = _episode_fingerprint(
+        seed=seed,
+        max_steps=max_steps,
+        max_dpos=max_dpos,
+        expert_d_far=expert_d_far,
+        scene_path=str(scene_path),
+    )
 
     written: list[Path] = []
     for episode_index in range(n_episodes):
+        path = out_dir / f"episode_{episode_index:05d}.npz"
+        if cache and _cached_matches(path, fingerprint):
+            written.append(path)
+            if progress:
+                print(f"  episode {episode_index:5d} │ ✓ loaded from cache")
+            continue
         # Reset once to read the randomized target + tare the F/T bias, then let
         # run_episode reset to the identical state (deterministic per index).
+        # Clear the controller's lock too: it persists across episodes, so a
+        # prior force-cap → HOLD trip would otherwise freeze every later episode.
+        controller.reset()
         observation = environment.reset(episode_index)
         target_position = observation.hole_poses[observation.target_hole_index][:3].copy()
         ft_bias = observation.wrist_ft.copy()
@@ -182,12 +233,14 @@ def generate_dataset(
             step_callback=logger,
         )
 
-        path = out_dir / f"episode_{episode_index:05d}.npz"
         logger.recorder.save(
             path,
             metadata={
                 "master_seed": seed,
                 "episode_index": episode_index,
+                "fingerprint": fingerprint,
+                "max_dpos": max_dpos,
+                "expert_d_far": expert_d_far,
                 "target_hole_index": int(observation.target_hole_index),
                 "terminal_reason": logger.terminal_reason.value,
                 "episode_success": logger.terminal_reason is TerminalReason.SUCCESS,
@@ -199,8 +252,8 @@ def generate_dataset(
         written.append(path)
         if progress:
             print(
-                f"  episode {episode_index:5d}: {len(logger.recorder):5d} steps  "
-                f"{logger.terminal_reason.value}"
+                f"  episode {episode_index:5d} │ generated · {len(logger.recorder):5d} steps "
+                f"· {logger.terminal_reason.value}"
             )
     return written
 
@@ -208,9 +261,31 @@ def generate_dataset(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episodes", type=int, default=200, help="Number of episodes to run.")
-    parser.add_argument("--out", type=str, required=True, help="Output directory for NPZ files.")
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="data/runs/dev",
+        help="Output directory for NPZ files (default: data/runs/dev).",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Master seed.")
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Per-episode cap.")
+    parser.add_argument(
+        "--max-dpos",
+        type=float,
+        default=DEFAULT_MAX_DPOS,
+        help="Controller command clamp in m/step (approach-speed / strictness knob).",
+    )
+    parser.add_argument(
+        "--expert-d-far",
+        type=float,
+        default=DEFAULT_EXPERT_D_FAR,
+        help="Distance (m) at which the expert starts engaging.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate even if a cached episode with a matching fingerprint exists.",
+    )
     args = parser.parse_args()
 
     if not SCENE_PATH.exists():
@@ -220,7 +295,14 @@ def main() -> int:
     print(f"Generating {args.episodes} episodes → {args.out}  (seed={args.seed})")
     start = time.time()
     written = generate_dataset(
-        args.out, args.episodes, seed=args.seed, max_steps=args.max_steps, progress=True
+        args.out,
+        args.episodes,
+        seed=args.seed,
+        max_steps=args.max_steps,
+        max_dpos=args.max_dpos,
+        expert_d_far=args.expert_d_far,
+        cache=not args.force,
+        progress=True,
     )
     elapsed = time.time() - start
     print(f"Wrote {len(written)} episode files in {elapsed:.1f}s → {args.out}")

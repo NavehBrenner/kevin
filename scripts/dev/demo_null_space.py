@@ -56,7 +56,7 @@ def main() -> int:
 
     # --- Null-space direction: smallest singular value's right vector ---
     U, S, Vt = np.linalg.svd(J)
-    n = Vt[-1]                       # (7,) — J @ n should be ~0
+    n = Vt[-1]  # (7,) — J @ n should be ~0
     n = n / np.linalg.norm(n)
     print(f"singular values of J: {S.round(4)}")
     print(f"||J @ n||  (should be ~0): {np.linalg.norm(J @ n):.2e}")
@@ -68,15 +68,15 @@ def main() -> int:
         d_tcp = np.linalg.norm(tcp1 - tcp0)
         d_elbow = np.linalg.norm(elbow1 - elbow0)
         print(f"\n[{label}]  joint nudge ||dq|| = {np.linalg.norm(dq):.4f} rad")
-        print(f"    TCP   moved: {d_tcp*1000:8.3f} mm")
-        print(f"    elbow moved: {d_elbow*1000:8.3f} mm")
+        print(f"    TCP   moved: {d_tcp * 1000:8.3f} mm")
+        print(f"    elbow moved: {d_elbow * 1000:8.3f} mm")
 
     # 1) Nudge along the null space.
     apply_and_measure(EPS * n, "NULL-SPACE nudge (elbow swing)")
 
     # 2) Nudge by the same magnitude along a TASK direction (+x at TCP).
     e = np.array([1.0, 0, 0, 0, 0, 0])  # want +x translation
-    JJT = J @ J.T + (0.05 ** 2) * np.eye(6)
+    JJT = J @ J.T + (0.05**2) * np.eye(6)
     j_pinv = J.T @ np.linalg.solve(JJT, np.eye(6))
     dq_task = j_pinv @ e
     dq_task = EPS * dq_task / np.linalg.norm(dq_task)  # same ||dq|| as the null nudge

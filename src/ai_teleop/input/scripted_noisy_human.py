@@ -170,3 +170,30 @@ class ScriptedNoisyHuman:
             position = position + self._rng.normal(0.0, self._tremor_std, size=3)
 
         return Command(position.copy(), self._held_quaternion.copy())
+
+
+def bore_aligned_grasp(home_quaternion: np.ndarray, bore_axis: np.ndarray) -> np.ndarray:
+    """Grasp orientation that points the peg long axis along ``bore_axis``.
+
+    The home (upright) grasp points the peg long axis along world +x — the bore
+    direction of an *upright* wall. For a tilted wall the bore tilts, so we
+    pre-rotate the home grasp by the shortest arc from +x to ``bore_axis``. This
+    lets the scripted human issue a *coarse* bore-aimed orientation (its bias and
+    drift are layered on top), leaving only a small residual for the expert —
+    the coarse-human / fine-assist division of labour. Roll about the bore is
+    irrelevant for a round peg, so the minimal-arc choice is fine.
+    """
+    bore = np.asarray(bore_axis, dtype=np.float64)
+    bore = bore / np.linalg.norm(bore)
+    x_axis = np.array([1.0, 0.0, 0.0])
+    rotation_axis = np.cross(x_axis, bore)
+    sin_angle = float(np.linalg.norm(rotation_axis))
+    if sin_angle < 1e-9:
+        return home_quaternion.copy()  # already aligned with +x
+    angle = float(np.arccos(np.clip(x_axis @ bore, -1.0, 1.0)))
+    rotation_quat = np.zeros(4)
+    mujoco.mju_axisAngle2Quat(rotation_quat, rotation_axis / sin_angle, angle)
+    grasp = np.zeros(4)
+    mujoco.mju_mulQuat(grasp, rotation_quat, home_quaternion)
+    mujoco.mju_normalize4(grasp)
+    return grasp

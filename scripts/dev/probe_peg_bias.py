@@ -59,7 +59,9 @@ def main() -> int:
             f"{passive[i]:>12.4f} {deficit[i]:>12.4f}"
         )
 
-    print(f"\n|deficit| = {np.linalg.norm(deficit):.4f} N·m  (this torque is what the arm is sagging under)")
+    print(
+        f"\n|deficit| = {np.linalg.norm(deficit):.4f} N·m  (this torque is what the arm is sagging under)"
+    )
     environment.close()
     return 0
 

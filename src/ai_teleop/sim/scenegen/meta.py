@@ -20,6 +20,7 @@ def spec_to_dict(spec: WallSpec) -> dict:
         "seed": spec.seed,
         "seed_was_given": spec.seed_was_given,
         "wall_size": list(spec.wall_size),
+        "orientation": list(spec.orientation),
         "sampling_ranges": asdict(spec.ranges),
         "target_hole": _hole_to_dict(spec.holes[0]),
         "holes": [_hole_to_dict(hole) for hole in spec.holes],

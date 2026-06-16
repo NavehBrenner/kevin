@@ -15,11 +15,7 @@ plate = cq.Workplane("YZ").box(width, height, thickness)
 # Drill one hole offset to +Y, +Z. If the face-workplane axes match world,
 # the resulting hole centre should sit at world (Y=+120, Z=+80).
 target_y, target_z = 120.0, 80.0
-drilled = (
-    plate.faces("<X").workplane()
-    .pushPoints([(target_y, target_z)])
-    .hole(10.0)
-)
+drilled = plate.faces("<X").workplane().pushPoints([(target_y, target_z)]).hole(10.0)
 
 # Find the centre of the cylindrical hole face to read back its world coords.
 cyl_faces = drilled.faces("%CYLINDER").vals()
@@ -36,4 +32,6 @@ print("chamfer on <X face: OK")
 verts, tris = chamfered.val().tessellate(tolerance=0.2)
 print(f"tessellation: {len(verts)} verts, {len(tris)} tris")
 bb = chamfered.val().BoundingBox()
-print(f"bbox (mm): x[{bb.xmin:.1f},{bb.xmax:.1f}] y[{bb.ymin:.1f},{bb.ymax:.1f}] z[{bb.zmin:.1f},{bb.zmax:.1f}]")
+print(
+    f"bbox (mm): x[{bb.xmin:.1f},{bb.xmax:.1f}] y[{bb.ymin:.1f},{bb.ymax:.1f}] z[{bb.zmin:.1f},{bb.zmax:.1f}]"
+)

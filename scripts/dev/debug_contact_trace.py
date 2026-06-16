@@ -20,9 +20,7 @@ from ai_teleop.common.command import Command  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
-SCENE = (
-    Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
-)
+SCENE = Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
 FLAT_WALL = np.array([0.79, 0.0, 0.55])
 GRAVITY_BASELINE = 7.75  # N — distal-mass weight at rest
 

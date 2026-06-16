@@ -68,6 +68,11 @@ class SamplingRanges:
     edge_margin: float = 0.015
     # Minimum gap (m) between the bounding circles of any two holes.
     min_hole_gap: float = 0.010
+    # Wall tilt per axis (radians). Each of the 3 body-local axes gets an
+    # independent angle drawn as |Normal(0, std)| * random_sign, clipped to
+    # +-max — so small tilts dominate and large ones are rare / capped.
+    wall_rotation_std: float = 0.1745  # ~10 deg
+    wall_rotation_max: float = 0.3491  # ~20 deg
 
 
 DEFAULT_RANGES = SamplingRanges()
@@ -128,6 +133,8 @@ class WallSpec:
     wall_size: tuple[float, float, float]
     holes: list[HoleSpec]  # holes[0] is always the target
     ranges: SamplingRanges = field(default_factory=lambda: DEFAULT_RANGES)
+    # Body tilt (rx, ry, rz) in radians about the wall-local axes; (0,0,0) = upright.
+    orientation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     seed_was_given: bool = True
 
     @property
@@ -145,6 +152,7 @@ class WallScene:
     visual_mesh_path: str
     collision_mesh_paths: list[str]
     header_path: str
+    from_cache: bool = False
 
 
 def resolve_seed(seed: int | None) -> tuple[int, bool]:

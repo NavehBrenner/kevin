@@ -42,9 +42,7 @@ from ai_teleop.control import Controller, LockStatus  # noqa: E402
 from ai_teleop.domain import NoAssist, apply_delta  # noqa: E402
 from ai_teleop.input import ScriptedNoisyHuman  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCENE_PATH = REPO_ROOT / "assets" / "mjcf" / "full_scene.xml"
+from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
 
 # Sim runs at 500 Hz (dt=2 ms in the MJCF). One control tick == one sim step.
 SIM_DT = 0.002
@@ -135,20 +133,40 @@ def main() -> int:
         default=DEFAULT_MAX_STEPS,
         help="Episode step budget (one step == one 2 ms sim tick).",
     )
+    p.add_argument(
+        "--generated-wall",
+        action="store_true",
+        help="Run on a freshly generated procedural wall instead of the static scene.",
+    )
+    p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
+    p.add_argument(
+        "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
+    )
+    p.add_argument(
+        "--max-dpos",
+        type=float,
+        default=0.025,
+        help="Controller command clamp in m/step (approach-speed / strictness knob).",
+    )
     args = p.parse_args()
 
-    if not SCENE_PATH.exists():
-        print(f"FATAL: scene file not found at {SCENE_PATH}", file=sys.stderr)
+    scene_path = resolve_scene_path(
+        generated=args.generated_wall,
+        wall_seed=args.wall_seed,
+        distractors=args.distractors,
+    )
+    if not scene_path.exists():
+        print(f"FATAL: scene file not found at {scene_path}", file=sys.stderr)
         return 2
 
     render_mode = "headless" if args.headless else "viewer"
-    print(f"Loading scene ({render_mode}): {SCENE_PATH}")
-    env = SimEnv(str(SCENE_PATH), render_mode=render_mode, seed=args.seed)
+    print(f"Loading scene ({render_mode}): {scene_path}")
+    env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
     obs = env.reset()
     if not args.headless:
         env.launch_viewer()
 
-    controller = Controller(env)
+    controller = Controller(env, max_dpos_per_step=args.max_dpos)
 
     # Aim the scripted human at the active trial's hole *position*, but keep the
     # home grasp orientation rather than the hole-site frame: M3 is plumbing, and

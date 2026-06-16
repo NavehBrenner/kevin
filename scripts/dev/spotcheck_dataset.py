@@ -1,7 +1,9 @@
 """Spot-check a generated episode: privileged ground truth lines up with sensors."""
 
 from pathlib import Path
+
 import numpy as np
+
 from ai_teleop.data import load_episode
 
 succ = Path("/tmp/m4_smoke/episode_00001.npz")  # a success

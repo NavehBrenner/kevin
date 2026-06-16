@@ -91,7 +91,7 @@ class Expert:
         *,
         peg_half_length: float = 0.030,
         d_near: float = 0.01,
-        d_far: float = 0.08,
+        d_far: float = 0.10,
         epsilon_lateral: float = 0.003,
         epsilon_angular: float = float(np.deg2rad(8.0)),
         advance_per_step: float = 0.01,

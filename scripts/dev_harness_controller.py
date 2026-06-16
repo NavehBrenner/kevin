@@ -69,7 +69,7 @@ COMPLIANCE_INTRUSION = 0.05
 FORCE_TRIP_INTRUSION = 0.10
 
 # Acceptance thresholds (Step 7 of the spec).
-WAYPOINT_POS_TOL = 5e-3                # 5 mm steady-state error after 1 s hold
+WAYPOINT_POS_TOL = 5e-3  # 5 mm steady-state error after 1 s hold
 
 
 def _arr_to_str(a: np.ndarray, n: int = 3) -> str:
@@ -120,12 +120,20 @@ def run_phase(
             prev_state = status.state
 
         if csv_writer is not None:
-            csv_writer.writerow([
-                f"{t:.4f}", label, status.state.value,
-                f"{obs.ee_pose[0]:.5f}", f"{obs.ee_pose[1]:.5f}", f"{obs.ee_pose[2]:.5f}",
-                f"{obs.wrist_ft[0]:.4f}", f"{obs.wrist_ft[1]:.4f}", f"{obs.wrist_ft[2]:.4f}",
-                f"{force_mag:.4f}",
-            ])
+            csv_writer.writerow(
+                [
+                    f"{t:.4f}",
+                    label,
+                    status.state.value,
+                    f"{obs.ee_pose[0]:.5f}",
+                    f"{obs.ee_pose[1]:.5f}",
+                    f"{obs.ee_pose[2]:.5f}",
+                    f"{obs.wrist_ft[0]:.4f}",
+                    f"{obs.wrist_ft[1]:.4f}",
+                    f"{obs.wrist_ft[2]:.4f}",
+                    f"{force_mag:.4f}",
+                ]
+            )
 
         if viewer_real_time:
             # MuJoCo's default 2 ms timestep is way faster than wall time; sleep
@@ -144,10 +152,12 @@ def run_phase(
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--headless", action="store_true",
-                   help="Skip the viewer; run assertions and emit CSV.")
-    p.add_argument("--force-cap", type=float, default=30.0,
-                   help="Force-cap watchdog threshold in newtons.")
+    p.add_argument(
+        "--headless", action="store_true", help="Skip the viewer; run assertions and emit CSV."
+    )
+    p.add_argument(
+        "--force-cap", type=float, default=30.0, help="Force-cap watchdog threshold in newtons."
+    )
     args = p.parse_args()
 
     if not SCENE_PATH.exists():
@@ -174,13 +184,22 @@ def main() -> int:
     csv_writer = None
     if args.headless:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        csv_file = open(CSV_PATH, "w", newline="")
+        csv_file = open(CSV_PATH, "w", newline="")  # noqa: SIM115 (streamed across the loop, closed below)
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow([
-            "sim_time", "phase", "lock_state",
-            "ee_x", "ee_y", "ee_z",
-            "Fx", "Fy", "Fz", "F_mag",
-        ])
+        csv_writer.writerow(
+            [
+                "sim_time",
+                "phase",
+                "lock_state",
+                "ee_x",
+                "ee_y",
+                "ee_z",
+                "Fx",
+                "Fy",
+                "Fz",
+                "F_mag",
+            ]
+        )
 
     summaries: list[dict] = []
 
@@ -189,15 +208,16 @@ def main() -> int:
     # ------------------------------------------------------------------
     print("\n=== Phase 1: Waypoint square ===")
     waypoints = [
-        home_pos + np.array([0.0,  0.05,  0.05]),
-        home_pos + np.array([0.0,  0.05, -0.05]),
+        home_pos + np.array([0.0, 0.05, 0.05]),
+        home_pos + np.array([0.0, 0.05, -0.05]),
         home_pos + np.array([0.0, -0.05, -0.05]),
-        home_pos + np.array([0.0, -0.05,  0.05]),
+        home_pos + np.array([0.0, -0.05, 0.05]),
     ]
     for i, wp in enumerate(waypoints):
         print(f"  waypoint {i}: target = {_arr_to_str(wp)}")
         summary = run_phase(
-            env, controller,
+            env,
+            controller,
             label=f"waypoint_{i}",
             duration_s=WAYPOINT_HOLD_S,
             target_pos_fn=lambda t, wp=wp: wp,
@@ -205,8 +225,10 @@ def main() -> int:
             csv_writer=csv_writer,
             viewer_real_time=not args.headless,
         )
-        print(f"    final pos err = {summary['last_pos_err']*1000:.2f} mm  "
-              f"peak |F| = {summary['peak_force']:.2f} N")
+        print(
+            f"    final pos err = {summary['last_pos_err'] * 1000:.2f} mm  "
+            f"peak |F| = {summary['peak_force']:.2f} N"
+        )
         summaries.append(summary)
 
     # ------------------------------------------------------------------
@@ -217,7 +239,8 @@ def main() -> int:
     compliance_target = FLAT_WALL_POS + np.array([COMPLIANCE_INTRUSION, 0.0, 0.0])
     print(f"  target = {_arr_to_str(compliance_target)}")
     summary = run_phase(
-        env, controller,
+        env,
+        controller,
         label="compliance",
         duration_s=COMPLIANCE_S,
         target_pos_fn=lambda t: compliance_target,
@@ -225,8 +248,9 @@ def main() -> int:
         csv_writer=csv_writer,
         viewer_real_time=not args.headless,
     )
-    print(f"  peak |F| = {summary['peak_force']:.2f} N  "
-          f"final state = {summary['final_state'].value}")
+    print(
+        f"  peak |F| = {summary['peak_force']:.2f} N  final state = {summary['final_state'].value}"
+    )
     summaries.append(summary)
 
     # ------------------------------------------------------------------
@@ -247,10 +271,13 @@ def main() -> int:
     saved_D = controller.damping_tcp.copy()
     controller.stiffness_tcp = np.array([2000.0, 2000.0, 2000.0, 50.0, 50.0, 50.0])
     controller.damping_tcp = np.array([180.0, 180.0, 180.0, 12.0, 12.0, 12.0])
-    print(f"  target = {_arr_to_str(force_trip_target)}  "
-          f"K_xyz=2000 K_rot=50 (vs nominal K_xyz≈400, K_rot=3)")
+    print(
+        f"  target = {_arr_to_str(force_trip_target)}  "
+        f"K_xyz=2000 K_rot=50 (vs nominal K_xyz≈400, K_rot=3)"
+    )
     summary = run_phase(
-        env, controller,
+        env,
+        controller,
         label="force_trip",
         duration_s=FORCE_TRIP_S,
         target_pos_fn=lambda t: force_trip_target,
@@ -260,9 +287,11 @@ def main() -> int:
     )
     controller.stiffness_tcp = saved_K
     controller.damping_tcp = saved_D
-    print(f"  peak |F| = {summary['peak_force']:.2f} N  "
-          f"final state = {summary['final_state'].value}  "
-          f"transitions = {len(summary['lock_changes'])}")
+    print(
+        f"  peak |F| = {summary['peak_force']:.2f} N  "
+        f"final state = {summary['final_state'].value}  "
+        f"transitions = {len(summary['lock_changes'])}"
+    )
     for t, state, reason in summary["lock_changes"]:
         print(f"    t={t:.3f} -> {state}  ({reason})")
     summaries.append(summary)
@@ -280,7 +309,8 @@ def main() -> int:
     controller.request_park_lock()
     print(f"  after request_park_lock: state = {controller.status.state.value}")
     summary = run_phase(
-        env, controller,
+        env,
+        controller,
         label="park",
         duration_s=PARK_TIMEOUT_S,
         target_pos_fn=lambda t: home_pos,
@@ -292,11 +322,14 @@ def main() -> int:
     final_pos_err = float(np.linalg.norm(obs.ee_pose[:3] - home_pos))
     rot_ax = np.zeros(3)
     import mujoco as _mj  # noqa: PLC0415
+
     _mj.mju_subQuat(rot_ax, home_quat, obs.ee_pose[3:])
     final_rot_err_deg = float(np.rad2deg(np.linalg.norm(rot_ax)))
-    print(f"  final state = {summary['final_state'].value}  "
-          f"pos err from home = {final_pos_err*1000:.2f} mm  "
-          f"rot err = {final_rot_err_deg:.2f}°")
+    print(
+        f"  final state = {summary['final_state'].value}  "
+        f"pos err from home = {final_pos_err * 1000:.2f} mm  "
+        f"rot err = {final_rot_err_deg:.2f}°"
+    )
     summaries.append(summary)
 
     if csv_file is not None:
@@ -313,8 +346,8 @@ def main() -> int:
         for s in summaries[:4]:
             if s["last_pos_err"] > WAYPOINT_POS_TOL:
                 failures.append(
-                    f"{s['label']}: pos err {s['last_pos_err']*1000:.2f} mm > "
-                    f"{WAYPOINT_POS_TOL*1000:.1f} mm"
+                    f"{s['label']}: pos err {s['last_pos_err'] * 1000:.2f} mm > "
+                    f"{WAYPOINT_POS_TOL * 1000:.1f} mm"
                 )
 
         # Compliance: peak F must stay below the force cap.
@@ -343,7 +376,7 @@ def main() -> int:
             )
         if final_pos_err > 10 * WAYPOINT_POS_TOL:  # generous: 5 cm
             failures.append(
-                f"park phase: pos err from home {final_pos_err*1000:.2f} mm too large"
+                f"park phase: pos err from home {final_pos_err * 1000:.2f} mm too large"
             )
 
         if not CSV_PATH.exists():

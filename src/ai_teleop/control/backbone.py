@@ -3,7 +3,7 @@
 Pipeline per control tick (`compute(obs, command)`):
 
 1. Clamp the incoming command relative to the current EE pose
-   (≤ 2 cm position, ≤ 10° rotation, ≤ 5 N grip-force step).
+   (≤ 2.5 cm position, ≤ 10° rotation, ≤ 5 N grip-force step).
 2. Hand the clamped target to the lock state machine, which may
    override it with a hold pose or the home pose, and may trip the
    force-cap watchdog on the way through.
@@ -89,7 +89,7 @@ _DEFAULT_DLS_DAMPING = 0.05
 # hold further but stalls long-distance approach.
 _DEFAULT_JOINT_DAMPING = 4.0
 
-_DEFAULT_MAX_DPOS = 0.02  # m / control step
+_DEFAULT_MAX_DPOS = 0.025  # m / control step (approach-speed / strictness knob)
 _DEFAULT_MAX_DROT = np.deg2rad(10.0)  # rad / control step
 _DEFAULT_MAX_DGRIP_FORCE = 5.0  # N  / control step
 
@@ -212,6 +212,17 @@ class Controller:
         self._lock.request_park_lock(float(self._data.time))
 
     def release_lock(self) -> None:
+        self._lock.release_lock(float(self._data.time))
+
+    def reset(self) -> None:
+        """Clear transient control state for a new episode.
+
+        Releases any latched lock back to ACTIVE. The impedance law itself is
+        stateless, so the lock is the only thing that carries over — and it
+        MUST be cleared when a `Controller` is reused across episodes (e.g. the
+        data-gen loop), or one episode's force-cap → HOLD trip silently freezes
+        every episode after it.
+        """
         self._lock.release_lock(float(self._data.time))
 
     @property

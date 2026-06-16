@@ -23,9 +23,7 @@ from ai_teleop.common.command import Command  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
-SCENE = (
-    Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
-)
+SCENE = Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
 
 
 def main() -> int:
@@ -37,7 +35,7 @@ def main() -> int:
     cmd = Command(target_position=target, target_quaternion=ctrl.home_pose[3:].copy())
     print(
         f"Approach from home {ctrl.home_pose[:3].round(3).tolist()} "
-        f"to {target.round(3).tolist()} (distance {np.linalg.norm(target - ctrl.home_pose[:3])*100:.1f} cm)"
+        f"to {target.round(3).tolist()} (distance {np.linalg.norm(target - ctrl.home_pose[:3]) * 100:.1f} cm)"
     )
     for step in range(4000):  # 8 s
         obs = env.get_observation()
@@ -46,7 +44,7 @@ def main() -> int:
         if step % 250 == 249:
             e = (obs.ee_pose[:3] - target) * 1000
             print(
-                f"  t={(step+1)*0.002:5.2f}s  err xyz mm = "
+                f"  t={(step + 1) * 0.002:5.2f}s  err xyz mm = "
                 f"({e[0]:+7.1f}, {e[1]:+7.1f}, {e[2]:+7.1f})  "
                 f"qvel_max={np.abs(obs.joint_velocities).max():.4f}  "
                 f"|F|={np.linalg.norm(obs.wrist_ft[:3]):.2f}"

@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 import mujoco
-import numpy as np
 from PIL import Image
 
 from ai_teleop.sim.scenegen.generate import generate_wall
@@ -46,11 +45,23 @@ def render_wall(out_dir: Path) -> None:
 
 
 CASES = [
-    ("three_clean", dict(seed=11, distractors=2,
-                         true_hole={"pos": (0.0, 0.0), "size": {"diameter": 0.014}, "chamfer": 0.003})),
+    (
+        "three_clean",
+        dict(
+            seed=11,
+            distractors=2,
+            true_hole={"pos": (0.0, 0.0), "size": {"diameter": 0.014}, "chamfer": 0.003},
+        ),
+    ),
     ("dense_random", dict(seed=7)),
-    ("big_chamfer", dict(seed=5, distractors=1,
-                         true_hole={"pos": (0.0, 0.0), "size": {"diameter": 0.012}, "chamfer": 0.006})),
+    (
+        "big_chamfer",
+        dict(
+            seed=5,
+            distractors=1,
+            true_hole={"pos": (0.0, 0.0), "size": {"diameter": 0.012}, "chamfer": 0.006},
+        ),
+    ),
 ]
 
 for name, kwargs in CASES:
@@ -58,6 +69,8 @@ for name, kwargs in CASES:
     t0 = time.perf_counter()
     scene = generate_wall(out_dir=out_dir, **kwargs)
     dt = time.perf_counter() - t0
-    print(f"\n[{name}] holes={len(scene.spec.holes)} parts={len(scene.collision_mesh_paths)} "
-          f"gen={dt*1000:.0f}ms")
+    print(
+        f"\n[{name}] holes={len(scene.spec.holes)} parts={len(scene.collision_mesh_paths)} "
+        f"gen={dt * 1000:.0f}ms"
+    )
     render_wall(out_dir)

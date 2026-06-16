@@ -23,9 +23,7 @@ from ai_teleop.common.command import Command  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
-SCENE = (
-    Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
-)
+SCENE = Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
 
 
 def run_approach(env, ctrl, target, max_s):
@@ -58,8 +56,10 @@ def run_hold(env, ctrl, target, hold_s):
 
 
 def main() -> int:
-    print(f"{'kd_joint':>8}  {'approach t→tgt':>14}  {'approach err':>13}  "
-          f"{'hold drift':>11}  {'hold qvel_max':>13}")
+    print(
+        f"{'kd_joint':>8}  {'approach t→tgt':>14}  {'approach err':>13}  "
+        f"{'hold drift':>11}  {'hold qvel_max':>13}"
+    )
     print("-" * 75)
     for kd in (1.0, 2.0, 4.0, 6.0, 8.0, 12.0):
         # Approach.
@@ -78,13 +78,17 @@ def main() -> int:
         # First settle on the lateral target for 3 s, then start the hold measurement.
         cmd = Command(target_position=lat_target, target_quaternion=ctrl.home_pose[3:].copy())
         for _ in range(1500):
-            obs = env.get_observation(); ctrl.compute(obs, cmd); env.step()
+            obs = env.get_observation()
+            ctrl.compute(obs, cmd)
+            env.step()
         drift, qvel_max, hold_err = run_hold(env, ctrl, lat_target, hold_s=4.0)
         env.close()
 
         ttt = f"{t_to_target:.2f}s" if t_to_target else "—"
-        print(f"{kd:8.1f}  {ttt:>14}  {app_err*1000:8.1f} mm  "
-              f"{drift*1000:6.2f} mm  {qvel_max:11.5f}")
+        print(
+            f"{kd:8.1f}  {ttt:>14}  {app_err * 1000:8.1f} mm  "
+            f"{drift * 1000:6.2f} mm  {qvel_max:11.5f}"
+        )
     return 0
 
 
