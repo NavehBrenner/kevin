@@ -72,3 +72,6 @@ docs/d1-design-review/sequence.png
 
 # Jupyter
 .ipynb_checkpoints/
+
+.gemini/
+gha-creds-*.json
