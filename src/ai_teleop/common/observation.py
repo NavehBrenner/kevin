@@ -24,7 +24,8 @@ class Observation:
     joint_positions: np.ndarray  # shape (7,)    rad,  panda joints 1..7
     joint_velocities: np.ndarray  # shape (7,)    rad/s
     ee_pose: np.ndarray  # shape (7,)    (px,py,pz,qw,qx,qy,qz) of the gripper TCP
-    wrist_ft: np.ndarray  # shape (6,)    (Fx,Fy,Fz,Mx,My,Mz) at the wrist site
+    wrist_ft: np.ndarray  # shape (6,)    (Fx,Fy,Fz,Mx,My,Mz) at the wrist site, RAW
+    gripper_width: float  # metres,  sum of the two finger joint openings
 
     # --- Privileged ground truth (training & evaluation only) ------------
     peg_pose: np.ndarray  # shape (7,)    peg body pose in world

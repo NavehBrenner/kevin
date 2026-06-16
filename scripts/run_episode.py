@@ -68,6 +68,8 @@ def run_episode(
     *,
     max_steps: int,
     render: bool = False,
+    reset_episode_index: int | None = None,
+    step_callback=None,
 ) -> EpisodeResult:
     """Run one episode of the composed M3 loop; return the terminal state.
 
@@ -86,19 +88,31 @@ def run_episode(
         max_steps: episode step budget (one step == one sim/control tick).
         render: when True, sleep one timestep per tick so a `viewer`-mode env
             runs at roughly real time. Leave False for headless/batch.
+        reset_episode_index: forwarded to `environment.reset(...)` for the M4
+            coverage-randomized reset (None ⇒ the deterministic home pose).
+        step_callback: optional `f(step, observation, base_command, delta,
+            command) -> bool`. Called each tick with the *pre-step* observation
+            the assist acted on; this is the M4 data-generation logging hook
+            (the loop stays logging-free itself). Returning a truthy value ends
+            the episode early — how the driver signals a terminal condition.
     """
-    observation = environment.reset()
+    observation = environment.reset(reset_episode_index)
     steps = 0
-    for _ in range(max_steps):
+    for step_index in range(max_steps):
         base_command = input_strategy.get_command(observation)
         delta = assist.get_delta(observation, base_command)
         command = apply_delta(base_command, delta)
+        stop = False
+        if step_callback is not None:
+            stop = bool(step_callback(step_index, observation, base_command, delta, command))
         controller.compute(observation, command)
         environment.step()
         observation = environment.get_observation()
         steps += 1
         if render:
             time.sleep(SIM_DT)
+        if stop:
+            break
 
     return EpisodeResult(
         final_observation=observation,

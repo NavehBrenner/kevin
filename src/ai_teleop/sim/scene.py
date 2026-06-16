@@ -39,6 +39,9 @@ _ARM_JOINT_NAMES = (
 _HOLE_SITE_PATTERN = re.compile(r"^hole_(\d+)$")
 _TCP_SITE_NAME = "tcp_site"
 _PEG_JOINT_NAME = "peg_joint"
+_PEG_BODY_NAME = "peg"
+_HAND_BODY_NAME = "hand"
+_FINGER_JOINT_NAMES = ("finger_joint1", "finger_joint2")
 _WRIST_FORCE_SENSOR = "wrist_force"
 _WRIST_TORQUE_SENSOR = "wrist_torque"
 _WRIST_CAMERA_NAME = "wrist_cam"
@@ -104,6 +107,9 @@ class SimEnv:
         camera_width: int = 128,
         target_hole_index: int = 1,
         seed: int = 0,
+        randomize: bool = False,
+        randomize_target_hole: bool = True,
+        joint_offset_std: float = 0.03,
     ) -> None:
         # MuJoCo resolves mesh paths relative to the cwd, not the XML file —
         # using an absolute path here avoids surprises when tests / scripts
@@ -129,6 +135,15 @@ class SimEnv:
             )
         self._target_hole_index = target_hole_index
 
+        # Per-episode coverage randomization (M4 / LAB-40). Off by default so
+        # existing callers (M1–M3 runner, smoke tests) get the deterministic
+        # home pose unchanged; the data-gen driver flips it on and passes an
+        # episode index to reset().
+        self._randomize = randomize
+        self._randomize_target_hole = randomize_target_hole
+        self._joint_offset_std = joint_offset_std
+        self._n_holes = n_holes
+
         self._arm_joint_qadr = np.array(
             [
                 model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
@@ -146,7 +161,16 @@ class SimEnv:
         self._peg_qadr = model.jnt_qposadr[
             _name2id(model, mujoco.mjtObj.mjOBJ_JOINT, _PEG_JOINT_NAME)
         ]
+        self._finger_qadr = np.array(
+            [
+                model.jnt_qposadr[_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
+                for n in _FINGER_JOINT_NAMES
+            ],
+            dtype=np.int32,
+        )
         self._tcp_site_id = _name2id(model, mujoco.mjtObj.mjOBJ_SITE, _TCP_SITE_NAME)
+        self._hand_body_id = _name2id(model, mujoco.mjtObj.mjOBJ_BODY, _HAND_BODY_NAME)
+        self._peg_body_id = _name2id(model, mujoco.mjtObj.mjOBJ_BODY, _PEG_BODY_NAME)
         self._force_sensor_adr = model.sensor_adr[
             _name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, _WRIST_FORCE_SENSOR)
         ]
@@ -199,18 +223,73 @@ class SimEnv:
     # ------------------------------------------------------------------
     # Episode lifecycle.
     # ------------------------------------------------------------------
-    def reset(self) -> Observation:
+    def reset(self, episode_index: int | None = None) -> Observation:
         """Reset to the home pose: arm at canonical config, peg pre-grasped.
 
         Reads from the `home` keyframe in `full_scene.xml`, which encodes
         both the panda joint angles and the peg's free-joint pose (computed
         offline so the weld constraint is already satisfied at t=0).
+
+        When the env was built with ``randomize=True``, the start state is then
+        perturbed for coverage (M4 / LAB-40): a new target hole and a small
+        per-joint offset, derived deterministically from ``(seed, episode_index)``
+        so the same index always reproduces the same episode. With
+        ``randomize=False`` (the default) the reset is the deterministic home
+        pose exactly as M1–M3 saw it, regardless of ``episode_index``.
         """
         mujoco.mj_resetDataKeyframe(self._model, self._data, self._home_keyframe_id)
         mujoco.mj_forward(self._model, self._data)
+        if self._randomize:
+            seed_sequence = (self._seed,) if episode_index is None else (self._seed, episode_index)
+            self._randomize_start(np.random.default_rng(seed_sequence))
         if self._viewer is not None:
             self._viewer.sync()
         return self.get_observation()
+
+    def _randomize_start(self, rng: np.random.Generator) -> None:
+        """Perturb the home start state while keeping the peg weld satisfied.
+
+        Picks a new target hole, then offsets the arm joints. Because the peg
+        is welded to the hand, we capture the peg pose *in the hand frame* at
+        the (consistent) home state and re-impose it after the joint offset, so
+        the peg's free-joint qpos still matches the weld at t=0 and the
+        integrator sees no transient — the same property the home keyframe was
+        hand-computed for.
+        """
+        model, data = self._model, self._data
+
+        if self._randomize_target_hole and self._n_holes > 1:
+            self._target_hole_index = int(rng.integers(self._n_holes))
+
+        # Capture peg-in-hand transform at the home (weld-consistent) state.
+        hand_position = data.xpos[self._hand_body_id].copy()
+        hand_quaternion = data.xquat[self._hand_body_id].copy()
+        peg_position = data.xpos[self._peg_body_id].copy()
+        peg_quaternion = data.xquat[self._peg_body_id].copy()
+
+        hand_quaternion_inv = np.zeros(4)
+        mujoco.mju_negQuat(hand_quaternion_inv, hand_quaternion)
+        relative_position = np.zeros(3)
+        mujoco.mju_rotVecQuat(relative_position, peg_position - hand_position, hand_quaternion_inv)
+        relative_quaternion = np.zeros(4)
+        mujoco.mju_mulQuat(relative_quaternion, hand_quaternion_inv, peg_quaternion)
+
+        # Offset the arm joints and refresh kinematics.
+        if self._joint_offset_std > 0.0:
+            offsets = rng.normal(0.0, self._joint_offset_std, size=len(self._arm_joint_qadr))
+            data.qpos[self._arm_joint_qadr] += offsets
+            mujoco.mj_forward(model, data)
+
+        # Re-impose the peg pose from the new hand pose so the weld holds at t=0.
+        new_hand_position = data.xpos[self._hand_body_id].copy()
+        new_hand_quaternion = data.xquat[self._hand_body_id].copy()
+        rotated_offset = np.zeros(3)
+        mujoco.mju_rotVecQuat(rotated_offset, relative_position, new_hand_quaternion)
+        new_peg_quaternion = np.zeros(4)
+        mujoco.mju_mulQuat(new_peg_quaternion, new_hand_quaternion, relative_quaternion)
+        data.qpos[self._peg_qadr : self._peg_qadr + 3] = new_hand_position + rotated_offset
+        data.qpos[self._peg_qadr + 3 : self._peg_qadr + 7] = new_peg_quaternion
+        mujoco.mj_forward(model, data)
 
     def step(self) -> None:
         """Advance physics by one timestep.
@@ -242,6 +321,7 @@ class SimEnv:
         ee_pose = np.concatenate([tcp_pos, tcp_quat])
 
         peg_pose = data.qpos[self._peg_qadr : self._peg_qadr + 7].copy()
+        gripper_width = float(data.qpos[self._finger_qadr].sum())
 
         hole_poses = np.zeros((len(self._hole_site_ids), 7))
         for i, site_id in enumerate(self._hole_site_ids):
@@ -260,6 +340,7 @@ class SimEnv:
             joint_velocities=joint_velocities,
             ee_pose=ee_pose,
             wrist_ft=wrist_ft,
+            gripper_width=gripper_width,
             peg_pose=peg_pose,
             hole_poses=hole_poses,
             target_hole_index=self._target_hole_index,
