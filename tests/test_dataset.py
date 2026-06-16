@@ -20,7 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from generate_dataset import generate_dataset  # noqa: E402
+from generate_dataset import generate_dataset, regenerate_from_metadata  # noqa: E402
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "assets" / "mjcf" / "full_scene.xml"
 
@@ -146,6 +146,30 @@ def test_generate_dataset_no_baseline_omits_baseline_stats(tmp_path):
     summary = json.loads((tmp_path / "metadata.json").read_text())
     assert "baseline_no_assist" not in summary
     assert "expert_lift" not in summary
+
+
+@pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
+def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
+    # Only metadata.json is committed; regenerating from it must reproduce the
+    # exact episodes (byte-identical columns) the original config implies.
+    original = generate_dataset(
+        tmp_path / "orig", n_episodes=2, seed=1, max_steps=100, baseline=False
+    )
+    regenerated = regenerate_from_metadata(
+        tmp_path / "orig" / "metadata.json", out_dir=tmp_path / "regen"
+    )
+
+    assert [p.name for p in regenerated] == [p.name for p in original]
+    for orig_path, regen_path in zip(original, regenerated, strict=True):
+        cols_orig, _ = load_episode(orig_path)
+        cols_regen, _ = load_episode(regen_path)
+        for column in COLUMN_SHAPES:
+            np.testing.assert_array_equal(cols_orig[column], cols_regen[column])
+
+    # The regenerated dataset carries the same fingerprint as the source metadata.
+    src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text())
+    regen_meta = json.loads((tmp_path / "regen" / "metadata.json").read_text())
+    assert regen_meta["fingerprint"] == src_meta["fingerprint"]
 
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")

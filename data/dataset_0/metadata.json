@@ -1,0 +1,333 @@
+{
+  "schema_version": "1.0",
+  "master_seed": 0,
+  "n_episodes": 20,
+  "generated_at": "2026-06-16T13:40:35+00:00",
+  "fingerprint": "0cb4240c72f75635",
+  "config": {
+    "max_steps": 6000,
+    "max_dpos": 0.025,
+    "expert_d_far": 0.1,
+    "success_depth": 0.015,
+    "lateral_tolerance": 0.006,
+    "force_cap": 50.0,
+    "scene": "full_scene.xml"
+  },
+  "expert": {
+    "counts": {
+      "timeout": 8,
+      "success": 12
+    },
+    "success_rate": 0.6
+  },
+  "episodes": [
+    {
+      "episode_index": 0,
+      "file": "runs/episode_00000.npz",
+      "n_steps": 6000,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        0
+      ],
+      "human_seed": 2968811710,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 1,
+      "file": "runs/episode_00001.npz",
+      "n_steps": 3300,
+      "target_hole_index": 1,
+      "scene_seed": [
+        0,
+        1
+      ],
+      "human_seed": 3964924996,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "success",
+      "baseline_success": true
+    },
+    {
+      "episode_index": 2,
+      "file": "runs/episode_00002.npz",
+      "n_steps": 3769,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        2
+      ],
+      "human_seed": 3141116543,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 3,
+      "file": "runs/episode_00003.npz",
+      "n_steps": 3227,
+      "target_hole_index": 1,
+      "scene_seed": [
+        0,
+        3
+      ],
+      "human_seed": 2613022947,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "success",
+      "baseline_success": true
+    },
+    {
+      "episode_index": 4,
+      "file": "runs/episode_00004.npz",
+      "n_steps": 3638,
+      "target_hole_index": 1,
+      "scene_seed": [
+        0,
+        4
+      ],
+      "human_seed": 1874364848,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 5,
+      "file": "runs/episode_00005.npz",
+      "n_steps": 3508,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        5
+      ],
+      "human_seed": 161328693,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 6,
+      "file": "runs/episode_00006.npz",
+      "n_steps": 4516,
+      "target_hole_index": 1,
+      "scene_seed": [
+        0,
+        6
+      ],
+      "human_seed": 2617721224,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 7,
+      "file": "runs/episode_00007.npz",
+      "n_steps": 3533,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        7
+      ],
+      "human_seed": 1369798745,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 8,
+      "file": "runs/episode_00008.npz",
+      "n_steps": 3309,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        8
+      ],
+      "human_seed": 3026431988,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "success",
+      "baseline_success": true
+    },
+    {
+      "episode_index": 9,
+      "file": "runs/episode_00009.npz",
+      "n_steps": 6000,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        9
+      ],
+      "human_seed": 2214077229,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 10,
+      "file": "runs/episode_00010.npz",
+      "n_steps": 6000,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        10
+      ],
+      "human_seed": 3587916967,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 11,
+      "file": "runs/episode_00011.npz",
+      "n_steps": 6000,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        11
+      ],
+      "human_seed": 2218153353,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 12,
+      "file": "runs/episode_00012.npz",
+      "n_steps": 3357,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        12
+      ],
+      "human_seed": 3997073654,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "success",
+      "baseline_success": true
+    },
+    {
+      "episode_index": 13,
+      "file": "runs/episode_00013.npz",
+      "n_steps": 3323,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        13
+      ],
+      "human_seed": 2807452510,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "success",
+      "baseline_success": true
+    },
+    {
+      "episode_index": 14,
+      "file": "runs/episode_00014.npz",
+      "n_steps": 6000,
+      "target_hole_index": 1,
+      "scene_seed": [
+        0,
+        14
+      ],
+      "human_seed": 121999420,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 15,
+      "file": "runs/episode_00015.npz",
+      "n_steps": 3497,
+      "target_hole_index": 2,
+      "scene_seed": [
+        0,
+        15
+      ],
+      "human_seed": 2228439693,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 16,
+      "file": "runs/episode_00016.npz",
+      "n_steps": 6000,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        16
+      ],
+      "human_seed": 3884535365,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 17,
+      "file": "runs/episode_00017.npz",
+      "n_steps": 6000,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        17
+      ],
+      "human_seed": 2512055177,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    },
+    {
+      "episode_index": 18,
+      "file": "runs/episode_00018.npz",
+      "n_steps": 3399,
+      "target_hole_index": 0,
+      "scene_seed": [
+        0,
+        18
+      ],
+      "human_seed": 3941510019,
+      "terminal_reason": "success",
+      "success": true,
+      "baseline_terminal_reason": "success",
+      "baseline_success": true
+    },
+    {
+      "episode_index": 19,
+      "file": "runs/episode_00019.npz",
+      "n_steps": 6000,
+      "target_hole_index": 1,
+      "scene_seed": [
+        0,
+        19
+      ],
+      "human_seed": 4088419074,
+      "terminal_reason": "timeout",
+      "success": false,
+      "baseline_terminal_reason": "timeout",
+      "baseline_success": false
+    }
+  ],
+  "baseline_no_assist": {
+    "counts": {
+      "timeout": 14,
+      "success": 6
+    },
+    "success_rate": 0.3
+  },
+  "expert_lift": 0.3
+}

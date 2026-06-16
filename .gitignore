@@ -35,7 +35,10 @@ ENV/
 # Project-generated artifacts — large, regenerable
 data/raw/
 data/processed/
-data/dataset_*/
+# Episode trajectories live under data/dataset_<seed>/runs/ and are NOT committed
+# (covered by `runs/` + `*.npz` below). The dataset's metadata.json is committed
+# on purpose — it fully describes the dataset and can regenerate it:
+#   python scripts/generate_dataset.py --from-metadata data/dataset_<seed>/metadata.json
 runs/
 checkpoints/
 logs/

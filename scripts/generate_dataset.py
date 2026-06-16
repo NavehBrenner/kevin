@@ -518,6 +518,71 @@ def _write_dataset_metadata(
     (dataset_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
 
+def regenerate_from_metadata(
+    metadata_path: str | Path,
+    *,
+    out_dir: str | Path | None = None,
+    force: bool = False,
+    progress: bool = False,
+) -> list[Path]:
+    """Reproduce the dataset described by a committed ``metadata.json``.
+
+    Only the metadata is version-controlled; the episode trajectories are not.
+    This reads every trajectory-determining input back out of the file and
+    re-runs generation, writing the episodes next to the metadata (or to
+    ``out_dir``). Generation is deterministic in those inputs, so the regenerated
+    episodes are byte-identical to the originals — verified afterwards via the
+    shared ``fingerprint`` (a mismatch flags code or config drift).
+
+    The baseline is re-run iff the source metadata recorded one, so the refreshed
+    ``metadata.json`` reproduces the original statistics (modulo ``generated_at``).
+    """
+    metadata_path = Path(metadata_path)
+    metadata = json.loads(metadata_path.read_text())
+    config = metadata["config"]
+
+    scene_name = config["scene"]
+    scene_path = SCENE_PATH if scene_name == SCENE_PATH.name else SCENE_PATH.parent / scene_name
+    if not scene_path.exists():
+        raise FileNotFoundError(
+            f"scene {scene_name!r} referenced by {metadata_path} not found at {scene_path} "
+            "— procedurally generated walls must be rebuilt before regenerating the dataset."
+        )
+
+    target = Path(out_dir) if out_dir is not None else metadata_path.parent
+    written = generate_dataset(
+        target,
+        metadata["n_episodes"],
+        seed=metadata["master_seed"],
+        max_steps=config["max_steps"],
+        success_depth=config["success_depth"],
+        lateral_tolerance=config["lateral_tolerance"],
+        force_cap=config["force_cap"],
+        max_dpos=config["max_dpos"],
+        expert_d_far=config["expert_d_far"],
+        scene_path=scene_path,
+        cache=not force,
+        baseline="baseline_no_assist" in metadata,
+        progress=progress,
+    )
+
+    expected = metadata.get("fingerprint")
+    actual = _episode_fingerprint(
+        seed=metadata["master_seed"],
+        max_steps=config["max_steps"],
+        max_dpos=config["max_dpos"],
+        expert_d_far=config["expert_d_far"],
+        scene_path=str(scene_path),
+    )
+    if expected is not None and actual != expected:
+        print(
+            f"WARNING: fingerprint mismatch (metadata {expected} != regenerated {actual}); "
+            "the regenerated episodes may differ from the originals.",
+            file=sys.stderr,
+        )
+    return written
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episodes", type=int, default=200, help="Number of episodes to run.")
@@ -551,11 +616,29 @@ def main() -> int:
         action="store_true",
         help="Regenerate even if a cached episode with a matching fingerprint exists.",
     )
+    parser.add_argument(
+        "--from-metadata",
+        type=str,
+        default=None,
+        help="Reproduce the dataset described by a metadata.json (rebuilds runs/ from the "
+        "committed config); --out overrides where it lands. Ignores generation flags.",
+    )
     args = parser.parse_args()
 
     if not SCENE_PATH.exists():
         print(f"FATAL: scene file not found at {SCENE_PATH}", file=sys.stderr)
         return 2
+
+    if args.from_metadata is not None:
+        print(f"Regenerating dataset from {args.from_metadata}")
+        start = time.time()
+        written = regenerate_from_metadata(
+            args.from_metadata, out_dir=args.out, force=args.force, progress=True
+        )
+        target = Path(args.out) if args.out is not None else Path(args.from_metadata).parent
+        elapsed = time.time() - start
+        print(f"Regenerated {len(written)} episode files in {elapsed:.1f}s → {target / 'runs'}")
+        return 0
 
     out_dir = Path(args.out) if args.out is not None else Path("data") / f"dataset_{args.seed}"
     print(f"Generating {args.episodes} episodes → {out_dir}  (seed={args.seed})")

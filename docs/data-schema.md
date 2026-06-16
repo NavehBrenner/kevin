@@ -23,9 +23,22 @@ data/dataset_<seed>/
 
 `generate_dataset.py` defaults `--out` to `data/dataset_<seed>`; pass `--out` to
 override. The episodes are the contract M5 trains against; `metadata.json` is a
-human/tooling-facing summary (not consumed by the loader). Both `runs/` and
-`data/dataset_*/` are git-ignored — datasets are large and regenerable from the
-seed.
+human/tooling-facing summary (not consumed by the loader).
+
+**What is and isn't committed.** The episode trajectories (`runs/*.npz`) are
+git-ignored — large and fully regenerable. `metadata.json` **is** committed: it
+records every trajectory-determining input, so it both documents a dataset and
+can rebuild it. Regenerate the byte-identical episodes from a committed metadata
+file with:
+
+```
+python scripts/generate_dataset.py --from-metadata data/dataset_<seed>/metadata.json
+```
+
+This reads the seed + config back out, re-runs generation next to the metadata
+(or to `--out`), and verifies the regenerated `fingerprint` matches — a mismatch
+warns that code or config has drifted from when the dataset was authored. (The
+refreshed `metadata.json` is identical except its `generated_at` timestamp.)
 
 ## Format
 
