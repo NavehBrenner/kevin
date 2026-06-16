@@ -1,9 +1,10 @@
-"""Shared utilities: logging, common math, type aliases.
+"""Shared utilities: logging, common math, type aliases. helper functions
 
 Should never import from other ai_teleop subpackages — this is the leaf of the
 dependency DAG.
 """
 
+from ai_teleop.common import utils
 from ai_teleop.common.command import Command
 from ai_teleop.common.log import (
     add_logging_arguments,
@@ -20,4 +21,5 @@ __all__ = [
     "configure_from_args",
     "configure_logging",
     "get_logger",
+    "utils",
 ]

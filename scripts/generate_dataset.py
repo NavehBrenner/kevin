@@ -47,8 +47,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import mujoco
 import numpy as np
+
+from ai_teleop.common.utils.rotations import axis_from_quat
 
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -118,9 +119,7 @@ def _cached_matches(path: Path, fingerprint: str) -> bool:
 
 
 def _peg_tip_and_axis(peg_pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    rotation = np.zeros(9)
-    mujoco.mju_quat2Mat(rotation, peg_pose[3:])
-    axis = rotation.reshape(3, 3)[:, 2]
+    axis = axis_from_quat(peg_pose[3:], 2)
     return peg_pose[:3] + _PEG_HALF_LENGTH * axis, axis
 
 
@@ -135,9 +134,7 @@ class _SeatingMetrics:
     def __init__(self, observation: Observation) -> None:
         tip, _ = _peg_tip_and_axis(observation.peg_pose)
         self.hole_pose = observation.hole_poses[observation.target_hole_index]
-        insertion_axis = np.zeros(9)
-        mujoco.mju_quat2Mat(insertion_axis, self.hole_pose[3:])
-        insertion_axis = insertion_axis.reshape(3, 3)[:, 0]
+        insertion_axis = axis_from_quat(self.hole_pose[3:], 0)
 
         error = self.hole_pose[:3] - tip
         axial_error = float(error @ insertion_axis)

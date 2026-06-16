@@ -14,6 +14,7 @@ import numpy as np
 
 from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
+from ai_teleop.common.utils.rotations import axis_from_quat
 from ai_teleop.domain import AssistProvider, apply_delta
 from ai_teleop.expert import Expert
 
@@ -42,9 +43,7 @@ def _make_observation(
     if peg_quat is None:
         peg_quat = _peg_quat_pointing_x()
     # Body origin = tip - half_length * a, where a = R(peg_quat) @ z.
-    rotation = np.zeros(9)
-    mujoco.mju_quat2Mat(rotation, peg_quat)
-    peg_axis = rotation.reshape(3, 3)[:, 2]
+    peg_axis = axis_from_quat(peg_quat, 2)
     body_position = tip_position - _PEG_HALF_LENGTH * peg_axis
     return Observation(
         joint_positions=np.zeros(7),
@@ -128,18 +127,14 @@ def test_orientation_delta_rotates_peg_axis_toward_bore():
     mujoco.mju_axisAngle2Quat(tilt, np.array([0.0, -1.0, 0.0]), np.pi / 2 + np.deg2rad(12.0))
     obs = _make_observation(tip_position=hole - np.array([0.03, 0.0, 0.0]), peg_quat=tilt)
 
-    rotation = np.zeros(9)
-    mujoco.mju_quat2Mat(rotation, tilt)
-    peg_axis_before = rotation.reshape(3, 3)[:, 2]
+    peg_axis_before = axis_from_quat(tilt, 2)
     angle_before = np.arccos(np.clip(peg_axis_before @ _INSERTION_AXIS, -1.0, 1.0))
 
     delta = expert.get_delta(obs, _dummy_command())
     # Apply the orientation Δ through the seam, then rotate the peg axis by it.
     command = Command(np.zeros(3), tilt)
     rotated_command = apply_delta(command, delta)
-    rotation_after = np.zeros(9)
-    mujoco.mju_quat2Mat(rotation_after, rotated_command.target_quaternion)
-    peg_axis_after = rotation_after.reshape(3, 3)[:, 2]
+    peg_axis_after = axis_from_quat(rotated_command.target_quaternion, 2)
     angle_after = np.arccos(np.clip(peg_axis_after @ _INSERTION_AXIS, -1.0, 1.0))
 
     assert angle_after < angle_before
