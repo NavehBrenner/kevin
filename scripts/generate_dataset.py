@@ -235,14 +235,25 @@ class _TerminationProbe:
         return False
 
 
+def _human_seed(seed: int, episode_index: int) -> int:
+    """The concrete RNG seed handed to the scripted human for this episode.
+
+    Derived from ``(master_seed, episode_index)`` so it is reproducible, but the
+    integer itself isn't obvious — so it's stamped into the per-episode metadata.
+    """
+    return int(np.random.SeedSequence([seed, episode_index]).generate_state(1)[0])
+
+
 def _make_human(
     target_position: np.ndarray, home_quaternion: np.ndarray, *, seed: int, episode_index: int
 ) -> ScriptedNoisyHuman:
     """Build the per-episode operator. ``(seed, episode_index)`` fully determines
     its command stream, so a fresh instance reproduces the same operator — what
     the paired expert/baseline runs rely on."""
-    human_seed = int(np.random.SeedSequence([seed, episode_index]).generate_state(1)[0])
-    return ScriptedNoisyHuman(np.concatenate([target_position, home_quaternion]), seed=human_seed)
+    return ScriptedNoisyHuman(
+        np.concatenate([target_position, home_quaternion]),
+        seed=_human_seed(seed, episode_index),
+    )
 
 
 def _baseline_terminal_reason(
@@ -372,6 +383,13 @@ def generate_dataset(
         episode_metadata: dict[str, object] = {
             "master_seed": seed,
             "episode_index": episode_index,
+            # The two derived seeds this episode was generated with. Both root in
+            # (master_seed, episode_index) but drive independent RNG streams:
+            #   scene_seed  — entropy passed to default_rng for scene/"wall"
+            #                 randomization (target hole + joint start offset).
+            #   human_seed  — the concrete int seeding the scripted operator.
+            "scene_seed": [seed, episode_index],
+            "human_seed": _human_seed(seed, episode_index),
             "fingerprint": fingerprint,
             "max_dpos": max_dpos,
             "expert_d_far": expert_d_far,
@@ -424,6 +442,9 @@ def _episode_summary(
         "file": f"runs/{path.name}",
         "n_steps": n_steps,
         "target_hole_index": episode_metadata["target_hole_index"],
+        # .get for back-compat with cached files written before seeds were stamped.
+        "scene_seed": episode_metadata.get("scene_seed"),
+        "human_seed": episode_metadata.get("human_seed"),
         "terminal_reason": episode_metadata["terminal_reason"],
         "success": episode_metadata["episode_success"],
     }

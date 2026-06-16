@@ -87,6 +87,8 @@ loader's responsibility, not M4's.
 | `schema_version` | this schema's version (`"1.0"`) |
 | `n_steps` | episode length `T` |
 | `master_seed`, `episode_index` | reproducibility key — regenerates the episode exactly |
+| `scene_seed` | `[master_seed, episode_index]` — entropy fed to the scene/"wall" RNG (target hole + joint start offset) |
+| `human_seed` | concrete int seeding the scripted operator (derived from the key) |
 | `fingerprint` | hash of all trajectory-determining inputs (used for the regen cache) |
 | `max_dpos`, `expert_d_far` | controller clamp / expert engagement distance used |
 | `target_hole_index` | which hole was the active target |

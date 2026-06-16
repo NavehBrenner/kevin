@@ -128,10 +128,16 @@ def test_generate_dataset_writes_layout_and_metadata(tmp_path):
     assert "expert_lift" in summary
     assert len(summary["episodes"]) == 2
 
-    # Per-episode trajectory metadata carries the paired baseline outcome.
+    # Per-episode trajectory metadata carries the paired baseline outcome...
     _, ep_meta = load_episode(paths[0])
     assert "baseline_terminal_reason" in ep_meta
     assert isinstance(ep_meta["baseline_success"], bool)
+    # ...and the seeds the episode was generated with.
+    assert ep_meta["scene_seed"] == [0, 0]  # [master_seed, episode_index]
+    assert isinstance(ep_meta["human_seed"], int)
+    # Seeds are surfaced in the dataset summary too.
+    assert summary["episodes"][0]["human_seed"] == ep_meta["human_seed"]
+    assert summary["episodes"][0]["scene_seed"] == [0, 0]
 
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
