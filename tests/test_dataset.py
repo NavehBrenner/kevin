@@ -7,6 +7,7 @@ columns and metadata.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from generate_dataset import generate_dataset  # noqa: E402
+from generate_dataset import generate_dataset, regenerate_from_metadata  # noqa: E402
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "assets" / "mjcf" / "full_scene.xml"
 
@@ -96,9 +97,11 @@ def test_recorder_refuses_empty_save(tmp_path):
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_smoke(tmp_path):
-    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120)
+    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=False)
     assert len(paths) == 2
     assert all(p.exists() for p in paths)
+    # Episodes live under runs/ in the dataset directory.
+    assert all(p.parent == tmp_path / "runs" for p in paths)
 
     columns, metadata = load_episode(paths[0])
     assert set(columns) == set(COLUMN_SHAPES)
@@ -110,9 +113,69 @@ def test_generate_dataset_smoke(tmp_path):
 
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
+def test_generate_dataset_writes_layout_and_metadata(tmp_path):
+    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=True)
+
+    meta_path = tmp_path / "metadata.json"
+    assert meta_path.exists()
+    summary = json.loads(meta_path.read_text())
+    assert summary["master_seed"] == 0
+    assert summary["n_episodes"] == 2
+    assert summary["schema_version"] == SCHEMA_VERSION
+    assert set(summary["expert"]["counts"]) <= {"success", "force_abort", "timeout"}
+    # Baseline ran, so an aggregate human-only rate is present (a float in [0, 1]).
+    assert 0.0 <= summary["baseline_no_assist"]["success_rate"] <= 1.0
+    assert "expert_lift" in summary
+    assert len(summary["episodes"]) == 2
+
+    # Per-episode trajectory metadata carries the paired baseline outcome...
+    _, ep_meta = load_episode(paths[0])
+    assert "baseline_terminal_reason" in ep_meta
+    assert isinstance(ep_meta["baseline_success"], bool)
+    # ...and the seeds the episode was generated with.
+    assert ep_meta["scene_seed"] == [0, 0]  # [master_seed, episode_index]
+    assert isinstance(ep_meta["human_seed"], int)
+    # Seeds are surfaced in the dataset summary too.
+    assert summary["episodes"][0]["human_seed"] == ep_meta["human_seed"]
+    assert summary["episodes"][0]["scene_seed"] == [0, 0]
+
+
+@pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
+def test_generate_dataset_no_baseline_omits_baseline_stats(tmp_path):
+    generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=80, baseline=False)
+    summary = json.loads((tmp_path / "metadata.json").read_text())
+    assert "baseline_no_assist" not in summary
+    assert "expert_lift" not in summary
+
+
+@pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
+def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
+    # Only metadata.json is committed; regenerating from it must reproduce the
+    # exact episodes (byte-identical columns) the original config implies.
+    original = generate_dataset(
+        tmp_path / "orig", n_episodes=2, seed=1, max_steps=100, baseline=False
+    )
+    regenerated = regenerate_from_metadata(
+        tmp_path / "orig" / "metadata.json", out_dir=tmp_path / "regen"
+    )
+
+    assert [p.name for p in regenerated] == [p.name for p in original]
+    for orig_path, regen_path in zip(original, regenerated, strict=True):
+        cols_orig, _ = load_episode(orig_path)
+        cols_regen, _ = load_episode(regen_path)
+        for column in COLUMN_SHAPES:
+            np.testing.assert_array_equal(cols_orig[column], cols_regen[column])
+
+    # The regenerated dataset carries the same fingerprint as the source metadata.
+    src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text())
+    regen_meta = json.loads((tmp_path / "regen" / "metadata.json").read_text())
+    assert regen_meta["fingerprint"] == src_meta["fingerprint"]
+
+
+@pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_is_reproducible(tmp_path):
-    paths_a = generate_dataset(tmp_path / "a", n_episodes=1, seed=3, max_steps=80)
-    paths_b = generate_dataset(tmp_path / "b", n_episodes=1, seed=3, max_steps=80)
+    paths_a = generate_dataset(tmp_path / "a", n_episodes=1, seed=3, max_steps=80, baseline=False)
+    paths_b = generate_dataset(tmp_path / "b", n_episodes=1, seed=3, max_steps=80, baseline=False)
     cols_a, _ = load_episode(paths_a[0])
     cols_b, _ = load_episode(paths_b[0])
     np.testing.assert_array_equal(cols_a["delta_position"], cols_b["delta_position"])
