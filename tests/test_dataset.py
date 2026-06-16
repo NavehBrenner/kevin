@@ -7,6 +7,7 @@ columns and metadata.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -96,9 +97,11 @@ def test_recorder_refuses_empty_save(tmp_path):
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_smoke(tmp_path):
-    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120)
+    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=False)
     assert len(paths) == 2
     assert all(p.exists() for p in paths)
+    # Episodes live under runs/ in the dataset directory.
+    assert all(p.parent == tmp_path / "runs" for p in paths)
 
     columns, metadata = load_episode(paths[0])
     assert set(columns) == set(COLUMN_SHAPES)
@@ -110,9 +113,39 @@ def test_generate_dataset_smoke(tmp_path):
 
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
+def test_generate_dataset_writes_layout_and_metadata(tmp_path):
+    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=True)
+
+    meta_path = tmp_path / "metadata.json"
+    assert meta_path.exists()
+    summary = json.loads(meta_path.read_text())
+    assert summary["master_seed"] == 0
+    assert summary["n_episodes"] == 2
+    assert summary["schema_version"] == SCHEMA_VERSION
+    assert set(summary["expert"]["counts"]) <= {"success", "force_abort", "timeout"}
+    # Baseline ran, so an aggregate human-only rate is present (a float in [0, 1]).
+    assert 0.0 <= summary["baseline_no_assist"]["success_rate"] <= 1.0
+    assert "expert_lift" in summary
+    assert len(summary["episodes"]) == 2
+
+    # Per-episode trajectory metadata carries the paired baseline outcome.
+    _, ep_meta = load_episode(paths[0])
+    assert "baseline_terminal_reason" in ep_meta
+    assert isinstance(ep_meta["baseline_success"], bool)
+
+
+@pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
+def test_generate_dataset_no_baseline_omits_baseline_stats(tmp_path):
+    generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=80, baseline=False)
+    summary = json.loads((tmp_path / "metadata.json").read_text())
+    assert "baseline_no_assist" not in summary
+    assert "expert_lift" not in summary
+
+
+@pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_is_reproducible(tmp_path):
-    paths_a = generate_dataset(tmp_path / "a", n_episodes=1, seed=3, max_steps=80)
-    paths_b = generate_dataset(tmp_path / "b", n_episodes=1, seed=3, max_steps=80)
+    paths_a = generate_dataset(tmp_path / "a", n_episodes=1, seed=3, max_steps=80, baseline=False)
+    paths_b = generate_dataset(tmp_path / "b", n_episodes=1, seed=3, max_steps=80, baseline=False)
     cols_a, _ = load_episode(paths_a[0])
     cols_b, _ = load_episode(paths_b[0])
     np.testing.assert_array_equal(cols_a["delta_position"], cols_b["delta_position"])

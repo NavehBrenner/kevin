@@ -8,13 +8,32 @@ constants, scene layout) may change without breaking M5.
 
 Authoritative definition + writer/reader: `src/ai_teleop/data/trajectory.py`.
 
+## Dataset layout
+
+One directory per master seed (LAB-47):
+
+```
+data/dataset_<seed>/
+    metadata.json          # dataset-level statistics (see below)
+    runs/
+        episode_00000.npz   # per-episode trajectories — the BC corpus
+        episode_00001.npz
+        ...
+```
+
+`generate_dataset.py` defaults `--out` to `data/dataset_<seed>`; pass `--out` to
+override. The episodes are the contract M5 trains against; `metadata.json` is a
+human/tooling-facing summary (not consumed by the loader). Both `runs/` and
+`data/dataset_*/` are git-ignored — datasets are large and regenerable from the
+seed.
+
 ## Format
 
 **NPZ** (`numpy.savez_compressed`), one per episode, named
-`episode_<index:05d>.npz`. Chosen over Parquet because it needs no extra
-dependency (pyarrow/pandas live only in the `ml` extra, absent from CI) and the
-M5 loader accepts NPZ. Each per-step column is a stacked `(T, …)` array; episode
-metadata is a JSON string under the `metadata` key.
+`episode_<index:05d>.npz` under `runs/`. Chosen over Parquet because it needs no
+extra dependency (pyarrow/pandas live only in the `ml` extra, absent from CI) and
+the M5 loader accepts NPZ. Each per-step column is a stacked `(T, …)` array;
+episode metadata is a JSON string under the `metadata` key.
 
 Load with `ai_teleop.data.load_episode(path) -> (columns, metadata)`.
 
@@ -68,10 +87,14 @@ loader's responsibility, not M4's.
 | `schema_version` | this schema's version (`"1.0"`) |
 | `n_steps` | episode length `T` |
 | `master_seed`, `episode_index` | reproducibility key — regenerates the episode exactly |
+| `fingerprint` | hash of all trajectory-determining inputs (used for the regen cache) |
+| `max_dpos`, `expert_d_far` | controller clamp / expert engagement distance used |
 | `target_hole_index` | which hole was the active target |
-| `terminal_reason` | `success` \| `force_abort` \| `timeout` |
+| `terminal_reason` | `success` \| `force_abort` \| `timeout` (combined human **+** expert) |
 | `episode_success` | bool (`terminal_reason == success`) |
 | `success_depth`, `lateral_tolerance`, `force_cap` | the terminal-condition thresholds used |
+| `baseline_terminal_reason` | *(if baseline ran)* same episode with the expert replaced by `NoAssist` |
+| `baseline_success` | *(if baseline ran)* bool — did the **human alone** seat the peg? |
 
 ## Terminal conditions (privileged, in the driver)
 
@@ -83,7 +106,39 @@ from privileged geometry:
 - **force_abort** — wrist force magnitude exceeds `force_cap`.
 - **timeout** — step budget reached without success.
 
+`terminal_reason` scores the **combined** system actually rolled out: noisy human
+command + expert residual. It is *not* the expert alone or the human alone.
+
 **All episodes are kept** (failures included): diverse state coverage helps BC.
+
+## Human-only baseline (LAB-47)
+
+Unless disabled with `--no-baseline`, each episode is re-run on the **same scene
+and the same operator command stream** with the expert replaced by `NoAssist` (no
+residual), scored with the identical termination logic but **not** saved as a
+trajectory. This measures what the noisy human achieves *without* corrections, so
+the expert's lift is legible rather than implicit. The per-episode outcome is
+stamped into the trajectory metadata (`baseline_*` above) and aggregated into
+`metadata.json`.
+
+## Dataset `metadata.json`
+
+Written once per dataset by the driver (not by the schema layer; not read by the
+M5 loader). Aggregates the run:
+
+| key | meaning |
+|---|---|
+| `schema_version`, `master_seed`, `n_episodes` | dataset identity |
+| `generated_at` | UTC ISO-8601 timestamp |
+| `fingerprint` | shared trajectory fingerprint for this config |
+| `config` | `max_steps`, `max_dpos`, `expert_d_far`, the thresholds, and `scene` |
+| `expert` | `{counts: {reason: n}, success_rate}` — the combined human+expert system |
+| `baseline_no_assist` | *(if baseline ran)* same shape — the human-only rate |
+| `expert_lift` | *(if baseline ran)* `expert.success_rate − baseline.success_rate` |
+| `episodes` | per-episode list: index, `file`, `n_steps`, hole, reasons, successes |
+
+A `success_rate` is `null` if any episode is missing that outcome (e.g. a cached
+dataset generated before the baseline existed, re-summarized with baseline on).
 
 ## Anti-scope
 
