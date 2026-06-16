@@ -75,6 +75,12 @@ dev = [
     "poethepoet>=0.24",
 ]
 
+# The project CLI front door — `kvn` (pronounced "Kevin"). After
+# `uv pip install -e .` this lands on PATH; `uv run kvn <command>` also works.
+# See src/ai_teleop/cli.py and docs/cli.md.
+[project.scripts]
+kvn = "ai_teleop.cli:main"
+
 [project.urls]
 "Project scope" = "./project-scope.md"
 
@@ -118,3 +124,6 @@ test = "python -m pytest -q"
 check = ["lint", "typecheck", "test"]          # the full gate, same as CI
 sim = "python scripts/view_generated_wall.py"  # extra args pass through, e.g. poe sim --seed 7
 smoke = "python scripts/smoke_test_sim.py"
+# Relocated-venv-safe way to reach the `kvn` CLI without the console script
+# (whose shebang goes stale when .venv moves). e.g. uv run poe cli gen --episodes 5
+cli = "python -m ai_teleop.cli"
