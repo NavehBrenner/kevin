@@ -62,7 +62,12 @@ def main() -> int:
         return 2
 
     print(f"Loading scene: {SCENE_PATH}")
-    env = SimEnv(str(SCENE_PATH), render_mode="headless", camera_height=CAMERA_HEIGHT, camera_width=CAMERA_WIDTH)
+    env = SimEnv(
+        str(SCENE_PATH),
+        render_mode="headless",
+        camera_height=CAMERA_HEIGHT,
+        camera_width=CAMERA_WIDTH,
+    )
     print(f"  model: nq={env.model.nq} nv={env.model.nv} nu={env.model.nu} nbody={env.model.nbody}")
 
     # ---- [criterion: reset works] -----------------------------------
@@ -85,7 +90,10 @@ def main() -> int:
     # assumption of the original smoke test valid.
     print(f"\nStepping {SETTLE_STEPS} steps, printing every {PRINT_EVERY}:")
     arm_dof = env.model.jnt_dofadr[
-        [env.model.joint(n).id for n in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7")]
+        [
+            env.model.joint(n).id
+            for n in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7")
+        ]
     ]
     for step in range(SETTLE_STEPS):
         env.data.ctrl[:7] = env.data.qfrc_bias[arm_dof] - env.data.qfrc_constraint[arm_dof]
@@ -116,7 +124,9 @@ def main() -> int:
 
     # ---- Render wrist cam [criterion: PNG visually shows wall+holes+peg] ----
     frame = env.render_wrist_camera()
-    print(f"\nRendered wrist camera: shape={frame.shape} dtype={frame.dtype} range=[{frame.min()}, {frame.max()}]")
+    print(
+        f"\nRendered wrist camera: shape={frame.shape} dtype={frame.dtype} range=[{frame.min()}, {frame.max()}]"
+    )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     Image.fromarray(frame).save(WRIST_CAM_PNG)
     print(f"Saved {WRIST_CAM_PNG}")
@@ -131,7 +141,9 @@ def main() -> int:
         try:
             env_v.launch_viewer()
             while env_v.viewer is not None and env_v.viewer.is_running():
-                env_v.data.ctrl[:7] = env_v.data.qfrc_bias[arm_dof] - env_v.data.qfrc_constraint[arm_dof]
+                env_v.data.ctrl[:7] = (
+                    env_v.data.qfrc_bias[arm_dof] - env_v.data.qfrc_constraint[arm_dof]
+                )
                 env_v.step()
                 # Mujoco's default timestep is 2 ms; sleep proportionally so
                 # the viewer runs at roughly real-time rather than as fast as

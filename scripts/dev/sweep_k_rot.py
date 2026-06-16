@@ -24,9 +24,7 @@ from ai_teleop.common.command import Command  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
-SCENE = (
-    Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
-)
+SCENE = Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
 
 
 def quat_rotated_about_z(q, deg):
@@ -42,16 +40,20 @@ def measure(K_rot, D_rot):
     env = SimEnv(str(SCENE), render_mode="headless")
     env.reset()
     ctrl = Controller(env)
-    ctrl.stiffness_tcp = np.array([400., 400., 500., K_rot, K_rot, K_rot])
-    ctrl.damping_tcp = np.array([80., 80., 89., D_rot, D_rot, D_rot])
+    ctrl.stiffness_tcp = np.array([400.0, 400.0, 500.0, K_rot, K_rot, K_rot])
+    ctrl.damping_tcp = np.array([80.0, 80.0, 89.0, D_rot, D_rot, D_rot])
     target_pos = ctrl.home_pose[:3] + np.array([0, 0.05, 0])
     cmd = Command(target_position=target_pos, target_quaternion=ctrl.home_pose[3:].copy())
     # Settle 3 s.
-    for _ in range(1500): ctrl.compute(env.get_observation(), cmd); env.step()
+    for _ in range(1500):
+        ctrl.compute(env.get_observation(), cmd)
+        env.step()
     # Measure drift over next 4 s.
     poses = []
     for _ in range(2000):
-        obs = env.get_observation(); ctrl.compute(obs, cmd); env.step()
+        obs = env.get_observation()
+        ctrl.compute(obs, cmd)
+        env.step()
         poses.append(obs.ee_pose[:3].copy())
     poses = np.array(poses)
     pos_drift_mm = float((poses.max(0) - poses.min(0)).max() * 1000)
@@ -61,15 +63,18 @@ def measure(K_rot, D_rot):
     env = SimEnv(str(SCENE), render_mode="headless")
     env.reset()
     ctrl = Controller(env)
-    ctrl.stiffness_tcp = np.array([400., 400., 500., K_rot, K_rot, K_rot])
-    ctrl.damping_tcp = np.array([80., 80., 89., D_rot, D_rot, D_rot])
+    ctrl.stiffness_tcp = np.array([400.0, 400.0, 500.0, K_rot, K_rot, K_rot])
+    ctrl.damping_tcp = np.array([80.0, 80.0, 89.0, D_rot, D_rot, D_rot])
     target_quat = quat_rotated_about_z(ctrl.home_pose[3:], 25.0)
     cmd = Command(target_position=ctrl.home_pose[:3].copy(), target_quaternion=target_quat)
     rot_at_t = {}
     for step in range(4000):  # 8 s
-        obs = env.get_observation(); ctrl.compute(obs, cmd); env.step()
+        obs = env.get_observation()
+        ctrl.compute(obs, cmd)
+        env.step()
         if step + 1 in {1000, 2000, 3000, 4000}:  # 2, 4, 6, 8 s
-            ax = np.zeros(3); mujoco.mju_subQuat(ax, target_quat, obs.ee_pose[3:])
+            ax = np.zeros(3)
+            mujoco.mju_subQuat(ax, target_quat, obs.ee_pose[3:])
             rot_at_t[(step + 1) * 0.002] = np.rad2deg(np.linalg.norm(ax))
     env.close()
     return pos_drift_mm, rot_at_t

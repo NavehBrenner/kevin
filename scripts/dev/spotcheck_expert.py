@@ -5,14 +5,15 @@ the M3 seam. Reports the final tip→hole lateral error and axial penetration.
 """
 
 from pathlib import Path
-import numpy as np
-import mujoco
 
-from ai_teleop.sim.scene import SimEnv
+import mujoco
+import numpy as np
+
 from ai_teleop.control import Controller
 from ai_teleop.domain import NoAssist, apply_delta
-from ai_teleop.input import ScriptedNoisyHuman
 from ai_teleop.expert import Expert
+from ai_teleop.input import ScriptedNoisyHuman
+from ai_teleop.sim.scene import SimEnv
 
 SCENE = Path(__file__).resolve().parents[2] / "assets" / "mjcf" / "full_scene.xml"
 N_AXIS = np.array([1.0, 0.0, 0.0])

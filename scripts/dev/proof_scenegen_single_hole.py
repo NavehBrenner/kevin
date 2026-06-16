@@ -53,7 +53,7 @@ def ray_hits(world_y: float, world_z: float) -> bool:
     return dist >= 0
 
 
-bore_blocked = ray_hits(0.10, 0.05)   # straight through the hole centre
+bore_blocked = ray_hits(0.10, 0.05)  # straight through the hole centre
 solid_blocked = ray_hits(-0.10, -0.10)  # through a solid region
 print(f"ray through BORE blocked?  {bore_blocked}  (want False)")
 print(f"ray through SOLID blocked? {solid_blocked}  (want True)")

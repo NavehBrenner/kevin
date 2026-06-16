@@ -70,6 +70,21 @@ def write_meshes(
     return visual_name, collision_names
 
 
+def _orientation_quat_attr(spec: WallSpec) -> str:
+    """MJCF ``quat="w x y z"`` attribute for the wall tilt, or "" when upright.
+
+    Emitted as a quaternion (not ``euler``) so the standalone wall.xml needs no
+    ``<compiler angle>`` directive to be interpreted correctly.
+    """
+    rx, ry, rz = spec.orientation
+    if rx == 0.0 and ry == 0.0 and rz == 0.0:
+        return ""
+    from scipy.spatial.transform import Rotation
+
+    x, y, z, w = Rotation.from_euler("xyz", [rx, ry, rz]).as_quat()
+    return f' quat="{w:.6f} {x:.6f} {y:.6f} {z:.6f}"'
+
+
 def build_mjcf(spec: WallSpec, visual_name: str, collision_names: list[str]) -> str:
     """Return the MJCF XML string for the generated wall."""
     px, py, pz = WALL_BODY_POS
@@ -98,7 +113,7 @@ def build_mjcf(spec: WallSpec, visual_name: str, collision_names: list[str]) -> 
   </default>
 
   <worldbody>
-    <body name="wall" pos="{px} {py} {pz}">
+    <body name="wall" pos="{px} {py} {pz}"{_orientation_quat_attr(spec)}>
       <geom name="wall_visual_geom" class="wall_visual" mesh="{visual_name}"/>
 {_collision_geoms(collision_names)}
 {_hole_sites(spec)}

@@ -10,6 +10,7 @@ analytically (prism extrude + chamfer wedges), and emits all artifacts into
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from . import emit, meta, solid
@@ -31,6 +32,7 @@ def generate_wall(
     *,
     out_dir: str | Path | None = None,
     ranges: SamplingRanges = _DEFAULT_RANGES,
+    cache: bool = True,
 ) -> WallScene:
     """Sample a wall from a (possibly sparse) request and write all artifacts.
 
@@ -47,6 +49,10 @@ def generate_wall(
     )
     if out_dir is None:
         out_dir = DEFAULT_OUT_ROOT / f"wall_{spec.seed}"
+    if cache:
+        cached = _load_cached_scene(Path(out_dir), spec)
+        if cached is not None:
+            return cached
     return generate_from_spec(spec, out_dir)
 
 
@@ -77,4 +83,40 @@ def generate_from_spec(
         visual_mesh_path=str(out_dir / f"{visual_name}.obj"),
         collision_mesh_paths=[str(out_dir / f"{name}.obj") for name in collision_names],
         header_path=str(header_path),
+    )
+
+
+def _load_cached_scene(out_dir: Path, spec: WallSpec) -> WallScene | None:
+    """Return a WallScene for an already-built wall in ``out_dir`` iff its
+    ``header.json`` exactly matches ``spec`` and its artifacts are all present.
+
+    The expensive part of generation is the CadQuery solid + tessellation +
+    mesh export; sampling is cheap. So we always re-sample (to get the spec to
+    compare against) but skip the build when a byte-identical wall already
+    exists on disk. Returns ``None`` on any mismatch or missing file so the
+    caller falls back to a full rebuild.
+    """
+    header = out_dir / "header.json"
+    mjcf = out_dir / "wall.xml"
+    visual = out_dir / "wall_visual.obj"
+    if not (header.exists() and mjcf.exists() and visual.exists()):
+        return None
+    try:
+        # Round-trip the live spec through JSON so tuples (e.g. in
+        # sampling_ranges) compare equal to the lists loaded from disk.
+        spec_json = json.loads(json.dumps(meta.spec_to_dict(spec)))
+        if json.loads(header.read_text()) != spec_json:
+            return None
+    except (OSError, ValueError):
+        return None
+    collision_paths = sorted(str(p) for p in out_dir.glob("wall_col_*.obj"))
+    if not collision_paths:
+        return None
+    return WallScene(
+        spec=spec,
+        mjcf_path=str(mjcf),
+        visual_mesh_path=str(visual),
+        collision_mesh_paths=collision_paths,
+        header_path=str(header),
+        from_cache=True,
     )

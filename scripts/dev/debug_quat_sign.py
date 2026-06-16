@@ -19,9 +19,7 @@ from ai_teleop.common.command import Command  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
-SCENE = (
-    Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
-)
+SCENE = Path(__file__).resolve().parent.parent.parent / "assets" / "mjcf" / "full_scene.xml"
 
 
 def main() -> int:
@@ -39,8 +37,11 @@ def main() -> int:
     cmd = Command(target_position=ctrl.home_pose[:3].copy(), target_quaternion=target_q)
     print(f"home_q  = {home_q.round(4).tolist()}")
     print(f"target_q= {target_q.round(4).tolist()}")
-    ax = np.zeros(3); mujoco.mju_subQuat(ax, target_q, home_q)
-    print(f"axis-angle target←home: {ax.round(4).tolist()}  norm={np.rad2deg(np.linalg.norm(ax)):.2f}°")
+    ax = np.zeros(3)
+    mujoco.mju_subQuat(ax, target_q, home_q)
+    print(
+        f"axis-angle target←home: {ax.round(4).tolist()}  norm={np.rad2deg(np.linalg.norm(ax)):.2f}°"
+    )
 
     print()
     print("Step      rot_err_deg  ee_q[0]    ee_q[1]    ee_q[2]    ee_q[3]")
@@ -50,10 +51,13 @@ def main() -> int:
         env.step()
         if step % 100 == 99:
             cur_q = obs.ee_pose[3:]
-            ax = np.zeros(3); mujoco.mju_subQuat(ax, target_q, cur_q)
+            ax = np.zeros(3)
+            mujoco.mju_subQuat(ax, target_q, cur_q)
             err_deg = np.rad2deg(np.linalg.norm(ax))
-            print(f"  t={(step+1)*0.002:5.2f}s   {err_deg:6.2f}°    "
-                  f"{cur_q[0]:+.4f}  {cur_q[1]:+.4f}  {cur_q[2]:+.4f}  {cur_q[3]:+.4f}")
+            print(
+                f"  t={(step + 1) * 0.002:5.2f}s   {err_deg:6.2f}°    "
+                f"{cur_q[0]:+.4f}  {cur_q[1]:+.4f}  {cur_q[2]:+.4f}  {cur_q[3]:+.4f}"
+            )
     env.close()
     return 0
 

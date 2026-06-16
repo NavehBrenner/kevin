@@ -28,7 +28,7 @@ print(f"  target hole world pos: {np.round(target_pose[:3], 4)}")
 # Step the sim a few times to confirm it's runnable (peg held, no explosion).
 for _ in range(50):
     env.step()
-peg_pos = env.data.qpos[env._peg_qadr:env._peg_qadr + 3]
+peg_pos = env.data.qpos[env._peg_qadr : env._peg_qadr + 3]
 print(f"  peg pos after 50 steps: {np.round(peg_pos, 4)} (held by gripper, stable)")
 env.close()
 print("\nINTEGRATION OK")

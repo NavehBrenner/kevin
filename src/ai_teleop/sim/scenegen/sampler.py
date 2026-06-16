@@ -34,6 +34,18 @@ IMPLEMENTED_SHAPES = ("circle",)
 _MAX_PLACEMENT_ATTEMPTS = 2000
 
 
+def _sample_orientation(
+    rng: np.random.Generator, ranges: SamplingRanges
+) -> tuple[float, float, float]:
+    """Independent per-axis tilt: |Normal(0, std)| * random_sign, clipped to +-max."""
+    magnitude = np.minimum(
+        np.abs(rng.normal(0.0, ranges.wall_rotation_std, size=3)), ranges.wall_rotation_max
+    )
+    sign = np.where(rng.random(3) < 0.5, -1.0, 1.0)
+    tilt = magnitude * sign
+    return (float(tilt[0]), float(tilt[1]), float(tilt[2]))
+
+
 def sample_wall_spec(
     seed: int | None = None,
     true_hole: dict | None = None,
@@ -62,11 +74,13 @@ def sample_wall_spec(
         holes.append(_PendingHole(shape, pos, size, chamfer, is_target))
 
     placed = _place_holes(rng, holes, resolved_wall_size, ranges)
+    orientation = _sample_orientation(rng, ranges)
     return WallSpec(
         seed=resolved_seed,
         wall_size=resolved_wall_size,
         holes=placed,
         ranges=ranges,
+        orientation=orientation,
         seed_was_given=seed_was_given,
     )
 

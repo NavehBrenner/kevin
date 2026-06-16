@@ -26,17 +26,26 @@ from ai_teleop.sim.scenegen.generate import generate_wall
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--seed", type=int, default=None, help="RNG seed (default: time-based)")
-    ap.add_argument("--distractors", type=int, default=None,
-                    help="number of distractor holes (default: random 0-10)")
-    ap.add_argument("--wall-dir", type=Path, default=None,
-                    help="view an existing wall dir instead of generating")
-    ap.add_argument("--no-robot", action="store_true",
-                    help="preview the wall alone (no Panda/peg)")
-    ap.add_argument("--render", action="store_true",
-                    help="render PNGs instead of opening an interactive window")
+    ap.add_argument(
+        "--distractors",
+        type=int,
+        default=None,
+        help="number of distractor holes (default: random 0-10)",
+    )
+    ap.add_argument(
+        "--wall-dir",
+        type=Path,
+        default=None,
+        help="view an existing wall dir instead of generating",
+    )
+    ap.add_argument("--no-robot", action="store_true", help="preview the wall alone (no Panda/peg)")
+    ap.add_argument(
+        "--render", action="store_true", help="render PNGs instead of opening an interactive window"
+    )
     return ap.parse_args()
 
 
@@ -62,6 +71,7 @@ def main() -> None:
 
     if args.render:
         from PIL import Image
+
         cams = ["external_cam"] if not args.no_robot else ["front", "angled"]
         renderer = mujoco.Renderer(model, height=768, width=1024)
         for cam in cams:

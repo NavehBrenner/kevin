@@ -94,6 +94,24 @@ def test_force_cap_trips_to_hold(env):
     assert len(trips) == 1, f"expected exactly one force-cap trip, got transitions {transitions}"
 
 
+def test_reset_clears_latched_lock(env):
+    """controller.reset() releases a tripped lock back to ACTIVE.
+
+    Regression guard: a `Controller` reused across episodes (the data-gen loop)
+    must clear its lock between them — otherwise one episode's force-cap → HOLD
+    trip silently freezes every episode after it (observed as a corpus collapse
+    to ~5% seated). Reuses the cheap force-trip from above, then resets.
+    """
+    env.reset()
+    controller = Controller(env, force_cap_n=5.0)
+    home_pos, home_quat = controller.home_pose[:3], controller.home_pose[3:]
+    _drive(env, controller, home_pos, home_quat, TRIP_STEPS)
+    assert controller.status.state is LockState.HOLD  # latched by the force cap
+
+    controller.reset()
+    assert controller.status.state is LockState.ACTIVE, "reset() did not clear the lock"
+
+
 def test_park_returns_home_and_locks(env):
     """request_park_lock() slews to home and auto-transitions PARK -> HoldLock."""
     env.reset()
