@@ -40,13 +40,13 @@ The on-disk schema is the stable contract M5 reads — see
 from __future__ import annotations
 
 import json
-import sys
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
+from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
 from ai_teleop.common.utils.rotations import axis_from_quat
 from ai_teleop.control import Controller
@@ -65,6 +65,8 @@ from ai_teleop.input import ScriptedNoisyHuman
 from ai_teleop.sim.runner import run_episode
 from ai_teleop.sim.scene import SimEnv
 from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
+
+log = get_logger("generate")
 
 SCENE_PATH = STATIC_TASK_SCENE  # static 3-hole task wall — the default scene
 
@@ -622,9 +624,8 @@ def regenerate_from_metadata(
         scene_path=str(scene_path),
     )
     if expected is not None and actual != expected:
-        print(
-            f"WARNING: fingerprint mismatch (metadata {expected} != regenerated {actual}); "
-            "the regenerated episodes may differ from the originals.",
-            file=sys.stderr,
+        log.warning(
+            f"fingerprint mismatch (metadata {expected} != regenerated {actual}); "
+            "the regenerated episodes may differ from the originals."
         )
     return written

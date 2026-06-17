@@ -212,7 +212,6 @@ class OfflineResidualBCDataset(Dataset):
         *,
         load_images: bool = False,
         download: bool = True,
-        offline: bool = True,
         train: bool = True,
         val_fraction: float = 0.2,
         seed: int = 0,
@@ -228,7 +227,7 @@ class OfflineResidualBCDataset(Dataset):
             self.metadata: ResBCDatasetMetadata = json.load(metadata_file)
 
         missing_episodes = missing_episode_indices(self.metadata, self.dataset_dir)
-        if len(missing_episodes) > 0:
+        if missing_episodes:
             if not download:
                 log.error(
                     f"Missing {len(missing_episodes)} episodes, but the download flag is set to False."
@@ -236,12 +235,14 @@ class OfflineResidualBCDataset(Dataset):
                 raise FileNotFoundError(
                     f"Missing {len(missing_episodes)} episodes. Please make sure the dataset exists or set the download option to True."
                 )
-            else:
-                log.info(f"Missing {len(missing_episodes)} episodes. Regenerating from metadata...")
-                regenerate_from_metadata(self.metadata_path)
+            log.info(f"Missing {len(missing_episodes)} episodes. Regenerating from metadata...")
+            regenerate_from_metadata(self.metadata_path)
 
-        if offline and load_images:
-            log.warning("load_images=True and offline=True are incompatible.")
+        if load_images:
+            # Images come from rendered frames; the offline corpus has none (vision is M7).
+            log.warning(
+                "load_images=True is not supported by the offline dataset yet (vision is M7)."
+            )
 
         train_episodes, val_episodes = split_episodes(
             self.metadata["episodes"], val_fraction=val_fraction, seed=seed
@@ -258,10 +259,9 @@ class OfflineResidualBCDataset(Dataset):
             norm_stats = compute_norm_stats(raw_episodes)
         self.norm_stats = norm_stats
         self.episodes = [normalize_episode(episode, norm_stats) for episode in raw_episodes]
-        self.length = len(self.episodes)
 
     def __len__(self) -> int:
-        return self.length
+        return len(self.episodes)
 
     def __getitem__(self, index: int) -> Episode:
         return self.episodes[index]
