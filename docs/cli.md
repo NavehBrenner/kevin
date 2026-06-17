@@ -176,6 +176,31 @@ uv run kvn check                 # the full pre-push / CI gate
 uv run kvn test tests/test_foo.py -k case   # extra args pass through to pytest
 ```
 
+## Logging
+
+The simulation/data scripts (`smoke`, `harness`, `gen`) emit progress and status
+through the project logger ([`src/ai_teleop/common/log.py`](../src/ai_teleop/common/log.py))
+instead of bare `print`, so output is leveled, timestamped, and tagged
+(`HH:MM:SS INFO [datagen] …`). Each exposes the same three flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--log-level {DEBUG,INFO,WARNING,ERROR}` | `INFO` | Console verbosity. |
+| `--quiet` | off | Only warnings/errors on the console (a `--log-file`, if set, still records everything). |
+| `--log-file [PATH]` | off | Also tee logs to a file. Bare flag auto-names one under `outputs/logs/<script>_<timestamp>.log`; pass a path to choose your own. |
+
+```bash
+uv run kvn gen --episodes 200 --log-level DEBUG       # verbose console
+uv run kvn gen --episodes 200 --quiet --log-file      # quiet console, full file under outputs/logs/
+uv run kvn harness --headless --log-file run.log      # tee to an explicit path
+```
+
+Console output uses [rich](https://rich.readthedocs.io/) (colored, aligned columns)
+when it's installed **and** stdout is a terminal; otherwise — and in any
+`--log-file` — it falls back to a plain text formatter. `rich` ships with the
+`dev` and `cli` extras; the logger works without it. Logs go to **stderr**, so a
+script's real stdout stays clean for piping.
+
 ## Adding a command
 
 - **A new runnable script** → add it to `scripts/`, then add one line to

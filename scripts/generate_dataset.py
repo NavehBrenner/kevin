@@ -55,6 +55,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from run_episode import run_episode  # noqa: E402
 
+from ai_teleop.common.log import (  # noqa: E402
+    add_logging_arguments,
+    configure_from_args,
+    get_logger,
+)
 from ai_teleop.common.observation import Observation  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data import (  # noqa: E402
@@ -70,6 +75,10 @@ from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENE_PATH = REPO_ROOT / "assets" / "mjcf" / "full_scene.xml"
+
+# Console logger for this driver. (Distinct from `_EpisodeLogger` below, which is
+# a per-step trajectory recorder, not a console logger.)
+log = get_logger("datagen")
 
 _PEG_HALF_LENGTH = 0.030
 DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
@@ -340,7 +349,7 @@ def generate_dataset(
             written.append(path)
             summaries.append(_summary_from_cache(path, baseline=baseline))
             if progress:
-                print(f"  episode {episode_index:5d} │ ✓ loaded from cache")
+                log.info("episode %5d │ ✓ loaded from cache", episode_index)
             continue
         # Reset once to read the randomized target + tare the F/T bias, then let
         # run_episode reset to the identical state (deterministic per index).
@@ -409,9 +418,12 @@ def generate_dataset(
         summaries.append(_episode_summary(path, episode_metadata, n_steps=len(logger.recorder)))
         if progress:
             tail = f" · baseline {baseline_reason.value}" if baseline_reason is not None else ""
-            print(
-                f"  episode {episode_index:5d} │ generated · {len(logger.recorder):5d} steps "
-                f"· {logger.terminal_reason.value}{tail}"
+            log.info(
+                "episode %5d │ generated · %5d steps · %s%s",
+                episode_index,
+                len(logger.recorder),
+                logger.terminal_reason.value,
+                tail,
             )
 
     _write_dataset_metadata(
@@ -575,10 +587,11 @@ def regenerate_from_metadata(
         scene_path=str(scene_path),
     )
     if expected is not None and actual != expected:
-        print(
-            f"WARNING: fingerprint mismatch (metadata {expected} != regenerated {actual}); "
+        log.warning(
+            "fingerprint mismatch (metadata %s != regenerated %s); "
             "the regenerated episodes may differ from the originals.",
-            file=sys.stderr,
+            expected,
+            actual,
         )
     return written
 
@@ -623,25 +636,29 @@ def main() -> int:
         help="Reproduce the dataset described by a metadata.json (rebuilds runs/ from the "
         "committed config); --out overrides where it lands. Ignores generation flags.",
     )
+    add_logging_arguments(parser)
     args = parser.parse_args()
+    configure_from_args(args)
 
     if not SCENE_PATH.exists():
-        print(f"FATAL: scene file not found at {SCENE_PATH}", file=sys.stderr)
+        log.error("scene file not found at %s", SCENE_PATH)
         return 2
 
     if args.from_metadata is not None:
-        print(f"Regenerating dataset from {args.from_metadata}")
+        log.info("regenerating dataset from %s", args.from_metadata)
         start = time.time()
         written = regenerate_from_metadata(
             args.from_metadata, out_dir=args.out, force=args.force, progress=True
         )
         target = Path(args.out) if args.out is not None else Path(args.from_metadata).parent
         elapsed = time.time() - start
-        print(f"Regenerated {len(written)} episode files in {elapsed:.1f}s → {target / 'runs'}")
+        log.info(
+            "regenerated %d episode files in %.1fs → %s", len(written), elapsed, target / "runs"
+        )
         return 0
 
     out_dir = Path(args.out) if args.out is not None else Path("data") / f"dataset_{args.seed}"
-    print(f"Generating {args.episodes} episodes → {out_dir}  (seed={args.seed})")
+    log.info("generating %d episodes → %s  (seed=%d)", args.episodes, out_dir, args.seed)
     start = time.time()
     written = generate_dataset(
         out_dir,
@@ -655,8 +672,8 @@ def main() -> int:
         progress=True,
     )
     elapsed = time.time() - start
-    print(f"Wrote {len(written)} episode files in {elapsed:.1f}s → {out_dir / 'runs'}")
-    print(f"Dataset summary → {out_dir / 'metadata.json'}")
+    log.info("wrote %d episode files in %.1fs → %s", len(written), elapsed, out_dir / "runs")
+    log.info("dataset summary → %s", out_dir / "metadata.json")
     return 0
 
 

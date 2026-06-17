@@ -31,6 +31,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ai_teleop.common.command import Command  # noqa: E402
+from ai_teleop.common.log import (  # noqa: E402
+    add_logging_arguments,
+    configure_from_args,
+    get_logger,
+)
 from ai_teleop.control import Controller, LockState  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
@@ -38,6 +43,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENE_PATH = REPO_ROOT / "assets" / "mjcf" / "full_scene.xml"
 OUTPUT_DIR = REPO_ROOT / "outputs"
 CSV_PATH = OUTPUT_DIR / "m2_harness_trace.csv"
+
+log = get_logger("harness")
 
 # Sim runs at 500 Hz (dt=2 ms in the MJCF). One control tick == one sim step.
 SIM_DT = 0.002
@@ -158,14 +165,16 @@ def main() -> int:
     p.add_argument(
         "--force-cap", type=float, default=30.0, help="Force-cap watchdog threshold in newtons."
     )
+    add_logging_arguments(p)
     args = p.parse_args()
+    configure_from_args(args)
 
     if not SCENE_PATH.exists():
-        print(f"FATAL: scene file not found at {SCENE_PATH}", file=sys.stderr)
+        log.error("scene file not found at %s", SCENE_PATH)
         return 2
 
     render_mode = "headless" if args.headless else "viewer"
-    print(f"Loading scene ({render_mode}): {SCENE_PATH}")
+    log.info("loading scene (%s): %s", render_mode, SCENE_PATH)
     env = SimEnv(str(SCENE_PATH), render_mode=render_mode)
     env.reset()
     if not args.headless:
@@ -174,8 +183,8 @@ def main() -> int:
     controller = Controller(env, force_cap_n=args.force_cap)
     home_pos = controller.home_pose[:3]
     home_quat = controller.home_pose[3:]
-    print(f"Home EE pose: pos={_arr_to_str(home_pos)} quat={_arr_to_str(home_quat, 4)}")
-    print(f"Force cap: {controller.force_cap_n:.1f} N")
+    log.info("home EE pose: pos=%s quat=%s", _arr_to_str(home_pos), _arr_to_str(home_quat, 4))
+    log.info("force cap: %.1f N", controller.force_cap_n)
 
     # ------------------------------------------------------------------
     # CSV setup (headless only).
@@ -206,7 +215,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Phase 1 — waypoints in a 10 cm square in front of the wall.
     # ------------------------------------------------------------------
-    print("\n=== Phase 1: Waypoint square ===")
+    log.info("=== Phase 1: Waypoint square ===")
     waypoints = [
         home_pos + np.array([0.0, 0.05, 0.05]),
         home_pos + np.array([0.0, 0.05, -0.05]),
@@ -214,7 +223,7 @@ def main() -> int:
         home_pos + np.array([0.0, -0.05, 0.05]),
     ]
     for i, wp in enumerate(waypoints):
-        print(f"  waypoint {i}: target = {_arr_to_str(wp)}")
+        log.info("  waypoint %d: target = %s", i, _arr_to_str(wp))
         summary = run_phase(
             env,
             controller,
@@ -225,9 +234,10 @@ def main() -> int:
             csv_writer=csv_writer,
             viewer_real_time=not args.headless,
         )
-        print(
-            f"    final pos err = {summary['last_pos_err'] * 1000:.2f} mm  "
-            f"peak |F| = {summary['peak_force']:.2f} N"
+        log.info(
+            "    final pos err = %.2f mm  peak |F| = %.2f N",
+            summary["last_pos_err"] * 1000,
+            summary["peak_force"],
         )
         summaries.append(summary)
 
@@ -235,9 +245,9 @@ def main() -> int:
     # Phase 2 — compliance: target inside the wall.
     # Combines approach (slew from waypoint square to wall) + contact + settle.
     # ------------------------------------------------------------------
-    print("\n=== Phase 2: Compliance (target 5 cm inside flat wall) ===")
+    log.info("=== Phase 2: Compliance (target 5 cm inside flat wall) ===")
     compliance_target = FLAT_WALL_POS + np.array([COMPLIANCE_INTRUSION, 0.0, 0.0])
-    print(f"  target = {_arr_to_str(compliance_target)}")
+    log.info("  target = %s", _arr_to_str(compliance_target))
     summary = run_phase(
         env,
         controller,
@@ -248,8 +258,10 @@ def main() -> int:
         csv_writer=csv_writer,
         viewer_real_time=not args.headless,
     )
-    print(
-        f"  peak |F| = {summary['peak_force']:.2f} N  final state = {summary['final_state'].value}"
+    log.info(
+        "  peak |F| = %.2f N  final state = %s",
+        summary["peak_force"],
+        summary["final_state"].value,
     )
     summaries.append(summary)
 
@@ -261,7 +273,7 @@ def main() -> int:
     # never reaches the 30 N watchdog. Per spec Step 7 we *stiffen the
     # lateral impedance* for this phase instead — the same safety clamp now
     # multiplies through a much larger K.
-    print("\n=== Phase 3: Force-trip (stiffen impedance until watchdog) ===")
+    log.info("=== Phase 3: Force-trip (stiffen impedance until watchdog) ===")
     force_trip_target = FLAT_WALL_POS + np.array([FORCE_TRIP_INTRUSION, 0.0, 0.0])
     # K_rot scaled up alongside K_xyz: the higher translation gain produces
     # bigger contact reaction moments, and the nominal soft K_rot can't
@@ -271,9 +283,9 @@ def main() -> int:
     saved_D = controller.damping_tcp.copy()
     controller.stiffness_tcp = np.array([2000.0, 2000.0, 2000.0, 50.0, 50.0, 50.0])
     controller.damping_tcp = np.array([180.0, 180.0, 180.0, 12.0, 12.0, 12.0])
-    print(
-        f"  target = {_arr_to_str(force_trip_target)}  "
-        f"K_xyz=2000 K_rot=50 (vs nominal K_xyz≈400, K_rot=3)"
+    log.info(
+        "  target = %s  K_xyz=2000 K_rot=50 (vs nominal K_xyz≈400, K_rot=3)",
+        _arr_to_str(force_trip_target),
     )
     summary = run_phase(
         env,
@@ -287,13 +299,14 @@ def main() -> int:
     )
     controller.stiffness_tcp = saved_K
     controller.damping_tcp = saved_D
-    print(
-        f"  peak |F| = {summary['peak_force']:.2f} N  "
-        f"final state = {summary['final_state'].value}  "
-        f"transitions = {len(summary['lock_changes'])}"
+    log.info(
+        "  peak |F| = %.2f N  final state = %s  transitions = %d",
+        summary["peak_force"],
+        summary["final_state"].value,
+        len(summary["lock_changes"]),
     )
     for t, state, reason in summary["lock_changes"]:
-        print(f"    t={t:.3f} -> {state}  ({reason})")
+        log.info("    t=%.3f -> %s  (%s)", t, state, reason)
     summaries.append(summary)
 
     # ------------------------------------------------------------------
@@ -303,11 +316,11 @@ def main() -> int:
     # within any reasonable time, so we temporarily stiffen rotational
     # impedance for the park slew.
     # ------------------------------------------------------------------
-    print("\n=== Phase 4: Release + Park ===")
+    log.info("=== Phase 4: Release + Park ===")
     controller.release_lock()
-    print(f"  after release: state = {controller.status.state.value}")
+    log.info("  after release: state = %s", controller.status.state.value)
     controller.request_park_lock()
-    print(f"  after request_park_lock: state = {controller.status.state.value}")
+    log.info("  after request_park_lock: state = %s", controller.status.state.value)
     summary = run_phase(
         env,
         controller,
@@ -325,16 +338,17 @@ def main() -> int:
 
     _mj.mju_subQuat(rot_ax, home_quat, obs.ee_pose[3:])
     final_rot_err_deg = float(np.rad2deg(np.linalg.norm(rot_ax)))
-    print(
-        f"  final state = {summary['final_state'].value}  "
-        f"pos err from home = {final_pos_err * 1000:.2f} mm  "
-        f"rot err = {final_rot_err_deg:.2f}°"
+    log.info(
+        "  final state = %s  pos err from home = %.2f mm  rot err = %.2f°",
+        summary["final_state"].value,
+        final_pos_err * 1000,
+        final_rot_err_deg,
     )
     summaries.append(summary)
 
     if csv_file is not None:
         csv_file.close()
-        print(f"\nWrote CSV trace: {CSV_PATH}")
+        log.info("wrote CSV trace: %s", CSV_PATH)
 
     # ------------------------------------------------------------------
     # Headless assertions.
@@ -383,12 +397,12 @@ def main() -> int:
             failures.append(f"CSV trace not written: {CSV_PATH}")
 
         if failures:
-            print("\nFAIL — assertion failures:", file=sys.stderr)
+            log.error("FAIL — assertion failures:")
             for f in failures:
-                print(f"  - {f}", file=sys.stderr)
+                log.error("  - %s", f)
             env.close()
             return 1
-        print("\nPASS — all M2 acceptance assertions hold.")
+        log.info("PASS — all M2 acceptance assertions hold.")
 
     env.close()
     return 0
