@@ -1,20 +1,21 @@
 """Tests for the M5 offline BC dataset loader (LAB-32).
 
-Exercises the loader-facing contracts: the deterministic episode-level split,
-the assembled per-episode streams + their normalization, episode-edge padding in
-``collate_episodes``, and the end-to-end ``build_dataloaders`` factory.
+Self-contained: a fixture builds a tiny synthetic dataset on disk (a few short
+episodes written with ``EpisodeRecorder`` + a ``metadata.json`` manifest) in a
+temp dir, so the suite needs no committed corpus and runs anywhere — the real
+episode ``.npz`` files are gitignored. Everything stays on CPU.
 
-These run against the small committed corpus at ``data/dataset_0`` (20 episodes).
-We always pass ``download=False`` so nothing regenerates, and everything stays on
-CPU. ``collate_episodes`` / ``build_dataloaders`` / ``EpisodeBatch`` are written
-to the teammate's not-yet-landed contract, so those tests are expected to be red
-until that code lands.
+Exercises the loader-facing contracts: the deterministic episode-level split, the
+assembled per-episode streams + their train-only normalization, episode-edge
+padding in ``collate_episodes``, and the ``build_dataloaders`` factory.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -28,23 +29,70 @@ from ai_teleop.data.dataset import (
     collate_episodes,
     split_episodes,
 )
+from ai_teleop.data.trajectory import EpisodeRecorder, episode_npz_path
 
-DATASET_DIR = Path(__file__).resolve().parents[1] / "data" / "dataset_0"
-
-requires_corpus = pytest.mark.skipif(
-    not DATASET_DIR.exists(), reason="data/dataset_0 corpus not found"
-)
-
-# Per-stream channel widths, the (T, C) feature contract from the Episode dataclass.
+# Per-stream channel widths — the (T, C) feature contract from the Episode dataclass.
 STREAM_WIDTHS: dict[str, int] = {"command": 9, "force_torque": 6, "proprioception": 24}
 DELTA_WIDTH = 7
+N_EPISODES = 16  # enough that a 0.2 val split (→ 3) differs across seeds non-flakily
 
 
-def _summaries() -> list:
-    """All episode summaries from the corpus manifest, via a constructed dataset's
-    metadata (avoids re-reading metadata.json by hand)."""
-    dataset = OfflineResidualBCDataset(DATASET_DIR, download=False, train=True)
-    return dataset.metadata["episodes"]
+def _unit_quaternion(rng: np.random.Generator) -> np.ndarray:
+    quaternion = rng.standard_normal(4)
+    return quaternion / np.linalg.norm(quaternion)
+
+
+def _random_row(rng: np.random.Generator, step: int) -> dict[str, object]:
+    """One schema-valid per-step row with variance on every channel (so the
+    normalization check sees a non-zero std) and valid unit quaternions."""
+    return {
+        "step": step,
+        "sim_time": step * 0.002,
+        "wrist_ft": rng.standard_normal(6),
+        "joint_positions": rng.standard_normal(7),
+        "joint_velocities": rng.standard_normal(7),
+        "ee_pose": np.concatenate([rng.standard_normal(3), _unit_quaternion(rng)]),
+        "gripper_width": rng.random(),
+        "cmd_position": rng.standard_normal(3),
+        "cmd_quaternion": _unit_quaternion(rng),
+        "cmd_grip": rng.standard_normal(),
+        "delta_position": rng.standard_normal(3),
+        "delta_orientation": rng.standard_normal(3),
+        "delta_grip": rng.standard_normal(),
+        "peg_pose": np.concatenate([rng.standard_normal(3), _unit_quaternion(rng)]),
+        "target_hole_pose": np.concatenate([rng.standard_normal(3), _unit_quaternion(rng)]),
+        "distance": rng.random(),
+        "step_success": False,
+    }
+
+
+@pytest.fixture(scope="session")
+def tiny_dataset(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build a small synthetic dataset (manifest + per-episode npz) on disk."""
+    root = tmp_path_factory.mktemp("dataset_tiny")
+    runs = root / "runs"
+    rng = np.random.default_rng(0)
+    episodes = []
+    for index in range(N_EPISODES):
+        length = 4 + int(rng.integers(0, 6))  # 4..9 steps, varied for padding
+        recorder = EpisodeRecorder()
+        for step in range(length):
+            recorder.add(**_random_row(rng, step))
+        path = episode_npz_path(runs, index)
+        recorder.save(path, metadata={"episode_index": index})
+        episodes.append(
+            {
+                "episode_index": index,
+                "file": f"runs/{path.parent.name}/{path.name}",
+                "n_steps": length,
+            }
+        )
+    (root / "metadata.json").write_text(json.dumps({"schema_version": "2.0", "episodes": episodes}))
+    return root
+
+
+def _summaries(dataset_dir: Path) -> list:
+    return json.loads((dataset_dir / "metadata.json").read_text())["episodes"]
 
 
 def _make_episode(episode_index: int, length: int) -> Episode:
@@ -63,9 +111,8 @@ def _make_episode(episode_index: int, length: int) -> Episode:
 # ---------------------------------------------------------------------------
 
 
-@requires_corpus
-def test_split_episodes_disjoint_and_complete():
-    episodes = _summaries()
+def test_split_episodes_disjoint_and_complete(tiny_dataset: Path):
+    episodes = _summaries(tiny_dataset)
     train, val = split_episodes(episodes, val_fraction=0.2, seed=0)
 
     train_indices = {summary["episode_index"] for summary in train}
@@ -77,9 +124,8 @@ def test_split_episodes_disjoint_and_complete():
     assert len(train) + len(val) == len(episodes)
 
 
-@requires_corpus
-def test_split_episodes_reproducible_same_seed():
-    episodes = _summaries()
+def test_split_episodes_reproducible_same_seed(tiny_dataset: Path):
+    episodes = _summaries(tiny_dataset)
     train_a, val_a = split_episodes(episodes, val_fraction=0.2, seed=0)
     train_b, val_b = split_episodes(episodes, val_fraction=0.2, seed=0)
 
@@ -87,18 +133,16 @@ def test_split_episodes_reproducible_same_seed():
     assert [s["episode_index"] for s in val_a] == [s["episode_index"] for s in val_b]
 
 
-@requires_corpus
-def test_split_episodes_different_seed_differs():
-    episodes = _summaries()
+def test_split_episodes_different_seed_differs(tiny_dataset: Path):
+    episodes = _summaries(tiny_dataset)
     _, val_a = split_episodes(episodes, val_fraction=0.2, seed=0)
     _, val_b = split_episodes(episodes, val_fraction=0.2, seed=1)
 
     assert [s["episode_index"] for s in val_a] != [s["episode_index"] for s in val_b]
 
 
-@requires_corpus
-def test_split_episodes_val_fraction():
-    episodes = _summaries()
+def test_split_episodes_val_fraction(tiny_dataset: Path):
+    episodes = _summaries(tiny_dataset)
     _, val = split_episodes(episodes, val_fraction=0.2, seed=0)
     assert len(val) == int(len(episodes) * 0.2)
 
@@ -108,16 +152,14 @@ def test_split_episodes_val_fraction():
 # ---------------------------------------------------------------------------
 
 
-@requires_corpus
-def test_dataset_construct_len_matches_train_split():
-    train_split, _ = split_episodes(_summaries(), val_fraction=0.2, seed=0)
-    dataset = OfflineResidualBCDataset(DATASET_DIR, download=False, train=True)
+def test_dataset_construct_len_matches_train_split(tiny_dataset: Path):
+    train_split, _ = split_episodes(_summaries(tiny_dataset), val_fraction=0.2, seed=0)
+    dataset = OfflineResidualBCDataset(tiny_dataset, download=False, train=True)
     assert len(dataset) == len(train_split)
 
 
-@requires_corpus
-def test_dataset_sample_shapes_and_dtype():
-    dataset = OfflineResidualBCDataset(DATASET_DIR, download=False, train=True)
+def test_dataset_sample_shapes_and_dtype(tiny_dataset: Path):
+    dataset = OfflineResidualBCDataset(tiny_dataset, download=False, train=True)
     episode = dataset[0]
 
     length = episode.command.shape[0]
@@ -134,32 +176,29 @@ def test_dataset_sample_shapes_and_dtype():
 # ---------------------------------------------------------------------------
 
 
-@requires_corpus
-def test_train_streams_are_normalized():
-    dataset = OfflineResidualBCDataset(DATASET_DIR, download=False, train=True)
+def test_train_streams_are_normalized(tiny_dataset: Path):
+    dataset = OfflineResidualBCDataset(tiny_dataset, download=False, train=True)
     for stream in INPUT_STREAMS:
         pooled = torch.cat([getattr(episode, stream) for episode in dataset.episodes], dim=0)
         assert torch.allclose(pooled.mean(dim=0), torch.zeros(pooled.shape[1]), atol=1e-3)
         assert torch.allclose(pooled.std(dim=0), torch.ones(pooled.shape[1]), atol=1e-3)
 
 
-@requires_corpus
-def test_val_split_shares_train_norm_stats():
-    train = OfflineResidualBCDataset(DATASET_DIR, download=False, train=True)
+def test_val_split_shares_train_norm_stats(tiny_dataset: Path):
+    train = OfflineResidualBCDataset(tiny_dataset, download=False, train=True)
     val = OfflineResidualBCDataset(
-        DATASET_DIR, download=False, train=False, norm_stats=train.norm_stats
+        tiny_dataset, download=False, train=False, norm_stats=train.norm_stats
     )
     assert val.norm_stats is train.norm_stats
 
 
-@requires_corpus
-def test_val_split_without_norm_stats_raises():
+def test_val_split_without_norm_stats_raises(tiny_dataset: Path):
     with pytest.raises(ValueError):
-        OfflineResidualBCDataset(DATASET_DIR, download=False, train=False, norm_stats=None)
+        OfflineResidualBCDataset(tiny_dataset, download=False, train=False, norm_stats=None)
 
 
 # ---------------------------------------------------------------------------
-# collate_episodes — episode-edge padding (NOT-YET-IMPLEMENTED contract)
+# collate_episodes — episode-edge padding
 # ---------------------------------------------------------------------------
 
 
@@ -188,7 +227,7 @@ def test_collate_episodes_pads_tail_with_zeros():
     batch = collate_episodes([short, long])
 
     # The shorter episode (row 0, true length 3) has a zero-padded tail in every
-    # stream past its true length — this is the episode-edge padding check.
+    # stream past its true length — the episode-edge padding check.
     short_length = short.command.shape[0]
     for stream in (*STREAM_WIDTHS, "delta"):
         padded = getattr(batch, stream)[0]
@@ -197,14 +236,13 @@ def test_collate_episodes_pads_tail_with_zeros():
 
 
 # ---------------------------------------------------------------------------
-# build_dataloaders — end-to-end factory (NOT-YET-IMPLEMENTED contract)
+# build_dataloaders — end-to-end factory
 # ---------------------------------------------------------------------------
 
 
-@requires_corpus
-def test_build_dataloaders_returns_loaders_and_stats():
+def test_build_dataloaders_returns_loaders_and_stats(tiny_dataset: Path):
     train_loader, val_loader, norm_stats = build_dataloaders(
-        DATASET_DIR, batch_size=4, download=False, num_workers=0
+        tiny_dataset, batch_size=4, download=False, num_workers=0
     )
 
     assert isinstance(norm_stats, NormStats)
@@ -214,11 +252,10 @@ def test_build_dataloaders_returns_loaders_and_stats():
     assert val_loader.dataset.norm_stats is norm_stats
 
 
-@requires_corpus
-def test_build_dataloaders_train_batch_shapes():
+def test_build_dataloaders_train_batch_shapes(tiny_dataset: Path):
     batch_size = 4
     train_loader, _, _ = build_dataloaders(
-        DATASET_DIR, batch_size=batch_size, download=False, num_workers=0
+        tiny_dataset, batch_size=batch_size, download=False, num_workers=0
     )
 
     batch = next(iter(train_loader))
