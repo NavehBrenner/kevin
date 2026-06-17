@@ -15,13 +15,12 @@ Two checks, both driving the real composed loop (`run_episode`) headless:
    the base command and the command handed to `compute`; the wrapped objects are
    the unmodified production classes.
 
-`run_episode` lives in `scripts/`, so the scripts dir is put on the path the
-same way the dev harness bootstraps the package.
+`run_episode` lives in the package (`ai_teleop.sim.runner`); the
+`scripts/run_episode.py` CLI is just a thin front door over it.
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -30,12 +29,8 @@ import pytest
 from ai_teleop.control import Controller, LockState
 from ai_teleop.domain import ZERO_DELTA, Delta, NoAssist, apply_delta
 from ai_teleop.input import ScriptedNoisyHuman
+from ai_teleop.sim.runner import EpisodeResult, run_episode
 from ai_teleop.sim.scene import SimEnv
-
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
-
-from run_episode import EpisodeResult, run_episode  # noqa: E402
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "assets" / "mjcf" / "full_scene.xml"
 

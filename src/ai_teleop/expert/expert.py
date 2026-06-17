@@ -37,11 +37,11 @@ Scene conventions (current MJCF):
 
 from __future__ import annotations
 
-import mujoco
 import numpy as np
 
 from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
+from ai_teleop.common.utils.rotations import axis_from_quat, quat_to_matrix
 from ai_teleop.domain import ZERO_DELTA, Delta, clamp_delta
 
 
@@ -57,12 +57,6 @@ def _smoothstep_gate(distance: float, d_near: float, d_far: float) -> float:
         return 1.0
     t = (d_far - distance) / (d_far - d_near)  # 0 at d_far → 1 at d_near
     return float(t * t * (3.0 - 2.0 * t))
-
-
-def _quat_to_matrix(quaternion: np.ndarray) -> np.ndarray:
-    matrix = np.zeros(9)
-    mujoco.mju_quat2Mat(matrix, quaternion)
-    return matrix.reshape(3, 3)
 
 
 class Expert:
@@ -109,13 +103,12 @@ class Expert:
 
     def get_delta(self, observation: Observation, command: Command) -> Delta:  # noqa: ARG002
         # --- Privileged geometry -----------------------------------------
-        peg_rotation = _quat_to_matrix(observation.peg_pose[3:])
-        peg_axis = peg_rotation[:, 2]  # long axis = local +z
+        peg_axis = axis_from_quat(observation.peg_pose[3:], 2)  # long axis = local +z
         peg_tip = observation.peg_pose[:3] + self._peg_half_length * peg_axis
 
         hole_pose = observation.hole_poses[observation.target_hole_index]
         hole_position = hole_pose[:3]
-        insertion_axis = _quat_to_matrix(hole_pose[3:])[:, 0]  # bore = hole local +x
+        insertion_axis = quat_to_matrix(hole_pose[3:])[:, 0]  # bore = hole local +x
 
         error = hole_position - peg_tip
         distance = float(np.linalg.norm(error))
@@ -131,10 +124,9 @@ class Expert:
         align_axis = np.cross(peg_axis, insertion_axis)
         align_axis_norm = float(np.linalg.norm(align_axis))
         angular_error = float(np.arccos(np.clip(peg_axis @ insertion_axis, -1.0, 1.0)))
-        if align_axis_norm > 1e-9:
-            align_rotation = (align_axis / align_axis_norm) * angular_error
-        else:
-            align_rotation = np.zeros(3)
+        align_rotation = (
+            align_axis / align_axis_norm * angular_error if align_axis_norm > 1e-09 else np.zeros(3)
+        )
 
         # --- Axial advance, gated by lateral + angular alignment ---------
         aligned = (

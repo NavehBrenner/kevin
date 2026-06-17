@@ -42,11 +42,23 @@ log = get_logger("cli")
 
 # command -> (script filename under scripts/, one-line help)
 APP_COMMANDS: dict[str, tuple[str, str]] = {
-    "sim": ("view_generated_wall.py", "Generate and view a procedural wall scene (viewer or PNGs)."),
-    "smoke": ("smoke_test_sim.py", "M1 scene smoke test: load, step, dump sensors + a wrist-cam PNG."),
+    "sim": (
+        "view_generated_wall.py",
+        "Generate and view a procedural wall scene (viewer or PNGs).",
+    ),
+    "smoke": (
+        "smoke_test_sim.py",
+        "M1 scene smoke test: load, step, dump sensors + a wrist-cam PNG.",
+    ),
     "episode": ("run_episode.py", "Run one end-to-end no-assist episode through the control seam."),
-    "harness": ("dev_harness_controller.py", "M2 backbone-controller dev harness (five-phase tuning run)."),
-    "gen": ("generate_dataset.py", "Generate the behavioral-cloning dataset (N episodes -> NPZ files)."),
+    "harness": (
+        "dev_harness_controller.py",
+        "M2 backbone-controller dev harness (five-phase tuning run).",
+    ),
+    "gen": (
+        "generate_dataset.py",
+        "Generate the behavioral-cloning dataset (N episodes -> NPZ files).",
+    ),
 }
 
 # command -> (poe task name, one-line help)
@@ -64,7 +76,7 @@ def _usage() -> str:
     app = "\n".join(f"  {name:<{width}}  {summary}" for name, (_, summary) in APP_COMMANDS.items())
     dev = "\n".join(f"  {name:<{width}}  {summary}" for name, (_, summary) in DEV_COMMANDS.items())
     return (
-        "kvn — K.V.N project CLI (pronounced \"Kevin\").\n\n"
+        'kvn — K.V.N project CLI (pronounced "Kevin").\n\n'
         "Usage: kvn <command> [args...]\n"
         "       kvn <command> --help    # the command's own flags\n\n"
         f"Simulation / data commands:\n{app}\n\n"

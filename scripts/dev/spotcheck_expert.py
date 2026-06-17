@@ -6,9 +6,10 @@ the M3 seam. Reports the final tip→hole lateral error and axial penetration.
 
 from pathlib import Path
 
-import mujoco
 import numpy as np
 
+from ai_teleop.common import Observation
+from ai_teleop.common.utils.rotations import quat_to_matrix
 from ai_teleop.control import Controller
 from ai_teleop.domain import NoAssist, apply_delta
 from ai_teleop.expert import Expert
@@ -19,10 +20,8 @@ SCENE = Path(__file__).resolve().parents[2] / "assets" / "mjcf" / "full_scene.xm
 N_AXIS = np.array([1.0, 0.0, 0.0])
 
 
-def peg_tip(o):
-    R = np.zeros(9)
-    mujoco.mju_quat2Mat(R, o.peg_pose[3:])
-    R = R.reshape(3, 3)
+def peg_tip(o: Observation):
+    R = quat_to_matrix(o.peg_pose[3:])
     return o.peg_pose[:3] + R @ np.array([0, 0, 0.030]), R[:, 2]
 
 

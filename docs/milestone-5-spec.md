@@ -15,18 +15,33 @@ operator's coarse command brings the peg to the hole vicinity and the policy
 supplies contact-reactive alignment from F/T — it isolates the contact-reasoning
 contribution and is the **guaranteed deliverable**. Vision (Phase 2) is M7.
 
-The architecture is **locked** in `docs/design/policy-model.md` (multi-stream
-encoder + fusion head; GRU temporal encoders with a 1D-CNN fallback). M5 builds
-exactly that skeleton minus the image branch, so Phase 2 only *widens* the input
-— keeping the Phase-1-vs-Phase-2 ablation clean.
+> **⚠️ 2026-06-17 revision — read first.** The temporal architecture was revised
+> from *windowed, separately-encoded streams with late fusion* to a **single
+> stateful GRU core over an early-fused, normalized observation** (see
+> `docs/design/policy-model.md` Decision A). Furthermore, the BC **training
+> protocol** and the **loader's exact shape** (windowed per-step samples vs. full
+> episode-sequences; possible on-policy / DAgger-style data generation) are
+> **still under active revision and not yet final**. Consequently the build-order
+> steps and the training-loss subsection below may not yet reflect the final
+> pipeline — treat the model description (single stateful GRU core, early fusion,
+> no learned per-stream encoders) as current, and the loader/training mechanics as
+> provisional.
+
+The architecture is **locked** in `docs/design/policy-model.md`: a **single
+stateful GRU core** consumes the per-step, normalized streams concatenated into
+one input vector (early fusion), and an MLP head maps its hidden state to `Δ_raw`.
+There are **no learned per-stream encoders** for the vector streams — only the
+image keeps its CNN (Phase 2). M5 builds exactly that core minus the image branch,
+so Phase 2 only *widens* the input — keeping the Phase-1-vs-Phase-2 ablation clean.
 
 ## Definition of done
 
 By the end of M5 we can:
 
-- **Load** the M4 NPZ corpus into batched, windowed training samples — command
-  history, F/T history, proprioception in; the expert's `Δ` as the target — with
-  an **episode-level** train/val split.
+- **Load** the M4 NPZ corpus into batched training samples — the per-step
+  command, F/T, and proprioception streams in; the expert's `Δ` as the target —
+  with an **episode-level** train/val split. (Exact sample shape — per-step vs.
+  episode-sequence — is under revision; see the banner.)
 - **Train** the Phase-1 residual via BC (per-channel, rotation-aware loss) with
   sane train/val curves, checkpointing, and early stopping.
 - **Run the trained policy in the loop in real time** as an `AssistProvider`
@@ -38,10 +53,12 @@ By the end of M5 we can:
 
 ## What's in M5
 
-- **BC dataset loader + windowing** (LAB-32, `data/`) — turns flat per-step NPZ
-  rows into windowed `(streams, Δ*)` tensors; episode-level split; normalization.
-- **Phase-1 residual model** (LAB-33, `policy/`) — GRU(command) + GRU(F/T) +
-  MLP(proprio) → concat → MLP fusion head → 7-vector `Δ_raw`. No image branch.
+- **BC dataset loader** (LAB-32, `data/`) — turns flat per-step NPZ rows into
+  `(streams, Δ*)` training tensors; episode-level split; normalization. (Batching
+  shape — per-step samples vs. episode-sequences — under revision; see banner.)
+- **Phase-1 residual model** (LAB-33, `policy/`) — per-step normalized streams
+  concatenated → a **single stateful GRU core** → MLP head → 7-vector `Δ_raw`.
+  No learned per-stream encoders; no image branch.
 - **BC train/val loop + checkpointing + seam integration** (LAB-34,
   `policy/` + `scripts/`) — the training pipeline, plus a `ResidualPolicy`
   `AssistProvider` that wraps a checkpoint for stateful real-time inference and
@@ -69,21 +86,24 @@ spec is their detailed expansion, one build step each.
 
 ### Inputs — the Phase-1 streams (recap from `policy-model.md`)
 
-Three independent streams, each with its own encoder. Histories are
-**zero-padded at episode start** (the model must tolerate a partially-filled
-buffer — itself realistic).
+The recurrent core is **stateful**, so there are no history windows: each stream
+contributes its **current per-step value**, normalized, and all temporal memory
+is carried in the GRU hidden state (reset to zero at episode start). The streams
+are concatenated into a single input vector `x_t`.
 
-| Stream | Shape (tunable) | Source columns | Encoder |
+| Stream | Per-step shape (tunable) | Source columns | Pre-core handling |
 |---|---|---|---|
-| Command history | `H_c×7` (~50 steps) | `cmd_position` (3) + `cmd_quaternion` (4) | GRU → `e_cmd` |
-| F/T history | `H_f×6` (~20 steps) | `wrist_ft` (6, already bias-subtracted) | GRU → `e_ft` |
-| Proprioception | `~24` | `ee_pose`→3+6D, `joint_positions` (7), `joint_velocities` (7), `gripper_width` (1) | MLP → `e_pro` |
+| Command | `7` | `cmd_position` (3) + `cmd_quaternion` (4) | normalize → concat |
+| F/T | `6` | `wrist_ft` (6, already bias-subtracted) | normalize → concat |
+| Proprioception | `~24` | `ee_pose`→3+6D, `joint_positions` (7), `joint_velocities` (7), `gripper_width` (1) | normalize → concat |
 
-The command stream carries the **base** operator command `c_t` (pre-Δ), exactly
-what the schema's `cmd_*` columns log and what the seam hands `get_delta` — never
-the policy's own Δ. Quaternion inputs are converted to a continuous **6D**
-representation in the loader (raw quaternions are admissible as *inputs* but 6D
-avoids the sign ambiguity and matches the proprio EE-rotation encoding).
+The vector streams get **no learned per-stream encoder** — they are already
+low-dimensional physical features, and the GRU's input-to-hidden matrix is the
+learned mixing projection. Only fixed transforms apply: per-channel
+**normalization** (train-set stats, stored for inference) and the quaternion→**6D**
+map. The command stream carries the **base** operator command `c_t` (pre-Δ),
+exactly what the schema's `cmd_*` columns log and what the seam hands `get_delta`
+— never the policy's own Δ.
 
 ### Output and the BC target
 
@@ -95,21 +115,22 @@ hard safety clamp (`±2 cm / ±10° / ±5 N`) is applied **outside** the network
 garbage; an optional `tanh`-scaled head keeps raw outputs near range to ease
 training but is *not* the safety bound.
 
-### Model — multi-stream encoder + fusion head (LAB-33)
+### Model — single stateful GRU core + MLP head (LAB-33)
 
 ```
-command (H_c×7) ─► GRU ─► e_cmd ┐
-F/T     (H_f×6) ─► GRU ─► e_ft  ├─► concat ─► MLP fusion head ─► Δ_raw (7)
-proprio (~24)   ─► MLP ─► e_pro ┘
+[cmd_t, ft_t, proprio_t] ─(normalize, quat→6D)─► concat = x_t ─► stateful GRU core ─► h_t ─► MLP head ─► Δ_raw (7)
+                                                                 (1–2 layers, hidden h, h carried step→step)
 ```
 
-Late fusion of separately-encoded modalities. The fusion head is where
-cross-modal reasoning happens ("F/T says catching on the +x rim, command says
-still pushing +x → correct toward −x"). **GRU** is the locked temporal encoder
-(Decision A); the **1D-CNN over a fixed zero-padded window** is the documented
-fallback sharing the same window-in/embedding-out contract, so swapping is a
-localized encoder change. The skeleton is deliberately the Phase-2 skeleton minus
-the `e_img` branch.
+Early fusion into one stateful recurrent core: each step consumes `x_t` and
+advances the hidden state `h_t`; the MLP head maps `h_t` → `Δ_raw`. Cross-modal
+reasoning ("F/T says catching on the +x rim, command says still pushing +x →
+correct toward −x") happens inside the recurrence and again in the head. Capacity
+comes from **stacked GRU layers + a wider hidden state + the head MLP**, never
+from deepening the cell's internal transition (that lengthens the through-time
+gradient path). The windowed, separately-encoded late-fusion design — and a
+stateless 1D-CNN encoder — are the documented fallbacks (Decision A). The core is
+deliberately the Phase-2 architecture minus the `e_img` branch.
 
 ### Training — behavioral cloning (LAB-34)
 
@@ -133,13 +154,14 @@ the `e_img` branch.
 A `ResidualPolicy` in `policy/` wraps a trained checkpoint as an
 `AssistProvider`:
 
-- Maintains rolling **history buffers** (command, F/T) and the **GRU hidden
-  state**, advancing them each `get_delta` call; returns `clamp_delta(Δ_raw)`.
-- **Per-episode reset** of buffers + hidden state — see the known-unknown on the
-  reset hook below.
+- Maintains the **GRU hidden state**, advancing it by one step each `get_delta`
+  call from the current normalized observation; returns `clamp_delta(Δ_raw)`. The
+  statefulness makes this O(1) per step — no history window to re-encode.
+- **Per-episode reset** of the hidden state — see the known-unknown on the reset
+  hook below.
 - Forward pass must fit inside one control tick (the sim runs at 500 Hz ⇒ ~2 ms;
   the design's nominal budget is ~10 ms). A small GRU+MLP on CPU is well under
-  this; measure once encoder sizes are fixed.
+  this; measure once the core size is fixed.
 - Slots into `run_episode` in place of `NoAssist`/`Expert` with **no** runner,
   input, or controller change — the dependency-inversion property M3 established.
 
@@ -161,9 +183,10 @@ Each step is its own branch → PR → CI → merge, in dependency order.
 Files: `src/ai_teleop/data/dataset.py` (+ `data/__init__` re-export); tests in
 `tests/test_dataset_loader.py`. Add `torch` to the test/CI environment.
 
-- Read the M4 NPZ episodes via `ai_teleop.data.load_episode`; assemble per-step
-  windows (`H_c`, `H_f` zero-padded at episode start), proprio vector (quat→6D),
-  and the `Δ*` target. Expose as a `torch.utils.data.Dataset` + `DataLoader`.
+- Read the M4 NPZ episodes via `ai_teleop.data.load_episode`; assemble the
+  per-step normalized streams (quat→6D for orientations) and the `Δ*` target.
+  Expose as a `torch.utils.data.Dataset` + `DataLoader`. (Whether a sample is a
+  single step or a full episode-sequence is under revision — see the banner.)
 - **Episode-level** train/val split; normalization stats computed on train only.
 - **Per-step acceptance**: loads a real M4 run; window/target shapes are correct;
   zero-padding at episode start verified; no episode appears in both splits; a
@@ -174,14 +197,13 @@ Files: `src/ai_teleop/data/dataset.py` (+ `data/__init__` re-export); tests in
 Files: `src/ai_teleop/policy/model.py` (+ re-export); tests in
 `tests/test_policy_model.py`.
 
-- GRU(command), GRU(F/T), MLP(proprio) → concat → MLP fusion head → 7 outputs;
-  optional `tanh`-scaled head. Hidden sizes/layers are hyperparameters. Encoder
-  modules share a window-in/embedding-out contract so the 1D-CNN fallback drops
-  in without head changes.
-- **Per-step acceptance**: forward pass on a batch yields `(B, 7)`; handles a
-  zero-padded (episode-start) window; stateful GRU path exercised; parameter
-  count sane; CPU forward is fast; `isinstance` plays nice with the seam (the
-  wrapper, not the raw `nn.Module`, is the `AssistProvider`).
+- Per-step normalized streams → concat → a single stateful GRU core → MLP head →
+  7 outputs; optional `tanh`-scaled head. Hidden size / number of stacked layers
+  are hyperparameters. No learned per-stream encoders (image CNN is Phase 2 only).
+- **Per-step acceptance**: forward pass on a batch yields `(B, 7)`; the stateful
+  GRU path is exercised (hidden-state carry + per-episode reset); parameter count
+  sane; CPU forward is fast; `isinstance` plays nice with the seam (the wrapper,
+  not the raw `nn.Module`, is the `AssistProvider`).
 
 ### Step 3 — BC train/val loop + checkpointing + seam integration · LAB-34 (~5–7 h)
 
@@ -231,11 +253,11 @@ if the spot-check shows drift.
 ```
 src/ai_teleop/data/
 ├── __init__.py        (re-export the loader)                         LAB-32
-└── dataset.py         (new — windowing Dataset/DataLoader, split)    LAB-32
+└── dataset.py         (new — Dataset/DataLoader + episode-level split) LAB-32
 
 src/ai_teleop/policy/
 ├── __init__.py        (populate — re-export model + ResidualPolicy)  LAB-33/34
-├── model.py           (new — multi-stream encoder + fusion head)     LAB-33
+├── model.py           (new — single stateful GRU core + MLP head)    LAB-33
 └── residual_policy.py (new — AssistProvider inference wrapper)       LAB-34
 
 scripts/
@@ -263,10 +285,10 @@ providers (see below).
   Prefer (b) — explicit, and a no-op for stateless providers (`NoAssist`,
   `Expert`). Decide in LAB-34; it's the only candidate change to a shared
   contract.
-- **History lengths** `H_c`, `H_f` — calibrate against validation curves.
+- **TBPTT truncation length** (steps per backprop chunk) — calibrate against validation curves.
 - **Loss specifics** — Huber vs MSE; per-channel weights `w_pos/w_ori/w_grip`;
   exact rotation loss (geodesic vs 6D-MSE).
-- **GRU sizing** — hidden size, layers, shared vs separate GRU for command/F-T.
+- **GRU core sizing** — hidden size and number of stacked layers (single shared core is locked).
 - **`tanh`-scaled output head** — whether it helps training.
 - **Inference latency** — measure once encoder sizes are fixed; fall back to the
   1D-CNN encoder if the stateful GRU path is fiddly or too slow.

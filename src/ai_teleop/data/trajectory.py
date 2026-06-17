@@ -1,7 +1,16 @@
 """Trajectory schema + per-episode writer/reader — the stable M5 contract (M4).
 
-One file per episode. The on-disk format is **NPZ** (numpy's ``savez``): no
-extra dependencies, available everywhere CI runs, and accepted by the M5 dataset
+**One directory per episode.** Each episode is a folder
+``runs/episode_NNNNN/`` holding the trajectory file ``episode.npz`` and an
+``imgs/`` subfolder reserved for per-step wrist-camera frames (populated only
+when generation is run with image rendering on — vision is M7, so ``imgs/`` is
+normally empty). The per-episode-folder layout (vs. a flat ``episode_NNNNN.npz``)
+is what lets a frame stream sit *beside* its trajectory without a second index.
+Build these paths with the ``episode_dir`` / ``episode_npz_path`` /
+``episode_imgs_dir`` helpers rather than formatting the names by hand.
+
+The on-disk trajectory format is **NPZ** (numpy's ``savez``): no extra
+dependencies, available everywhere CI runs, and accepted by the M5 dataset
 loader (LAB-32). Each per-step column is stored as a stacked ``(T, …)`` array;
 per-episode metadata is a JSON string under the ``metadata`` key.
 
@@ -43,10 +52,40 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
-SCHEMA_VERSION = "1.0"
+from ai_teleop.data.schema import EpisodeColumns, EpisodeMetadata
+
+# 2.0: on-disk *layout* changed from a flat ``runs/episode_NNNNN.npz`` to a
+# per-episode folder ``runs/episode_NNNNN/{episode.npz, imgs/}``. The per-step
+# column schema below is unchanged from 1.0.
+SCHEMA_VERSION = "2.0"
+
+# ---------------------------------------------------------------------------
+# On-disk layout — one directory per episode
+# ---------------------------------------------------------------------------
+
+EPISODE_DIR_TEMPLATE = "episode_{:05d}"  # runs/episode_00000/
+EPISODE_NPZ_NAME = "episode.npz"  # the trajectory file inside that folder
+IMGS_DIRNAME = "imgs"  # per-step wrist-camera frames (reserved; M7)
+
+
+def episode_dir(runs_dir: str | Path, episode_index: int) -> Path:
+    """The per-episode folder ``<runs_dir>/episode_NNNNN/``."""
+    return Path(runs_dir) / EPISODE_DIR_TEMPLATE.format(episode_index)
+
+
+def episode_npz_path(runs_dir: str | Path, episode_index: int) -> Path:
+    """The trajectory file ``<runs_dir>/episode_NNNNN/episode.npz``."""
+    return episode_dir(runs_dir, episode_index) / EPISODE_NPZ_NAME
+
+
+def episode_imgs_dir(runs_dir: str | Path, episode_index: int) -> Path:
+    """The image subfolder ``<runs_dir>/episode_NNNNN/imgs/`` (frames; M7)."""
+    return episode_dir(runs_dir, episode_index) / IMGS_DIRNAME
+
 
 # Per-step columns and their per-step shape (() == scalar). The writer validates
 # every appended row against this set so a logging bug fails loud, not silent.
@@ -120,9 +159,9 @@ class EpisodeRecorder:
         np.savez_compressed(path, allow_pickle=False, **arrays)  # type: ignore[arg-type]
 
 
-def load_episode(path: str | Path) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+def load_episode(path: str | Path) -> tuple[EpisodeColumns, EpisodeMetadata]:
     """Read one NPZ episode file back into (columns, metadata)."""
     with np.load(path, allow_pickle=False) as data:
-        metadata = json.loads(str(data["metadata"]))
+        metadata: EpisodeMetadata = json.loads(str(data["metadata"]))
         columns = {key: data[key] for key in COLUMN_SHAPES}
-    return columns, metadata
+    return cast(EpisodeColumns, columns), metadata

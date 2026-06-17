@@ -12,9 +12,9 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-import mujoco
 import numpy as np
 
+from ai_teleop.common.utils.rotations import axis_from_quat
 from ai_teleop.control import Controller
 from ai_teleop.domain import apply_delta
 from ai_teleop.expert import Expert
@@ -29,12 +29,6 @@ POS_K = [400.0, 400.0, 500.0]
 POS_D = [80.0, 80.0, 89.0]
 
 
-def col(quat: np.ndarray, c: int) -> np.ndarray:
-    rot = np.zeros(9)
-    mujoco.mju_quat2Mat(rot, quat)
-    return rot.reshape(3, 3)[:, c]
-
-
 def run(
     scene_path: Path, k_rot: float, d_rot: float, target_idx: int, bore_aware: bool
 ) -> tuple[float, float]:
@@ -46,7 +40,7 @@ def run(
         damping_tcp=np.array(POS_D + [d_rot] * 3),
     )
     hole = obs.hole_poses[obs.target_hole_index]
-    bore = col(hole[3:], 0)
+    bore = axis_from_quat(hole[3:], 0)
     grasp = (
         bore_aligned_grasp(controller.home_pose[3:], bore)
         if bore_aware
@@ -63,7 +57,7 @@ def run(
         controller.compute(obs, apply_delta(base, Expert().get_delta(obs, base)))
         env.step()
         obs = env.get_observation()
-    tip = obs.peg_pose[:3] + 0.030 * col(obs.peg_pose[3:], 2)
+    tip = obs.peg_pose[:3] + 0.030 * axis_from_quat(obs.peg_pose[3:], 2)
     err = hole[:3] - tip
     pen = -float(err @ bore) * 1000
     lat = float(np.linalg.norm(err - (err @ bore) * bore)) * 1000

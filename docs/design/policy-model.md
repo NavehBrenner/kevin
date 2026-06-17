@@ -18,44 +18,47 @@ This document specifies `π_θ`: the network that, every control step, maps the 
 
 ## Inputs — the four streams (recap)
 
-From [problem-structure.md](problem-structure.md), the observation `o_t` is four independent streams, each with its own small encoder:
+From [problem-structure.md](problem-structure.md), the observation `o_t` is four streams. The recurrent core is **stateful**, so there are no history windows: each stream contributes its **current per-step value**, normalized, and all temporal memory is carried in the GRU hidden state.
 
-| Stream | Shape (example, tunable) | Phase | Encoder |
+| Stream | Per-step shape (tunable) | Phase | Pre-core handling |
 |---|---|---|---|
-| Command history | `H_c×7` (pose/delta, last ~50 steps) | 1 & 2 | **GRU** → `e_cmd` |
-| F/T history | `H_f×6` (bias-subtracted wrench, last ~20 steps) | 1 & 2 | **GRU** → `e_ft` |
-| Proprioception | `~24` (EE pose 3+6D, joints 7, joint vel 7, grip 1) | 1 & 2 | MLP → `e_pro` |
-| Wrist image | `128×128×3` (current frame, opt. short stack) | 2 only | **CNN encoder, pretrained-init + fine-tuned end-to-end** → `e_img` |
+| Command | `7` (pose/delta) | 1 & 2 | normalize → concat |
+| F/T | `6` (bias-subtracted wrench) | 1 & 2 | normalize → concat |
+| Proprioception | `~24` (EE pose 3+6D, joints 7, joint vel 7, grip 1) | 1 & 2 | normalize → concat |
+| Wrist image | `128×128×3` (current frame, opt. short stack) | 2 only | **CNN encoder (pretrained-init, fine-tuned)** → `e_img` → concat |
 
-`H_c`, `H_f`, the image resolution and stack depth are hyperparameters calibrated against validation curves. Histories are zero-padded at episode start (the model must tolerate a partially-filled buffer; that is itself realistic — early in an episode there is little history).
+The vector streams get **no learned per-stream encoder** — they are already low-dimensional physical features, and the GRU's input-to-hidden matrix is itself the learned mixing projection (see *Overall architecture*). Only fixed, non-learned transforms are applied to them: per-channel **normalization** (fixed train-set stats, stored for inference) and the quaternion→**6D** map for orientations. The image is the sole exception — pixels need a learned CNN encoder. Image resolution/stack depth and the GRU hidden size/layers are hyperparameters calibrated against validation curves. The hidden state is reset to zero at episode start (the model must tolerate a cold start — itself realistic).
 
 ## Overall architecture
 
-A **multi-stream encoder + fusion MLP head**:
+A **single stateful recurrent core over an early-fused observation**. Each control step, every stream's current value is normalized, the image (Phase 2) is encoded by the CNN, and all are concatenated into one input vector `x_t` fed to one GRU that carries its hidden state across the whole episode (reset per episode). An MLP head maps the hidden state to the correction:
 
 ```
-   command window (H_c×7) ──► GRU ──────────────► e_cmd ┐
-   F/T window     (H_f×6) ──► GRU ──────────────► e_ft  │
-   proprioception (~24)   ──► MLP ──────────────► e_pro ├─► concat ─► MLP fusion head ─► Δ_raw (7) ─► clamp ─► Δ
-   wrist image (128²×3) ──► CNN (fine-tuned) ───► e_img ┘   (e_img present in Phase 2 only;
-                              └─► [aux head] ──► all-hole heatmap   aux branch, training only, λ-weighted)
+   command  c_t       (normalized) ┐
+   F/T      ft_t      (normalized) ├─► concat ─► x_t ─► [ stateful GRU core ] ─► h_t ─► MLP head ─► Δ_raw (7) ─► clamp ─► Δ
+   proprio  (3+6D…)   (normalized) │                    (1–2 layers, hidden h,
+   wrist image ─► CNN ─► e_img     ┘                     h carried step→step)
+                       └─► [aux head] ─► all-hole heatmap        (e_img Phase 2 only; aux training-only, λ-weighted)
 ```
 
-- Each stream is encoded **separately** then fused by concatenation — different modalities, different natural encoders, fused late. This keeps the architecture identical between phases: Phase 1 simply drops the `e_img` branch from the concat.
-- The fusion head is a small MLP (a few layers, ReLU/GELU) → 7 outputs. This is where cross-modal reasoning happens ("F/T says catching on the +x rim, command says still pushing +x, image says hole is at −x → correct toward −x").
-- **Latency budget**: must run inside one ~100 Hz control step (~10 ms). The image encoder is the cost driver (its weights are fine-tuned at *training* time, but *inference* is a plain forward pass — fine-tuning adds no runtime cost over a frozen encoder). The aux head runs only during training and is dropped at deployment. We decimate camera frames if needed (the scope flags rendering throughput as a risk).
+- **Early fusion into one recurrent core.** Because the core is stateful, there are no per-stream history windows — each stream contributes its current value and all temporal memory lives in `h_t`. The streams interact *inside* the recurrence, every step, and again in the head.
+- **No learned per-stream encoders for the vector streams.** Command/F-T/proprio are already low-dimensional physical features; the GRU's input-to-hidden matrix is the learned projection that mixes them, so separate per-stream MLPs would be redundant. They get only fixed transforms — normalization and quaternion→6D. **Only the image gets a learned encoder** (the CNN), because pixels require feature extraction before fusion.
+- **Capacity from depth, not a deeper cell.** Add capacity by stacking GRU layers / widening the hidden state, plus the MLP head — never by replacing the cell's gated-affine transition with a deep MLP. Deepening the per-step *recurrent transition* lengthens the through-time gradient path and hurts trainability (the gated near-identity update is what lets gradients survive hundreds of steps); depth *outside* the recurrence — input side, head, stacked layers — does not have this problem.
+- **The MLP head** (a few layers, ReLU/GELU → 7 outputs) is the final nonlinear mapping; cross-modal reasoning ("F/T says catching on the +x rim, command says still pushing +x, image says hole at −x → correct toward −x") now happens both in the recurrent state and the head.
+- **Phase 1 vs 2 is a clean input-width change**: Phase 1 `x_t = [cmd, ft, proprio]`; Phase 2 widens it with `e_img`. Core and head are otherwise identical, preserving the `Phase2 − Phase1` ablation.
+- **Latency budget**: one ~100 Hz control step (~10 ms). Statefulness makes the recurrent path **O(1) per step** (consume one `x_t`, advance `h_t`). The image CNN is the only real cost driver (Phase 2); it runs once per new frame (decimate frames if rendering throughput demands), and the all-holes aux head runs at *training* time only and is dropped at inference.
 
 ## Encoder decisions (locked)
 
-### Decision A — temporal encoder family for the history streams *(locked: GRU, 1D-CNN as fallback)*
+### Decision A — temporal architecture *(locked: single stateful GRU core; windowed late-fusion as the documented alternative)*
 
-How to encode the command/F/T windows:
+How to integrate the time-correlated command/F-T history into the correction:
 
-- **GRU / small RNN (chosen).** Carry a recurrent hidden state across steps; naturally handles variable-length history and the time-correlated structure of the command/F-T streams (intent emerges over hundreds of ms, contact evolves over a contact event). Costs: stateful inference (reset hidden state per episode), slightly trickier to batch. Chosen because a recurrent model is the more natural fit for "integrate an evolving history into an intent/contact estimate."
-- **1D-CNN over a fixed zero-padded window (fallback).** Treat the `H×C` history as a 1D sequence, convolve over time. Fixed-size input, fast, stateless, trivially batched, deterministic latency. The documented fallback for the "alternatives considered" slide, and the thing to switch to if the GRU proves fiddly to train or its statefulness causes deployment headaches.
-- **Transformer / attention (rejected).** Overkill for ~20–50 step windows; latency and data cost not justified at this scale.
+- **Single stateful GRU core, early fusion (chosen).** One GRU carries a hidden state across the whole episode (reset per episode); each step it consumes the concatenated, normalized per-step streams and advances `h_t`. Matches deployment exactly — at run time the policy holds the same `h_t` and does O(1) work per control step, with no window re-encoding — and lets the modalities interact inside the recurrence. Costs: stateful training (truncated BPTT, correlated minibatches, per-episode reset) is more involved than shuffled-window training. Chosen because train/deploy fidelity and O(1) streaming (including future vision) outweigh the training simplicity of windows.
+- **Windowed, separately-encoded streams (documented alternative).** The earlier framing: a GRU (or 1D-CNN) per stream over a fixed last-`H` window → per-stream embedding → late fusion; samples are i.i.d. windows shuffled freely (lower-variance SGD, trivial batching). Rejected as primary because windowed training must be paired with window re-encoding at deploy (≈49 redundant steps recomputed per tick; worse with images), and pairing windowed training with stateful deploy is a silent train/deploy distribution mismatch. Retained as the fallback if stateful training proves fiddly, and as the "alternatives considered" contrast.
+- **Transformer / attention (rejected).** The reactive horizon is short (~0.2–0.5 s) and the data modest, so attention isn't justified; and for streaming it is *worse* — vanilla self-attention is O(L²) per step, KV-caching is O(L) with a context-growing cache, both heavier than a GRU's fixed-size O(1) state. A state-space model (S4/Mamba) is the modern "stateful + long-range" option but is out of scope here.
 
-Decision: **GRU primary, 1D-CNN as the viable fallback.** The two share the same input/output contract (history window in, `e_*` embedding out), so swapping A→fallback is a localized change to the encoder modules, not an architecture rework.
+Decision: **single stateful GRU core (early fusion); windowed late-fusion held as the documented fallback/alternative.** Capacity is added by stacking GRU layers and widening the hidden state plus the head MLP — never by deepening the cell's internal transition.
 
 ### Decision B — the image encoder (Phase 2) *(locked: pretrained-init, fine-tuned end-to-end, with an optional all-holes auxiliary loss)*
 
@@ -84,10 +87,16 @@ Pure from-scratch end-to-end vision BC is the highest-variance part of the proje
   ```
   Separate weights because the channels have different units/scales (cm vs rad vs N) and different importance. Huber (smooth-L1) over plain MSE for robustness to the occasional large expert correction; MSE is the simpler fallback.
 - **Orientation handling**: regress in a continuous representation (6D rotation or axis-angle) — never raw Euler/quaternion-with-sign-ambiguity — and compute the loss as a proper rotation difference (geodesic / `log(R̂·R*ᵀ)`), not naive component subtraction.
+- **Stateful training (truncated BPTT)**: episodes are processed as ordered sequences in chunks; the hidden state is carried between chunks (detached to truncate gradients) and reset at episode boundaries, so training matches the stateful deployment. A per-step supervised loss applies at every timestep. The exact protocol — including whether a teacher-forcing-style scheme is used — is still under discussion (see *Open / to-decide*).
 - **Image encoder trained jointly**: all branches — GRUs, proprio MLP, fusion head, *and* the image CNN — are trainable during BC; the CNN starts from a pretrained init and is fine-tuned end-to-end (Decision B). Optional all-holes aux loss adds `+ λ·aux` to the objective; the aux head is dropped at inference. Freeze is the fallback only.
 - **Data split by episode**: train/val split at the **episode** level, never the step level — steps within an episode are highly correlated, so a step-level split leaks and inflates validation scores.
 - **Volume** (scope targets): Phase 1 ~1,000 episodes (~0.5–1M frames, a few GPU-hours); Phase 2 ~5,000 episodes (~2.5–5M frames, ~10–20 GPU-hours). Calibrate by validation curves; sim throughput supports overnight regeneration.
-- **Covariate-shift mitigations** held in reserve: keep failure episodes (state coverage), optionally inject small expert-action noise at data-gen so the expert demonstrates recovery, and escalate to **DAgger** if open-loop rollouts drift. RL is anti-scope.
+- **Training protocol — staged (BC → DART → DAgger).** Phase 1 trains by **stateful BC** on the M4 corpus (offline; the guaranteed deliverable). Covariate-shift fixes are escalated only as closed-loop spot-checks demand:
+  1. **BC (offline, default).** Regress onto the logged expert `Δ*` over the expert's state distribution. Keep failure episodes for state coverage.
+  2. **DART (offline escalation).** Inject small expert-action noise at *data-gen* so the corpus covers a recovery tube around the expert path (Laskey et al., 2017). Stays fully offline — cheap; try before DAgger.
+  3. **DAgger (online escalation).** Roll the policy out in sim, query the **analytical privileged expert** at the policy's *own* visited states, aggregate and retrain (Ross et al., 2011). Feasible here precisely because the expert is closed-form and free to query online — the usual human-in-the-loop cost is absent. Use a **β-decay schedule** (execute the expert with prob. β early, anneal toward the policy) and **always BC-pretrain first** — never pure on-policy from scratch. Note: only the realized *state/contact* is policy-induced; the base operator command stays scripted.
+
+  RL is anti-scope.
 
 ## Phase 1 vs Phase 2
 
@@ -117,15 +126,16 @@ The policy never receives privileged true poses, no external/top-down scene came
 
 *(Decisions A and B are now locked — see "Encoder decisions" above.)*
 
-- History lengths `H_c`, `H_f`; image resolution and stack depth.
+- TBPTT truncation length (steps per backprop chunk); image resolution and stack depth.
 - Loss specifics: Huber vs MSE; per-channel weights `w_pos/w_ori/w_grip`.
 - Aux loss `λ` schedule (constant, or anneal to 0); exact aux target (heatmap vs per-hole keypoints).
 - Whether a `tanh`-scaled output head helps training.
-- GRU specifics: hidden size, layers, shared vs separate GRU for command and F/T streams.
-- Inference-latency measurement once the encoder sizes are fixed.
+- GRU core sizing: hidden size and number of stacked layers.
+- **Training protocol**: stateful BC via truncated BPTT (reset per episode) is locked; the exact variant — including whether a teacher-forcing-style scheme is used — is still under discussion (see *Training*).
+- Inference-latency measurement once the core/CNN sizes are fixed.
 
 ---
 
 ### Provenance note
 
-Records the residual-policy architecture from the 2026-05/06 scoping discussions, refining [`../../project-scope.md`](../../project-scope.md) Component 4 (previously deferred). Settled here: the **multi-stream-encoder + fusion-head** skeleton, BC loss shape (per-channel Huber, rotation-aware, episode-level split), and the **implicit-vs-explicit goal** alternative pair. Encoder decisions **locked** (2026-06-08): **Decision A** — GRU temporal encoders, 1D-CNN as fallback; **Decision B** — image CNN trained jointly (pretrained-init + fine-tuned end-to-end), with an optional all-holes-detection auxiliary loss (`λ` knob) and a freeze fallback. The freeze + predict-target-hole-pose plan was **rejected** (engineered bottleneck; ill-posed target selection under multiple holes without intent). Note: this updates the scope's earlier "pretrained backbone used as-is / no custom-trained vision models" line — Naveh confirmed the scope is open to change and the encoder may be fine-tuned. Project-internal rationale; no `raw/` source backs this page directly.
+Records the residual-policy architecture from the 2026-05/06 scoping discussions, refining [`../../project-scope.md`](../../project-scope.md) Component 4 (previously deferred). Settled here: the **multi-stream-encoder + fusion-head** skeleton, BC loss shape (per-channel Huber, rotation-aware, episode-level split), and the **implicit-vs-explicit goal** alternative pair. Encoder decisions **locked** (2026-06-08): **Decision A** — GRU temporal encoders, 1D-CNN as fallback; **Decision B** — image CNN trained jointly (pretrained-init + fine-tuned end-to-end), with an optional all-holes-detection auxiliary loss (`λ` knob) and a freeze fallback. The freeze + predict-target-hole-pose plan was **rejected** (engineered bottleneck; ill-posed target selection under multiple holes without intent). Note: this updates the scope's earlier "pretrained backbone used as-is / no custom-trained vision models" line — Naveh confirmed the scope is open to change and the encoder may be fine-tuned. **2026-06-17 revision (Decision A re-opened and re-locked):** the temporal architecture changed from *windowed, separately-encoded streams with late fusion* to a **single stateful GRU core over an early-fused, normalized observation** — no learned per-stream encoders for the vector streams (the GRU input matrix is the projection; only the image keeps its CNN), capacity via stacked layers + MLP head rather than a deeper cell transition, and stateful truncated-BPTT training to match the O(1)-per-step streaming deployment. The windowed/late-fusion design is retained as the documented alternative/fallback. Training-protocol details (any teacher-forcing variant) remain under discussion. Project-internal rationale; no `raw/` source backs this page directly.
