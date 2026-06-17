@@ -66,13 +66,19 @@ docs = [
     "python-pptx>=0.6.23",
     "cairosvg>=2.7",
 ]
-# Dev tooling.
+# Prettier console logging. Optional: `ai_teleop.common.log` falls back to a
+# plain stdlib formatter when rich is absent (see its soft import).
+cli = [
+    "rich>=13",
+]
+# Dev tooling. Includes `cli` so dev/CI consoles render the rich log formatting.
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",
     "ruff>=0.3",
     "mypy>=1.8",
     "poethepoet>=0.24",
+    "rich>=13",
 ]
 
 # The project CLI front door — `kvn` (pronounced "Kevin"). After

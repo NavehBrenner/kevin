@@ -17,10 +17,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ai_teleop.common.log import get_logger
 from ai_teleop.sim.scenegen.compose import compose_scene
 from ai_teleop.sim.scenegen.generate import generate_wall
 
 STATIC_TASK_SCENE = Path(__file__).resolve().parents[3] / "assets" / "mjcf" / "full_scene.xml"
+
+# Module name avoids shadowing the `log: bool` emit-gate param below.
+_logger = get_logger("scene")
 
 
 def resolve_scene_path(
@@ -39,7 +43,7 @@ def resolve_scene_path(
     """
     if not generated:
         if log:
-            print(f"[scene] static task wall: {STATIC_TASK_SCENE.name}")
+            _logger.info("static task wall: %s", STATIC_TASK_SCENE.name)
         return STATIC_TASK_SCENE
     import numpy as np
 
@@ -47,8 +51,11 @@ def resolve_scene_path(
     if log:
         status = "cache hit" if wall.from_cache else "built from scratch"
         tilt = np.round(np.rad2deg(wall.spec.orientation), 1)
-        print(
-            f"[scene] generated wall seed {wall.spec.seed}: {status} "
-            f"({len(wall.spec.holes)} holes, tilt {tilt}°)"
+        _logger.info(
+            "generated wall seed %s: %s (%d holes, tilt %s°)",
+            wall.spec.seed,
+            status,
+            len(wall.spec.holes),
+            tilt,
         )
     return compose_scene(Path(wall.mjcf_path), with_robot=True).resolve()

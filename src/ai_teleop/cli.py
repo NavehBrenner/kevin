@@ -32,9 +32,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ai_teleop.common.log import configure_logging, get_logger
+
 # src/ai_teleop/cli.py -> parents[2] is the code/ repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
+
+log = get_logger("cli")
 
 # command -> (script filename under scripts/, one-line help)
 APP_COMMANDS: dict[str, tuple[str, str]] = {
@@ -69,6 +73,7 @@ def _usage() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     args = list(sys.argv[1:] if argv is None else argv)
 
     if not args or args[0] in ("-h", "--help"):
@@ -84,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         # Delegate to the poe task so pyproject.toml stays the single source of truth.
         cmd = [sys.executable, "-m", "poethepoet", DEV_COMMANDS[command][0], *passthrough]
     else:
-        print(f"kvn: unknown command {command!r}\n", file=sys.stderr)
+        log.error("unknown command %r", command)
         print(_usage(), file=sys.stderr)
         return 2
 

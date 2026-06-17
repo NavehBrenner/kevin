@@ -122,6 +122,11 @@ tools via `uv run` (mypy as `uv run python -m mypy`, since the relocated
 - Lint/format with ruff; type-check with mypy; test with pytest. Config in `pyproject.toml`.
 - Built milestone by milestone — see `docs/`. Respect each milestone's anti-scope;
   don't pull future work forward.
+- **Log, don't `print`.** For status/progress/errors in scripts and library code, use
+  the project logger (`from ai_teleop.common.log import get_logger`; `log = get_logger("<tag>")`)
+  instead of `print`. Scripts wire the shared `--log-level/--quiet/--log-file` flags via
+  `add_logging_arguments` + `configure_from_args`. Keep the per-tick control loop
+  (`run_episode`, the controller) logging-free. See [`docs/cli.md`](docs/cli.md#logging).
 
 ## Ad-hoc debugging / experiments
 
