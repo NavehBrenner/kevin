@@ -23,7 +23,8 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import Tensor
-from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Dataset
 
 from ai_teleop.common.log import get_logger
 from ai_teleop.common.utils.rotations import quat_to_6d
@@ -73,6 +74,22 @@ class NormStats:
 
     mean: dict[str, Tensor]
     std: dict[str, Tensor]
+
+
+@dataclass
+class EpisodeBatch:
+    """A padded batch of episode-sequences — what ``collate_episodes`` returns.
+
+    Streams are zero-padded to the batch's longest episode ``T_max`` (batch-first);
+    ``lengths`` holds each episode's true step count so the train loop can pack or
+    mask the padded tail.
+    """
+
+    command: Tensor  # (B, T_max, 9)
+    force_torque: Tensor  # (B, T_max, 6)
+    proprioception: Tensor  # (B, T_max, 24)
+    delta: Tensor  # (B, T_max, 7)
+    lengths: Tensor  # (B,) long — true episode lengths
 
 
 def split_episodes(
@@ -197,6 +214,8 @@ class OfflineResidualBCDataset(Dataset):
         download: bool = True,
         offline: bool = True,
         train: bool = True,
+        val_fraction: float = 0.2,
+        seed: int = 0,
         norm_stats: NormStats | None = None,
     ) -> None:
         super().__init__()
@@ -224,7 +243,9 @@ class OfflineResidualBCDataset(Dataset):
         if offline and load_images:
             log.warning("load_images=True and offline=True are incompatible.")
 
-        train_episodes, val_episodes = split_episodes(self.metadata["episodes"])
+        train_episodes, val_episodes = split_episodes(
+            self.metadata["episodes"], val_fraction=val_fraction, seed=seed
+        )
         episodes_summary = train_episodes if train else val_episodes
         raw_episodes = [
             extract_training_episode(load_episode(self.dataset_dir / summary["file"]))
@@ -244,3 +265,65 @@ class OfflineResidualBCDataset(Dataset):
 
     def __getitem__(self, index: int) -> Episode:
         return self.episodes[index]
+
+
+def collate_episodes(batch: list[Episode]) -> EpisodeBatch:
+    """Pad a list of variable-length episodes to ``T_max`` (batch-first) for a DataLoader.
+
+    Each stream is zero-padded; ``lengths`` records the true per-episode step count
+    so the train loop can pack/mask the padded tail. Phase-1 ignores ``images``.
+    """
+    return EpisodeBatch(
+        command=pad_sequence([episode.command for episode in batch], batch_first=True),
+        force_torque=pad_sequence([episode.force_torque for episode in batch], batch_first=True),
+        proprioception=pad_sequence(
+            [episode.proprioception for episode in batch], batch_first=True
+        ),
+        delta=pad_sequence([episode.delta for episode in batch], batch_first=True),
+        lengths=torch.tensor([episode.command.shape[0] for episode in batch], dtype=torch.long),
+    )
+
+
+def build_dataloaders(
+    dataset_dir: str | Path,
+    *,
+    batch_size: int = 8,
+    val_fraction: float = 0.2,
+    seed: int = 0,
+    download: bool = True,
+    num_workers: int = 0,
+) -> tuple[DataLoader, DataLoader, NormStats]:
+    """Build train + val ``DataLoader``s over an M4 dataset directory.
+
+    The episode-level split is taken once with the given ``val_fraction``/``seed``,
+    and the val dataset reuses the train-computed ``norm_stats`` so both splits —
+    and, later, inference — share one normalization. The train loader is shuffled
+    (episodes are the i.i.d. unit), the val loader is not. Returns
+    ``(train_loader, val_loader, norm_stats)``.
+    """
+    train_dataset = OfflineResidualBCDataset(
+        dataset_dir, download=download, train=True, val_fraction=val_fraction, seed=seed
+    )
+    val_dataset = OfflineResidualBCDataset(
+        dataset_dir,
+        download=download,
+        train=False,
+        val_fraction=val_fraction,
+        seed=seed,
+        norm_stats=train_dataset.norm_stats,
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_episodes,
+        num_workers=num_workers,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_episodes,
+        num_workers=num_workers,
+    )
+    return train_loader, val_loader, train_dataset.norm_stats

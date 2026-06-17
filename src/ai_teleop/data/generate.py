@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -472,7 +472,7 @@ def generate_dataset(
 
 
 def _episode_summary(
-    path: Path, episode_metadata: dict[str, object], *, n_steps: int
+    path: Path, episode_metadata: Mapping[str, object], *, n_steps: int
 ) -> dict[str, object]:
     """Compact per-episode entry for the dataset ``metadata.json`` (an
     ``EpisodeSummary`` shape; see ``data.schema``)."""

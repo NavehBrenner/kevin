@@ -21,7 +21,7 @@ jobs:
       - name: Set up Python + dependencies
         run: |
           uv venv --python 3.12
-          uv pip install -e ".[dev,scenegen]"
+          uv pip install -e ".[dev,scenegen,ml]"
 
       # Same tasks the local `poe check` runs, so CI and dev share one definition.
       - name: Lint (ruff)
