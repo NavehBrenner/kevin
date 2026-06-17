@@ -1,8 +1,7 @@
 # CLAUDE.md — code/
 
 Conventions for the implementation tree. Inherits project-wide rules from the root
-`../CLAUDE.md` (notably the shell-IO file-IO convention and the no-commit rule for the
-course booklet).
+`../CLAUDE.md` (notably the shell-IO file-IO convention).
 
 ## What's here
 
@@ -160,3 +159,41 @@ not in that file should be treated as typos during review.
 Counter-examples where brevity is fine: loop indices (`i`, `j`), standard math symbols
 (`q` for joint angles, `R` for rotation matrix), and names that are established domain
 shorthand already in the dictionary.
+
+## Type definitions
+
+**Reuse before defining.** The shared value and interface types already exist — import
+them, never re-declare a local pose/command/observation/delta struct:
+
+| Type | Lives in | Re-exported from |
+|---|---|---|
+| `Command`, `Observation` | `common/command.py`, `common/observation.py` | `ai_teleop.common` |
+| `Delta`, `InputStrategy`, `AssistProvider` | `domain/delta.py`, `domain/interfaces.py` | `ai_teleop.domain` |
+
+**Where a new type goes — by reach, narrowest that fits:**
+
+- **Used by one module only** → define it inline in that module (e.g. `NoAssist` lives
+  in `delta.py`). Don't spin up a file for a single-consumer type.
+- **A sim-independent value type shared across layers** → `common/` (the leaf of the
+  dependency DAG — must not import `ai_teleop.sim`).
+- **A behavioral interface other layers depend on** → `domain/` as a `Protocol` in
+  `interfaces.py` (Dependency Inversion: concretes depend on the abstraction).
+- **A subsystem's own config + resolved-spec types** → a `config.py` *inside* that
+  subsystem package (e.g. `sim/scenegen/config.py`).
+- **An on-disk / serialization contract** (JSON/`.npz` shapes) → a dedicated `schema.py`
+  in that package (e.g. `data/schema.py`). Keep it behavior-free with no implementation
+  imports, so anything can depend on it without a cycle.
+
+**Which mechanism:**
+
+- Immutable value object / config you don't mutate → `@dataclass(frozen=True)`.
+- A spec built up in stages → plain `@dataclass` (methods/`@property` are fine).
+- Behavioral interface → `typing.Protocol`; add `@runtime_checkable` only when a test
+  asserts conformance — mypy structural typing is the real guarantee.
+- On-disk dict shape → `TypedDict`. Optional keys via the base-class + `total=False`
+  split, **not** `typing.NotRequired` (3.11+; the project targets 3.10).
+- A closed set of string values → `Literal`, aliased at module top (e.g. `HoleShape`).
+
+Respect the dependency DAG: `common/` is the leaf, `domain/` depends on `common/`, and
+neither imports `sim/`. That is *why* the contract modules (`schema.py`, `interfaces.py`)
+stay behavior-free — a new shared type must not introduce a cycle.

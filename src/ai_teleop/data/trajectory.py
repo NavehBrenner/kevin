@@ -52,8 +52,11 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
+from typing import cast
 
 import numpy as np
+
+from ai_teleop.data.schema import EpisodeColumns, EpisodeMetadata
 
 # 2.0: on-disk *layout* changed from a flat ``runs/episode_NNNNN.npz`` to a
 # per-episode folder ``runs/episode_NNNNN/{episode.npz, imgs/}``. The per-step
@@ -156,9 +159,9 @@ class EpisodeRecorder:
         np.savez_compressed(path, allow_pickle=False, **arrays)  # type: ignore[arg-type]
 
 
-def load_episode(path: str | Path) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+def load_episode(path: str | Path) -> tuple[EpisodeColumns, EpisodeMetadata]:
     """Read one NPZ episode file back into (columns, metadata)."""
     with np.load(path, allow_pickle=False) as data:
-        metadata = json.loads(str(data["metadata"]))
+        metadata: EpisodeMetadata = json.loads(str(data["metadata"]))
         columns = {key: data[key] for key in COLUMN_SHAPES}
-    return columns, metadata
+    return cast(EpisodeColumns, columns), metadata

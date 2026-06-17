@@ -11,6 +11,7 @@ from ai_teleop.data.dataset import Episode, OfflineResidualBCDataset, split_epis
 from ai_teleop.data.generate import generate_dataset, regenerate_from_metadata
 from ai_teleop.data.schema import (
     DatasetConfig,
+    EpisodeColumns,
     EpisodeMetadata,
     EpisodeSummary,
     ResBCDatasetMetadata,
@@ -41,7 +42,8 @@ __all__ = [
     "episode_dir",
     "episode_npz_path",
     "episode_imgs_dir",
-    # metadata contracts (TypedDicts)
+    # on-disk type contracts (TypedDicts)
+    "EpisodeColumns",
     "DatasetConfig",
     "EpisodeMetadata",
     "EpisodeSummary",
