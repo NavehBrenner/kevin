@@ -10,23 +10,35 @@ Authoritative definition + writer/reader: `src/ai_teleop/data/trajectory.py`.
 
 ## Dataset layout
 
-One directory per master seed (LAB-47):
+One directory per master seed (LAB-47); **one sub-directory per episode**
+(`SCHEMA_VERSION` 2.0):
 
 ```
 data/dataset_<seed>/
-    metadata.json          # dataset-level statistics (see below)
+    metadata.json              # dataset-level statistics (see below)
     runs/
-        episode_00000.npz   # per-episode trajectories — the BC corpus
-        episode_00001.npz
+        episode_00000/
+            episode.npz        # per-episode trajectory — the BC corpus
+            imgs/              # per-step wrist-cam frames; empty unless
+                               # generated with --render-images (vision is M7)
+        episode_00001/
+            episode.npz
+            imgs/
         ...
 ```
+
+The per-episode folder (rather than a flat `episode_NNNNN.npz`) lets a rendered
+frame stream sit beside its trajectory without a second index — the M5 corpus is
+F/T-only so `imgs/` stays empty, but the contract is ready for M7 vision. Build
+these paths with the `episode_dir` / `episode_npz_path` / `episode_imgs_dir`
+helpers in `trajectory.py`.
 
 `generate_dataset.py` defaults `--out` to `data/dataset_<seed>`; pass `--out` to
 override. The episodes are the contract M5 trains against; `metadata.json` is a
 human/tooling-facing summary (not consumed by the loader).
 
-**What is and isn't committed.** The episode trajectories (`runs/*.npz`) are
-git-ignored — large and fully regenerable. `metadata.json` **is** committed: it
+**What is and isn't committed.** The episode trajectories (`runs/**/episode.npz`,
+plus any `imgs/`) are git-ignored — large and fully regenerable. `metadata.json` **is** committed: it
 records every trajectory-determining input, so it both documents a dataset and
 can rebuild it. Regenerate the byte-identical episodes from a committed metadata
 file with:
@@ -42,8 +54,8 @@ refreshed `metadata.json` is identical except its `generated_at` timestamp.)
 
 ## Format
 
-**NPZ** (`numpy.savez_compressed`), one per episode, named
-`episode_<index:05d>.npz` under `runs/`. Chosen over Parquet because it needs no
+**NPZ** (`numpy.savez_compressed`), one per episode, at
+`runs/episode_<index:05d>/episode.npz`. Chosen over Parquet because it needs no
 extra dependency (pyarrow/pandas live only in the `ml` extra, absent from CI) and
 the M5 loader accepts NPZ. Each per-step column is a stacked `(T, …)` array;
 episode metadata is a JSON string under the `metadata` key.

@@ -1,53 +1,72 @@
-"""M4 data-generation CLI — thin entry point over `ai_teleop.data.generate`.
+"""M4 data-generation pipeline — produce the behavioral-cloning corpus.
 
-The generation pipeline is core functionality and lives in the package
-(`ai_teleop.data.generate`); this script is just its command-line front door
-(also reachable as `kvn gen`). See that module for the algorithm, the on-disk
-layout, and the paired human-only baseline.
+Core functionality (the `scripts/generate_dataset.py` CLI is just its front
+door). Runs N unattended episodes (coverage-randomized scene → realistic noisy
+human → analytical expert → controller → sim) and writes **one per-episode
+folder** under ``<dataset>/runs/`` — ``episode_NNNNN/episode.npz`` plus an
+``imgs/`` subfolder. This is the BC training corpus M5 trains against.
 
-Run from the `code/` directory:
+The per-tick loop itself lives in `ai_teleop.sim.runner.run_episode`
+(logging-free); this pipeline bolts logging on through its ``step_callback``
+hook, detects the episode's terminal condition (insertion depth → success,
+force-cap → abort, timeout → failure), and keeps **all** episodes (failures
+included — diverse state coverage helps BC). Every episode is reproducible from
+``(seed, episode_index)``.
 
-    uv run python scripts/generate_dataset.py --episodes 200            # → data/dataset_0
-    uv run python scripts/generate_dataset.py --episodes 200 --seed 7   # → data/dataset_7
-    uv run python scripts/generate_dataset.py --episodes 5 --out /tmp/smoke --max-steps 800
+**Paired human-only baseline.** For each episode the pipeline also re-runs the
+*same scene and the same operator command stream* with the expert replaced by
+``NoAssist`` (no residual correction), scored with the identical termination
+logic but **not** persisted as a trajectory. The resulting "what would the noisy
+human achieve on its own" success rate quantifies the expert's actual lift; it
+is recorded per-episode in the trajectory metadata and aggregated in the dataset
+summary. Disable with ``baseline=False`` (roughly halves wall-clock).
+
+Output layout (one directory per master seed; one sub-directory per episode)::
+
+    data/dataset_<seed>/
+        metadata.json              # dataset-level statistics
+        runs/
+            episode_00000/
+                episode.npz        # per-episode trajectory (the BC corpus)
+                imgs/              # per-step wrist-cam frames (empty unless
+                                   # render_images; vision is M7)
+            episode_00001/
+                ...
+
+The on-disk schema is the stable contract M5 reads — see
+`ai_teleop.data.trajectory` / `ai_teleop.data.schema` and `docs/data-schema.md`.
 """
 
 from __future__ import annotations
 
-import argparse
+import json
 import sys
-import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Allow running before the package is installed in the venv.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import numpy as np
 
-from run_episode import run_episode  # noqa: E402
-
-from ai_teleop.common.log import (  # noqa: E402
-    add_logging_arguments,
-    configure_from_args,
-    get_logger,
-)
-from ai_teleop.common.observation import Observation  # noqa: E402
-from ai_teleop.control import Controller  # noqa: E402
-from ai_teleop.data import (  # noqa: E402
+from ai_teleop.common.observation import Observation
+from ai_teleop.common.utils.rotations import axis_from_quat
+from ai_teleop.control import Controller
+from ai_teleop.data.schema import DatasetConfig, ResBCDatasetMetadata
+from ai_teleop.data.trajectory import (
     SCHEMA_VERSION,
     EpisodeRecorder,
     TerminalReason,
+    episode_imgs_dir,
+    episode_npz_path,
     load_episode,
 )
-from ai_teleop.domain import Delta, NoAssist  # noqa: E402
-from ai_teleop.expert import Expert  # noqa: E402
-from ai_teleop.input import ScriptedNoisyHuman  # noqa: E402
-from ai_teleop.sim.scene import SimEnv  # noqa: E402
+from ai_teleop.domain import Delta, NoAssist
+from ai_teleop.expert import Expert
+from ai_teleop.input import ScriptedNoisyHuman
+from ai_teleop.sim.runner import run_episode
+from ai_teleop.sim.scene import SimEnv
+from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCENE_PATH = REPO_ROOT / "assets" / "mjcf" / "full_scene.xml"
-
-# Console logger for this driver. (Distinct from `_EpisodeLogger` below, which is
-# a per-step trajectory recorder, not a console logger.)
-log = get_logger("datagen")
+SCENE_PATH = STATIC_TASK_SCENE  # static 3-hole task wall — the default scene
 
 _PEG_HALF_LENGTH = 0.030
 DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
@@ -58,7 +77,9 @@ DEFAULT_MAX_DPOS = 0.025  # controller command clamp (m/step); approach-speed kn
 DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
 
 
-def _episode_fingerprint(*, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, scene_path: str) -> str:
+def _episode_fingerprint(
+    *, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, scene_path: str
+) -> str:
     """Stable hash of every input that determines an episode's trajectory.
 
     Two runs with the same fingerprint produce byte-identical episodes, so a
@@ -72,8 +93,6 @@ def _episode_fingerprint(*, seed: int, max_steps: int, max_dpos: float, expert_d
 
 def _cached_matches(path: Path, fingerprint: str) -> bool:
     """True if ``path`` is a readable episode whose stored fingerprint matches."""
-    import json
-
     if not path.exists():
         return False
     try:
@@ -120,8 +139,26 @@ class _SeatingMetrics:
         return None
 
 
+def _save_frame(imgs_dir: Path, step: int, frame: np.ndarray) -> None:
+    """Write one wrist-camera frame as ``imgs/step_NNNNN.png``.
+
+    PIL is imported lazily so the default (no-render) path needs nothing beyond
+    numpy; only ``render_images`` pulls in the imaging stack.
+    """
+    from PIL import Image
+
+    Image.fromarray(frame).save(imgs_dir / f"step_{step:05d}.png")
+
+
 class _EpisodeLogger:
-    """`run_episode` step_callback that records rows and detects termination."""
+    """`run_episode` step_callback that records rows and detects termination.
+
+    When ``render_fn`` and ``imgs_dir`` are supplied (``render_images``), it also
+    renders the wrist camera every ``render_every`` recorded steps and saves the
+    frame into the episode's ``imgs/`` folder. This is opt-in M7 plumbing: the
+    F/T-only M5 corpus is generated with rendering off, and ``render_every`` is
+    the cadence knob M7 will calibrate (1 ⇒ a frame per trajectory row).
+    """
 
     def __init__(
         self,
@@ -130,6 +167,9 @@ class _EpisodeLogger:
         success_depth: float,
         lateral_tolerance: float,
         force_cap: float,
+        render_fn: Callable[[], np.ndarray] | None = None,
+        imgs_dir: Path | None = None,
+        render_every: int = 1,
     ) -> None:
         self.recorder = EpisodeRecorder()
         self.terminal_reason = TerminalReason.TIMEOUT
@@ -137,6 +177,9 @@ class _EpisodeLogger:
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
+        self._render_fn = render_fn
+        self._imgs_dir = imgs_dir
+        self._render_every = render_every
 
     def __call__(
         self,
@@ -152,6 +195,13 @@ class _EpisodeLogger:
             lateral_tolerance=self._lateral_tolerance,
             force_cap=self._force_cap,
         )
+
+        if (
+            self._render_fn is not None
+            and self._imgs_dir is not None
+            and step % self._render_every == 0
+        ):
+            _save_frame(self._imgs_dir, step, self._render_fn())
 
         self.recorder.add(
             step=step,
@@ -193,7 +243,9 @@ class _TerminationProbe:
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
 
-    def __call__(self, step: int, observation: Observation, base_command, delta: Delta, command) -> bool:
+    def __call__(
+        self, step: int, observation: Observation, base_command, delta: Delta, command
+    ) -> bool:
         reason = _SeatingMetrics(observation).terminal_reason(
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
@@ -240,7 +292,9 @@ def _baseline_terminal_reason(
     """Re-run the same scene + operator with ``NoAssist`` (no expert), scoring
     only — no trajectory is recorded. Returns how the human-only run terminated."""
     controller.reset()  # clear any lock the expert run left latched
-    probe = _TerminationProbe(success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap)
+    probe = _TerminationProbe(
+        success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
+    )
     run_episode(
         environment,
         controller,
@@ -267,11 +321,14 @@ def generate_dataset(
     scene_path: str | Path = SCENE_PATH,
     cache: bool = True,
     baseline: bool = True,
+    render_images: bool = False,
+    render_every: int = 1,
     progress: bool = False,
 ) -> list[Path]:
     """Generate a dataset under ``out_dir``; return the episode-file paths.
 
-    Writes ``out_dir/runs/episode_NNNNN.npz`` (the BC corpus) plus
+    Writes ``out_dir/runs/episode_NNNNN/episode.npz`` (the BC corpus) — one
+    folder per episode, each with an ``imgs/`` subfolder — plus
     ``out_dir/metadata.json`` (dataset-level statistics). Keeps every episode
     (success or failure). Each is reproducible from ``(seed, episode_index)``
     plus the controller/expert config: the scene randomization and the noisy
@@ -282,6 +339,11 @@ def generate_dataset(
     When ``baseline`` is set, each episode is additionally re-run with the expert
     replaced by ``NoAssist`` (same scene, same operator) and scored — *not*
     saved — to measure the human-only success rate the expert improves on.
+
+    When ``render_images`` is set, the wrist camera is rendered every
+    ``render_every`` recorded steps and saved as PNGs in each episode's ``imgs/``
+    folder. This is opt-in M7 (vision) plumbing — off by default, so the M5
+    F/T-only corpus is unchanged and ``imgs/`` stays empty.
     """
     out_dir = Path(out_dir)
     runs_dir = out_dir / "runs"
@@ -289,7 +351,9 @@ def generate_dataset(
     controller = Controller(environment, max_dpos_per_step=max_dpos)
     expert = Expert(d_far=expert_d_far)
     home_quaternion = controller.home_pose[3:]
-    thresholds = dict(success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap)
+    thresholds = dict(
+        success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
+    )
     fingerprint = _episode_fingerprint(
         seed=seed,
         max_steps=max_steps,
@@ -301,12 +365,12 @@ def generate_dataset(
     written: list[Path] = []
     summaries: list[dict[str, object]] = []
     for episode_index in range(n_episodes):
-        path = runs_dir / f"episode_{episode_index:05d}.npz"
+        path = episode_npz_path(runs_dir, episode_index)
         if cache and _cached_matches(path, fingerprint):
             written.append(path)
             summaries.append(_summary_from_cache(path, baseline=baseline))
             if progress:
-                log.info("episode %5d │ ✓ loaded from cache", episode_index)
+                print(f"  episode {episode_index:5d} │ ✓ loaded from cache")
             continue
         # Reset once to read the randomized target + tare the F/T bias, then let
         # run_episode reset to the identical state (deterministic per index).
@@ -318,8 +382,22 @@ def generate_dataset(
         ft_bias = observation.wrist_ft.copy()
         target_hole_index = int(observation.target_hole_index)
 
-        human = _make_human(target_position, home_quaternion, seed=seed, episode_index=episode_index)
-        logger = _EpisodeLogger(ft_bias, **thresholds)
+        # Establish the episode's imgs/ folder so the per-episode layout is
+        # uniform whether or not frames are rendered (M7 fills it; M5 leaves it
+        # empty). recorder.save() creates the episode folder itself.
+        imgs_dir = episode_imgs_dir(runs_dir, episode_index)
+        imgs_dir.mkdir(parents=True, exist_ok=True)
+
+        human = _make_human(
+            target_position, home_quaternion, seed=seed, episode_index=episode_index
+        )
+        logger = _EpisodeLogger(
+            ft_bias,
+            **thresholds,
+            render_fn=environment.render_wrist_camera if render_images else None,
+            imgs_dir=imgs_dir,
+            render_every=render_every,
+        )
         run_episode(
             environment,
             controller,
@@ -336,7 +414,9 @@ def generate_dataset(
                 environment,
                 controller,
                 # fresh operator with the same seed ⇒ identical command stream
-                _make_human(target_position, home_quaternion, seed=seed, episode_index=episode_index),
+                _make_human(
+                    target_position, home_quaternion, seed=seed, episode_index=episode_index
+                ),
                 episode_index,
                 max_steps=max_steps,
                 **thresholds,
@@ -371,38 +451,34 @@ def generate_dataset(
         summaries.append(_episode_summary(path, episode_metadata, n_steps=len(logger.recorder)))
         if progress:
             tail = f" · baseline {baseline_reason.value}" if baseline_reason is not None else ""
-            log.info(
-                "episode %5d │ generated · %5d steps · %s%s",
-                episode_index,
-                len(logger.recorder),
-                logger.terminal_reason.value,
-                tail,
+            print(
+                f"  episode {episode_index:5d} │ generated · {len(logger.recorder):5d} steps "
+                f"· {logger.terminal_reason.value}{tail}"
             )
 
+    config: DatasetConfig = {
+        "max_steps": max_steps,
+        "max_dpos": max_dpos,
+        "expert_d_far": expert_d_far,
+        "success_depth": success_depth,
+        "lateral_tolerance": lateral_tolerance,
+        "force_cap": force_cap,
+        "scene": Path(scene_path).name,
+    }
     _write_dataset_metadata(
-        out_dir,
-        summaries,
-        seed=seed,
-        fingerprint=fingerprint,
-        baseline=baseline,
-        config={
-            "max_steps": max_steps,
-            "max_dpos": max_dpos,
-            "expert_d_far": expert_d_far,
-            "success_depth": success_depth,
-            "lateral_tolerance": lateral_tolerance,
-            "force_cap": force_cap,
-            "scene": Path(scene_path).name,
-        },
+        out_dir, summaries, seed=seed, fingerprint=fingerprint, baseline=baseline, config=config
     )
     return written
 
 
-def _episode_summary(path: Path, episode_metadata: dict[str, object], *, n_steps: int) -> dict[str, object]:
-    """Compact per-episode entry for the dataset ``metadata.json``."""
+def _episode_summary(
+    path: Path, episode_metadata: dict[str, object], *, n_steps: int
+) -> dict[str, object]:
+    """Compact per-episode entry for the dataset ``metadata.json`` (an
+    ``EpisodeSummary`` shape; see ``data.schema``)."""
     summary: dict[str, object] = {
         "episode_index": episode_metadata["episode_index"],
-        "file": f"runs/{path.name}",
+        "file": f"runs/{path.parent.name}/{path.name}",
         "n_steps": n_steps,
         "target_hole_index": episode_metadata["target_hole_index"],
         # .get for back-compat with cached files written before seeds were stamped.
@@ -420,7 +496,10 @@ def _episode_summary(path: Path, episode_metadata: dict[str, object], *, n_steps
 def _summary_from_cache(path: Path, *, baseline: bool) -> dict[str, object]:
     """Rebuild a per-episode summary from a cached episode file's metadata."""
     columns, metadata = load_episode(path)
-    n_steps = int(metadata.get("n_steps", len(columns["step"])))
+    # metadata is JSON-loaded (values typed `object`); n_steps is an int on disk
+    # but fall back to the column length if an older file omitted it.
+    raw_n_steps = metadata.get("n_steps")
+    n_steps = raw_n_steps if isinstance(raw_n_steps, int) else len(columns["step"])
     summary = _episode_summary(path, metadata, n_steps=n_steps)
     if baseline and "baseline_terminal_reason" not in metadata:
         # Cached file predates the baseline; mark unknown rather than fabricating
@@ -454,9 +533,10 @@ def _write_dataset_metadata(
     seed: int,
     fingerprint: str,
     baseline: bool,
-    config: dict[str, object],
+    config: DatasetConfig,
 ) -> None:
-    """Write ``dataset_dir/metadata.json`` with dataset-level statistics."""
+    """Write ``dataset_dir/metadata.json`` with dataset-level statistics
+    (a ``ResBCDatasetMetadata`` shape; see ``data.schema``)."""
     expert_counts, expert_rate = _rate(summaries, "success")
     metadata: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
@@ -497,11 +577,15 @@ def regenerate_from_metadata(
     episodes are byte-identical to the originals — verified afterwards via the
     shared ``fingerprint`` (a mismatch flags code or config drift).
 
+    This is also the metadata-driven gap-filler the loader's ``download=True``
+    path uses: with ``force=False`` the cache skips episodes already present, so
+    only missing ones are simulated.
+
     The baseline is re-run iff the source metadata recorded one, so the refreshed
     ``metadata.json`` reproduces the original statistics (modulo ``generated_at``).
     """
     metadata_path = Path(metadata_path)
-    metadata = json.loads(metadata_path.read_text())
+    metadata: ResBCDatasetMetadata = json.loads(metadata_path.read_text())
     config = metadata["config"]
 
     scene_name = config["scene"]
@@ -538,115 +622,9 @@ def regenerate_from_metadata(
         scene_path=str(scene_path),
     )
     if expected is not None and actual != expected:
-        log.warning(
-            "fingerprint mismatch (metadata %s != regenerated %s); "
+        print(
+            f"WARNING: fingerprint mismatch (metadata {expected} != regenerated {actual}); "
             "the regenerated episodes may differ from the originals.",
-            expected,
-            actual,
+            file=sys.stderr,
         )
     return written
-
-
-from ai_teleop.data.generate import (  # noqa: E402
-    DEFAULT_EXPERT_D_FAR,
-    DEFAULT_MAX_DPOS,
-    DEFAULT_MAX_STEPS,
-    SCENE_PATH,
-    generate_dataset,
-    regenerate_from_metadata,
-)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--episodes", type=int, default=200, help="Number of episodes to run.")
-    parser.add_argument(
-        "--out",
-        type=str,
-        default=None,
-        help="Dataset directory (default: data/dataset_<seed>). Holds runs/ + metadata.json.",
-    )
-    parser.add_argument("--seed", type=int, default=0, help="Master seed.")
-    parser.add_argument(
-        "--no-baseline",
-        action="store_true",
-        help="Skip the paired human-only (NoAssist) baseline rollout (~halves wall-clock).",
-    )
-    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Per-episode cap.")
-    parser.add_argument(
-        "--max-dpos",
-        type=float,
-        default=DEFAULT_MAX_DPOS,
-        help="Controller command clamp in m/step (approach-speed / strictness knob).",
-    )
-    parser.add_argument(
-        "--expert-d-far",
-        type=float,
-        default=DEFAULT_EXPERT_D_FAR,
-        help="Distance (m) at which the expert starts engaging.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenerate even if a cached episode with a matching fingerprint exists.",
-    )
-    parser.add_argument(
-        "--render-images",
-        action="store_true",
-        help="Render the wrist camera and save PNG frames into each episode's imgs/ "
-        "folder (opt-in M7/vision plumbing; off by default — M5 is F/T-only).",
-    )
-    parser.add_argument(
-        "--render-every",
-        type=int,
-        default=1,
-        help="With --render-images, save a frame every N recorded steps (cadence knob).",
-    )
-    parser.add_argument(
-        "--from-metadata",
-        type=str,
-        default=None,
-        help="Reproduce the dataset described by a metadata.json (rebuilds runs/ from the "
-        "committed config); --out overrides where it lands. Ignores generation flags.",
-    )
-    add_logging_arguments(parser)
-    args = parser.parse_args()
-    configure_from_args(args)
-
-    if not SCENE_PATH.exists():
-        log.error("scene file not found at %s", SCENE_PATH)
-        return 2
-
-    if args.from_metadata is not None:
-        log.info("regenerating dataset from %s", args.from_metadata)
-        start = time.time()
-        written = regenerate_from_metadata(args.from_metadata, out_dir=args.out, force=args.force, progress=True)
-        target = Path(args.out) if args.out is not None else Path(args.from_metadata).parent
-        elapsed = time.time() - start
-        log.info("regenerated %d episode files in %.1fs → %s", len(written), elapsed, target / "runs")
-        return 0
-
-    out_dir = Path(args.out) if args.out is not None else Path("data") / f"dataset_{args.seed}"
-    log.info("generating %d episodes → %s  (seed=%d)", args.episodes, out_dir, args.seed)
-    start = time.time()
-    written = generate_dataset(
-        out_dir,
-        args.episodes,
-        seed=args.seed,
-        max_steps=args.max_steps,
-        max_dpos=args.max_dpos,
-        expert_d_far=args.expert_d_far,
-        cache=not args.force,
-        baseline=not args.no_baseline,
-        render_images=args.render_images,
-        render_every=args.render_every,
-        progress=True,
-    )
-    elapsed = time.time() - start
-    log.info("wrote %d episode files in %.1fs → %s", len(written), elapsed, out_dir / "runs")
-    log.info("dataset summary → %s", out_dir / "metadata.json")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

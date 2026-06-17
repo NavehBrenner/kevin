@@ -8,19 +8,19 @@ columns and metadata.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from ai_teleop.data import COLUMN_SHAPES, SCHEMA_VERSION, EpisodeRecorder, load_episode
-
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from generate_dataset import generate_dataset, regenerate_from_metadata  # noqa: E402
+from ai_teleop.data import (
+    COLUMN_SHAPES,
+    SCHEMA_VERSION,
+    EpisodeRecorder,
+    generate_dataset,
+    load_episode,
+    regenerate_from_metadata,
+)
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "assets" / "mjcf" / "full_scene.xml"
 
@@ -100,8 +100,10 @@ def test_generate_dataset_smoke(tmp_path):
     paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=False)
     assert len(paths) == 2
     assert all(p.exists() for p in paths)
-    # Episodes live under runs/ in the dataset directory.
-    assert all(p.parent == tmp_path / "runs" for p in paths)
+    # Each episode is its own folder runs/episode_NNNNN/{episode.npz, imgs/}.
+    assert all(p.name == "episode.npz" for p in paths)
+    assert all(p.parent.parent == tmp_path / "runs" for p in paths)
+    assert all((p.parent / "imgs").is_dir() for p in paths)
 
     columns, metadata = load_episode(paths[0])
     assert set(columns) == set(COLUMN_SHAPES)
@@ -159,7 +161,9 @@ def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
         tmp_path / "orig" / "metadata.json", out_dir=tmp_path / "regen"
     )
 
-    assert [p.name for p in regenerated] == [p.name for p in original]
+    # Same episode folders (the filenames are all "episode.npz"; the per-episode
+    # directory name is what distinguishes them).
+    assert [p.parent.name for p in regenerated] == [p.parent.name for p in original]
     for orig_path, regen_path in zip(original, regenerated, strict=True):
         cols_orig, _ = load_episode(orig_path)
         cols_regen, _ = load_episode(regen_path)
