@@ -7,11 +7,6 @@ input is a dataset directory containing ``metadata.json`` (the manifest written
 by the M4 generator): from it the loader discovers every episode, verifies the
 ``runs/episode_NNNNN/episode.npz`` files exist, and — when ``download=True`` —
 regenerates any that are missing before training reads them.
-
-Note for the type contracts below: a TypeScript ``interface`` over JSON maps to a
-``TypedDict`` (see ``ResBCDatasetMetadata`` / ``EpisodeMetadata`` /
-``EpisodeSummary`` in ``schema.py``); an ``interface`` describing an object you
-*construct and return* maps to a ``@dataclass`` — that's ``Episode`` here.
 """
 
 from __future__ import annotations
@@ -47,10 +42,6 @@ class Episode:
     ``images`` is populated only when the dataset is
     built with ``load_images=True`` *and* the episode has rendered frames on disk
     (vision is M7 — normally ``None``).
-
-    The exact training-sample shape (full episode-sequence vs. windowed per-step,
-    early-fused vs. separate streams) is still under revision — see the M5 spec
-    banner — so treat these fields as a starting contract you can reshape.
     """
 
     episode_index: int
@@ -112,8 +103,10 @@ def missing_episode_indices(metadata: ResBCDatasetMetadata, dataset_dir: str | P
     """Episode indices listed in ``metadata`` whose ``episode.npz`` is absent on disk.
 
     ``summary["file"]`` is **dataset-relative**, so it is resolved against
-    ``dataset_dir``. Empty list ⇒ the corpus is complete; feed a non-empty result
-    to ``regenerate_from_metadata`` to fill the gaps when ``download=True``.
+    ``dataset_dir``. Empty list ⇒ the corpus is complete. The count drives the
+    loader's log messages; the actual gap-filling is cache-scoped inside
+    ``regenerate_from_metadata`` (it skips episodes already on disk), so the
+    indices are not passed there.
     """
     root = Path(dataset_dir)
     return [
@@ -193,7 +186,6 @@ def normalize_episode(episode: Episode, stats: NormStats) -> Episode:
     return replace(episode, **normalized)
 
 
-# currently only implements offline
 class OfflineResidualBCDataset(Dataset):
     """BC training set over an M4 dataset directory.
 
@@ -230,12 +222,13 @@ class OfflineResidualBCDataset(Dataset):
         if missing_episodes:
             if not download:
                 log.error(
-                    f"Missing {len(missing_episodes)} episodes, but the download flag is set to False."
+                    "Missing %d episodes, but the download flag is set to False.",
+                    len(missing_episodes),
                 )
                 raise FileNotFoundError(
                     f"Missing {len(missing_episodes)} episodes. Please make sure the dataset exists or set the download option to True."
                 )
-            log.info(f"Missing {len(missing_episodes)} episodes. Regenerating from metadata...")
+            log.info("Missing %d episodes. Regenerating from metadata...", len(missing_episodes))
             regenerate_from_metadata(self.metadata_path)
 
         if load_images:
@@ -247,10 +240,10 @@ class OfflineResidualBCDataset(Dataset):
         train_episodes, val_episodes = split_episodes(
             self.metadata["episodes"], val_fraction=val_fraction, seed=seed
         )
-        episodes_summary = train_episodes if train else val_episodes
+        episode_summaries = train_episodes if train else val_episodes
         raw_episodes = [
             extract_training_episode(load_episode(self.dataset_dir / summary["file"]))
-            for summary in episodes_summary
+            for summary in episode_summaries
         ]
 
         if norm_stats is None:

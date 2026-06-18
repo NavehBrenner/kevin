@@ -372,7 +372,7 @@ def generate_dataset(
             written.append(path)
             summaries.append(_summary_from_cache(path, baseline=baseline))
             if progress:
-                print(f"  episode {episode_index:5d} │ ✓ loaded from cache")
+                log.info("episode %5d │ ✓ loaded from cache", episode_index)
             continue
         # Reset once to read the randomized target + tare the F/T bias, then let
         # run_episode reset to the identical state (deterministic per index).
@@ -453,9 +453,12 @@ def generate_dataset(
         summaries.append(_episode_summary(path, episode_metadata, n_steps=len(logger.recorder)))
         if progress:
             tail = f" · baseline {baseline_reason.value}" if baseline_reason is not None else ""
-            print(
-                f"  episode {episode_index:5d} │ generated · {len(logger.recorder):5d} steps "
-                f"· {logger.terminal_reason.value}{tail}"
+            log.info(
+                "episode %5d │ generated · %5d steps · %s%s",
+                episode_index,
+                len(logger.recorder),
+                logger.terminal_reason.value,
+                tail,
             )
 
     config: DatasetConfig = {
@@ -625,7 +628,9 @@ def regenerate_from_metadata(
     )
     if expected is not None and actual != expected:
         log.warning(
-            f"fingerprint mismatch (metadata {expected} != regenerated {actual}); "
-            "the regenerated episodes may differ from the originals."
+            "fingerprint mismatch (metadata %s != regenerated %s); "
+            "the regenerated episodes may differ from the originals.",
+            expected,
+            actual,
         )
     return written
