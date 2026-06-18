@@ -7,11 +7,6 @@ input is a dataset directory containing ``metadata.json`` (the manifest written
 by the M4 generator): from it the loader discovers every episode, verifies the
 ``runs/episode_NNNNN/episode.npz`` files exist, and — when ``download=True`` —
 regenerates any that are missing before training reads them.
-
-Note for the type contracts below: a TypeScript ``interface`` over JSON maps to a
-``TypedDict`` (see ``ResBCDatasetMetadata`` / ``EpisodeMetadata`` /
-``EpisodeSummary`` in ``schema.py``); an ``interface`` describing an object you
-*construct and return* maps to a ``@dataclass`` — that's ``Episode`` here.
 """
 
 from __future__ import annotations
@@ -47,10 +42,6 @@ class Episode:
     ``images`` is populated only when the dataset is
     built with ``load_images=True`` *and* the episode has rendered frames on disk
     (vision is M7 — normally ``None``).
-
-    The exact training-sample shape (full episode-sequence vs. windowed per-step,
-    early-fused vs. separate streams) is still under revision — see the M5 spec
-    banner — so treat these fields as a starting contract you can reshape.
     """
 
     episode_index: int
