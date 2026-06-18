@@ -154,12 +154,19 @@ class MediaPipeHandTracker:
         detection_confidence: float = 0.6,
         tracking_confidence: float = 0.5,
         target_fps: float = 30.0,
+        show_window: bool = False,
     ) -> None:
-        # Lazy import: only the live path needs the vision-input extra.
+        # Lazy import: only the live path needs the vision-input extra. The legacy
+        # `solutions` API (pinned mediapipe==0.10.21) bundles the landmark drawing
+        # helpers the debug window uses.
         import cv2
-        import mediapipe as mp
+        from mediapipe.python.solutions import drawing_styles, drawing_utils, hands
 
         self._cv2 = cv2
+        self._mp_hands = hands
+        self._mp_drawing = drawing_utils
+        self._mp_styles = drawing_styles
+        self._show_window = show_window
         # `camera` is an int device index, or a string OpenCV can open: a stream
         # URL (e.g. an MJPEG/RTSP feed) or a device path. WSL2 has no UVC driver
         # for a host webcam, so there it must be a stream URL — see docs/cli.md.
@@ -168,7 +175,7 @@ class MediaPipeHandTracker:
             raise RuntimeError(f"could not open camera source {camera!r}")
         self._capture.set(cv2.CAP_PROP_FPS, target_fps)
 
-        self._hands = mp.solutions.hands.Hands(
+        self._hands = hands.Hands(
             max_num_hands=1,
             min_detection_confidence=detection_confidence,
             min_tracking_confidence=tracking_confidence,
@@ -198,6 +205,40 @@ class MediaPipeHandTracker:
                 reading = reading_from_landmarks(points)
             with self._lock:
                 self._latest = reading
+            if self._show_window:
+                self._draw_window(frame, hand_landmarks, reading)
+        if self._show_window:
+            self._cv2.destroyAllWindows()
+
+    def _draw_window(self, frame: np.ndarray, hand_landmarks: object, reading: HandReading) -> None:
+        """Show the camera feed with MediaPipe landmarks + a teleop HUD overlay."""
+        cv2 = self._cv2
+        if hand_landmarks:
+            self._mp_drawing.draw_landmarks(
+                frame,
+                hand_landmarks[0],  # type: ignore[index]
+                self._mp_hands.HAND_CONNECTIONS,
+                self._mp_styles.get_default_hand_landmarks_style(),
+                self._mp_styles.get_default_hand_connections_style(),
+            )
+        # Mirror for a natural selfie view (after drawing, so overlays match).
+        frame = cv2.flip(frame, 1)
+
+        green, red, white = (0, 200, 0), (0, 0, 255), (255, 255, 255)
+        if reading.present:
+            status, colour = f"TRACKING   grip {reading.open_close * 100:3.0f}% open", green
+        else:
+            status, colour = "NO HAND - holding (clutched)", red
+        cv2.putText(frame, status, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2)
+        instructions = [
+            "Move hand: drive the arm   |   Lift hand out of frame: clutch / re-center",
+            "Open hand: release grip    |   Make a fist: squeeze grip",
+            "Close this window or Ctrl-C the sim to stop",
+        ]
+        for i, line in enumerate(instructions):
+            cv2.putText(frame, line, (10, 60 + i * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, white, 1)
+        cv2.imshow("ai_teleop — hand tracking", frame)
+        cv2.waitKey(1)  # pump the HighGUI event loop; required for imshow to render
 
     def read(self) -> HandReading:
         """Latest hand reading (non-blocking). ``present=False`` on drop-out."""

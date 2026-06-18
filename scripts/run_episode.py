@@ -65,6 +65,11 @@ def main() -> int:
         help="Camera source for --input vision: a device index (e.g. 0), or a stream URL "
         "(e.g. http://<host>:<port>/video) — use a URL on WSL2, which has no webcam device.",
     )
+    p.add_argument(
+        "--no-cam-window",
+        action="store_true",
+        help="Hide the live camera/landmark debug window (--input vision; shown by default).",
+    )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
@@ -116,7 +121,7 @@ def main() -> int:
 
         # A bare integer is a device index; anything else is a stream URL / path.
         camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
-        tracker = MediaPipeHandTracker(camera=camera)
+        tracker = MediaPipeHandTracker(camera=camera, show_window=not args.no_cam_window)
         input_strategy = VisionInput(tracker)
         print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
     else:
