@@ -70,30 +70,72 @@ kvn episode --input vision           # add --camera N to pick another device
 ```
 
 **WSL2** — WSL's kernel has no webcam (UVC) driver, so there's no `/dev/video0`.
-Instead, stream the camera from Windows and have WSL open it by URL. The repo
-ships a tiny streamer for the Windows side: [`scripts/stream_webcam.py`](./scripts/stream_webcam.py).
+The fix: run the camera on **Windows**, have it serve an [MJPEG](https://en.wikipedia.org/wiki/Motion_JPEG)
+video stream over HTTP, and have the WSL side open that stream by URL. The repo
+ships the Windows-side streamer — [`scripts/stream_webcam.py`](./scripts/stream_webcam.py),
+a single self-contained file you run with Windows' Python. You do **not** edit
+it; you just run it.
 
-1. **Find the script from Windows.** From the repo dir in WSL, `explorer.exe .`
-   opens File Explorer right at the repo — `scripts/stream_webcam.py` is in there.
-   (Equivalently it lives under `\\wsl.localhost\<distro>\<repo-path>\scripts\`.)
-   It's a single self-contained file; copy it to Windows if you prefer.
-2. **On Windows**, install OpenCV and run it (uses the Windows-side webcam):
+Do the steps in order. Steps 1–2 run **in your WSL terminal**; step 3 runs **in
+a Windows PowerShell window**; steps 4–5 run **back in your WSL terminal**.
+
+1. **(WSL)** Install the extra and copy the streamer onto your Windows Desktop
+   (so it's easy to reach from PowerShell). Run from the repo root:
+   ```bash
+   uv pip install -e ".[dev,vision-input]"
+   cp scripts/stream_webcam.py "$(wslpath "$(powershell.exe -NoProfile -Command \
+       '[Environment]::GetFolderPath("Desktop")' | tr -d '\r')")/"
+   ```
+   The `cp` lands `stream_webcam.py` on your Windows Desktop. (Prefer to do it by
+   hand? Run `explorer.exe .` to open the repo in File Explorer and drag
+   `scripts\stream_webcam.py` to your Desktop.)
+
+2. **(WSL)** Install Python on Windows if you don't have it — `winget install
+   Python.Python.3.12` — then skip to step 3. (Already have Windows Python? Skip
+   this.)
+
+3. **(Windows PowerShell)** Open PowerShell (Start → type "PowerShell" → Enter),
+   then install OpenCV and start the streamer:
    ```powershell
    pip install opencv-python
-   python stream_webcam.py            # serves http://0.0.0.0:8080/video
+   python "$env:USERPROFILE\Desktop\stream_webcam.py"
    ```
-   The first run pops a **Windows Firewall** prompt — allow it on private
-   networks, or WSL can't connect.
-3. **Find the Windows host IP from WSL.** With mirrored networking
-   (`networkingMode=mirrored` in `.wslconfig`) use `localhost`; with the default
-   NAT networking it's the gateway: `ip route show default | awk '{print $3}'`.
-4. **In WSL**, point the teleop at the stream:
+   You should see exactly this line, and the window then stays open (that's
+   normal — it's serving; leave it running):
+   ```
+   serving camera 0 at http://0.0.0.0:8080/video  (Ctrl-C to stop)
+   ```
+   The first run pops a **Windows Firewall** prompt — tick **Private networks**
+   and click *Allow access*, or WSL won't be able to connect. (Webcam light on?
+   Good. If it says it can't open camera 0, append `--camera 1` and retry.)
+
+4. **(WSL)** Compute the Windows host's address and sanity-check the stream
+   *before* launching the sim. Run from the WSL terminal:
    ```bash
-   kvn episode --input vision --camera http://<windows-host>:8080/video
+   WIN_HOST=$(ip route show default | awk '{print $3}')   # e.g. 172.20.16.1
+   echo "$WIN_HOST"                                        # prints that address
+   curl -sI "http://$WIN_HOST:8080/video" | head -1        # expect: HTTP/1.0 200 OK
+   ```
+   `WIN_HOST` is the address WSL reaches Windows on. WSL is a lightweight VM with
+   its own network, so Windows isn't `localhost` — it's the NAT gateway, which
+   that `ip route` line extracts. The `curl` returning `200 OK` confirms the
+   firewall is open and the stream is live. (If you've enabled *mirrored*
+   networking — `networkingMode=mirrored` in `%UserProfile%\.wslconfig` — then
+   Windows *is* reachable as `localhost`; set `WIN_HOST=localhost` instead.)
+
+5. **(WSL)** Launch the teleop against that stream (reuses `$WIN_HOST` from step 4):
+   ```bash
+   kvn episode --input vision --camera "http://$WIN_HOST:8080/video"
    ```
 
-The MuJoCo viewer opens via WSLg and your hand drives the arm. Full flag
+The MuJoCo viewer opens via WSLg and your hand drives the arm. When you're done,
+`Ctrl-C` the PowerShell streamer window to release the camera. Full flag
 reference: **[docs/cli.md](./docs/cli.md)**.
+
+> **`curl` didn't return `200 OK`?** Almost always one of: the firewall prompt
+> got dismissed (re-run the streamer and allow it, or add an inbound rule for
+> port 8080), or `$WIN_HOST` is wrong (try `localhost`). Fix that before step 5 —
+> the sim can only connect once `curl` succeeds.
 
 ## License
 
