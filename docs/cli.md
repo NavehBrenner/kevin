@@ -196,7 +196,7 @@ uv run kvn harness --headless --log-file run.log      # tee to an explicit path
 ```
 
 Console output uses [rich](https://rich.readthedocs.io/) (colored, aligned columns)
-when it's installed **and** stdout is a terminal; otherwise — and in any
+when it's installed **and** stderr is a terminal; otherwise — and in any
 `--log-file` — it falls back to a plain text formatter. `rich` ships with the
 `dev` and `cli` extras; the logger works without it. Logs go to **stderr**, so a
 script's real stdout stays clean for piping.
