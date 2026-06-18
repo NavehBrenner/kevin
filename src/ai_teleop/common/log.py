@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Soft import: rich is an optional dependency. Absent -> stdlib StreamHandler.
@@ -86,7 +86,7 @@ def default_log_path(prog: str | None = None) -> Path:
     """
     if prog is None:
         prog = Path(sys.argv[0]).stem or "ai_teleop"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     return _LOG_DIR / f"{prog}_{stamp}.log"
 
 

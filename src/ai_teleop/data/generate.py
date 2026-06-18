@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -547,7 +547,7 @@ def _write_dataset_metadata(
         "schema_version": SCHEMA_VERSION,
         "master_seed": seed,
         "n_episodes": len(summaries),
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "fingerprint": fingerprint,
         "config": config,
         "expert": {"counts": expert_counts, "success_rate": expert_rate},
