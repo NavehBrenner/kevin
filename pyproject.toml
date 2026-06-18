@@ -7,14 +7,12 @@ name = "ai_teleop"
 version = "0.0.1"
 description = "AI-assisted robotic teleoperation for precision peg-in-hole insertion (MuJoCo)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [{ name = "Naveh" }]
 license = { text = "MIT" }
 keywords = ["robotics", "teleoperation", "shared-autonomy", "mujoco", "behavioral-cloning"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
@@ -95,7 +93,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
@@ -105,7 +103,7 @@ ignore = ["E501"] # line length is handled by formatter
 known-first-party = ["ai_teleop"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 files = ["src"]
 # Third-party scientific/CAD libs (mujoco, trimesh, shapely, scipy, cadquery)
 # ship no type stubs; don't fail the gate on their missing-import noise.
