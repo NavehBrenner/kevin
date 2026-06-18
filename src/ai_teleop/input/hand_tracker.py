@@ -150,7 +150,7 @@ class MediaPipeHandTracker:
     def __init__(
         self,
         *,
-        camera_index: int = 0,
+        camera: int | str = 0,
         detection_confidence: float = 0.6,
         tracking_confidence: float = 0.5,
         target_fps: float = 30.0,
@@ -160,9 +160,12 @@ class MediaPipeHandTracker:
         import mediapipe as mp
 
         self._cv2 = cv2
-        self._capture = cv2.VideoCapture(camera_index)
+        # `camera` is an int device index, or a string OpenCV can open: a stream
+        # URL (e.g. an MJPEG/RTSP feed) or a device path. WSL2 has no UVC driver
+        # for a host webcam, so there it must be a stream URL — see docs/cli.md.
+        self._capture = cv2.VideoCapture(camera)
         if not self._capture.isOpened():
-            raise RuntimeError(f"could not open camera index {camera_index}")
+            raise RuntimeError(f"could not open camera source {camera!r}")
         self._capture.set(cv2.CAP_PROP_FPS, target_fps)
 
         self._hands = mp.solutions.hands.Hands(
@@ -176,7 +179,7 @@ class MediaPipeHandTracker:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="hand-tracker", daemon=True)
         self._thread.start()
-        log.info("MediaPipe hand tracker started (camera %d, ~%.0f fps)", camera_index, target_fps)
+        log.info("MediaPipe hand tracker started (camera %r, ~%.0f fps)", camera, target_fps)
 
     def _run(self) -> None:
         while not self._stop.is_set():

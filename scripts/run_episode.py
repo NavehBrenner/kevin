@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
+from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
 from ai_teleop.input import ScriptedNoisyHuman, VisionInput  # noqa: E402
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
@@ -59,7 +60,10 @@ def main() -> int:
         "tracking (MediaPipe; needs the viewer + the vision-input extra).",
     )
     p.add_argument(
-        "--camera", type=int, default=0, help="Camera index for --input vision (default 0)."
+        "--camera",
+        default="0",
+        help="Camera source for --input vision: a device index (e.g. 0), or a stream URL "
+        "(e.g. http://<host>:<port>/video) — use a URL on WSL2, which has no webcam device.",
     )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
@@ -105,11 +109,14 @@ def main() -> int:
     home_quat = controller.home_pose[3:]
     assist = NoAssist()
 
+    input_strategy: InputStrategy
     tracker = None
     if args.input == "vision":
         from ai_teleop.input.hand_tracker import MediaPipeHandTracker
 
-        tracker = MediaPipeHandTracker(camera_index=args.camera)
+        # A bare integer is a device index; anything else is a stream URL / path.
+        camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
+        tracker = MediaPipeHandTracker(camera=camera)
         input_strategy = VisionInput(tracker)
         print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
     else:
