@@ -78,10 +78,18 @@ def test_open_close_scalar_distinguishes_open_and_fist():
     assert fist_reading.open_close < 0.2
 
 
-def test_position_is_the_wrist_landmark():
+def test_position_xy_is_wrist_and_z_is_depth_proxy():
     points = _flat_open_hand()
-    points[0] = [0.42, 0.61, -0.1]
-    assert np.allclose(reading_from_landmarks(points).position, [0.42, 0.61, -0.1])
+    points[0] = [0.42, 0.61, -0.1]  # move the wrist
+    reading = reading_from_landmarks(points)
+    assert np.allclose(reading.position[:2], [0.42, 0.61])  # x,y = wrist image coords
+    assert reading.position[2] > 0.0  # z = apparent-hand-size depth proxy, not raw landmark z
+
+
+def test_depth_proxy_grows_as_hand_appears_larger():
+    small = _flat_open_hand()
+    big = small * 2.0  # all landmarks twice as far apart ⇒ hand looks closer
+    assert reading_from_landmarks(big).position[2] > reading_from_landmarks(small).position[2]
 
 
 def test_reading_orientation_is_unit_quaternion():
@@ -182,10 +190,13 @@ def test_dropout_holds_then_reengage_reanchors_without_jump():
     assert abs(settled.target_position[0] - held.target_position[0]) < 0.05
 
 
-def test_grip_maps_open_to_release_and_fist_to_squeeze():
+def test_grip_open_and_fist_are_opposite_and_open_releases():
     open_hand = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 1.0, present=True)
     fist = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.0, present=True)
     open_cmd = VisionInput(_FakeSource([open_hand]), grip_force=5.0).get_command(_observation())
     fist_cmd = VisionInput(_FakeSource([fist]), grip_force=5.0).get_command(_observation())
-    assert open_cmd.delta_grip_force < 0  # release
-    assert fist_cmd.delta_grip_force > 0  # squeeze
+    # Opposite directions; on this gripper's convention open hand releases (+),
+    # a fist squeezes (−). (Flip the sign in VisionInput if hardware disagrees.)
+    assert open_cmd.delta_grip_force > 0  # release
+    assert fist_cmd.delta_grip_force < 0  # squeeze
+    assert open_cmd.delta_grip_force == -fist_cmd.delta_grip_force

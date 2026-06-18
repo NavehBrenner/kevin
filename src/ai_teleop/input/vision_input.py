@@ -107,25 +107,31 @@ class WorkspaceCalibration:
     camera-space displacement ``(dx, dy, dz)`` (image-normalized) to a world EE
     displacement in metres.
 
+    The camera-space axes are (image_x, image_y, depth) per :class:`HandReading`,
+    where depth is the apparent-hand-size proxy (larger ⇒ closer to camera).
+
     Attributes
     ----------
     scale:
         Metres of EE travel per unit of camera displacement, per *world* axis
-        (x, y, z). A full hand sweep is ~0.5 in normalized image space, so
-        ~0.6 puts the ~0.3 m workspace within a comfortable sweep.
+        (x, y, z). A full image-plane hand sweep is ~0.5 normalized, so ~0.6
+        fits the ~0.3 m workspace; the forward/back axis is driven by the
+        hand-size proxy, whose usable swing is smaller (~0.1), so world-x gets a
+        bigger gain.
     axis_map:
-        For each world axis, which camera axis (0=x, 1=y, 2=z) drives it. Default
-        maps camera-x→world-y, camera-y→world-z, camera-z→world-x — i.e. moving
-        the hand left/right pans the EE sideways, up/down raises it, and toward/
-        away from the camera pushes toward/away from the wall.
+        For each world axis, which camera axis (0=image_x, 1=image_y, 2=depth)
+        drives it. Default maps depth→world-x, image_x→world-y, image_y→world-z —
+        i.e. moving the hand toward/away from the camera pushes the EE forward/
+        back, left/right pans it sideways, up/down raises it.
     axis_sign:
-        ±1 per world axis to flip direction (image y grows downward; depth z
-        grows away). Chosen so natural hand motion reads as intuitive EE motion.
+        ±1 per world axis to flip direction (image y grows downward, etc.).
+        Chosen so natural hand motion reads as intuitive EE motion; flip an entry
+        if an axis feels inverted.
     """
 
-    scale: np.ndarray = field(default_factory=lambda: np.array([0.6, 0.6, 0.6]))
+    scale: np.ndarray = field(default_factory=lambda: np.array([1.8, 0.6, 0.6]))
     axis_map: tuple[int, int, int] = (2, 0, 1)
-    axis_sign: np.ndarray = field(default_factory=lambda: np.array([-1.0, -1.0, -1.0]))
+    axis_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, -1.0, -1.0]))
 
     def map_delta(self, camera_delta: np.ndarray) -> np.ndarray:
         """Map a camera-space displacement to a world-frame EE displacement (m)."""
@@ -206,8 +212,9 @@ class VisionInput:
         target_quaternion = (
             reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
         )
-        # open=1 → release (−force); fist=0 → squeeze (+force).
-        delta_grip_force = (1.0 - 2.0 * reading.open_close) * self._grip_force
+        # Fist → squeeze, open hand → release. Sign matched to the gripper's
+        # observed delta-force convention (open=1 ⇒ release, fist=0 ⇒ squeeze).
+        delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
 
         self._held = Command(target_position, target_quaternion, delta_grip_force)
         return self._held

@@ -56,9 +56,12 @@ class HandReading:
     Attributes
     ----------
     position:
-        Shape (3,) — wrist landmark in MediaPipe's image-normalized frame:
-        x,y in [0, 1] (origin top-left), z is relative depth (smaller ⇒ closer
-        to camera). The strategy layer maps this to robot workspace.
+        Shape (3,) — (image_x, image_y, depth). ``image_x, image_y`` are the
+        wrist landmark in MediaPipe's image-normalized frame (origin top-left,
+        [0, 1]); ``depth`` is an apparent-hand-size proxy (wrist→middle-MCP
+        distance) — *larger ⇒ hand closer to camera*. The size proxy replaces
+        MediaPipe's unreliable landmark z, giving the strategy a usable
+        forward/back axis. The strategy layer maps this to robot workspace.
     orientation:
         Shape (4,) unit quaternion (w, x, y, z) — a rough hand-frame estimate
         from the palm landmarks. Noisy; the strategy may ignore it.
@@ -92,11 +95,13 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
         raise ValueError(f"landmarks must have shape (21, 3), got {landmarks.shape}")
 
     wrist = landmarks[_WRIST]
-    position = wrist.copy()
 
-    # Hand scale: wrist→middle-finger MCP. Used to normalize the grip ratio so
-    # it is roughly distance-invariant (closer hand ⇒ bigger pixels, same grip).
+    # Apparent hand size (wrist→middle-finger MCP). Serves two purposes: it
+    # normalizes the grip ratio (distance-invariant), and it *is* the depth proxy
+    # for the forward/back axis — bigger ⇒ hand closer to the camera. We use it
+    # instead of MediaPipe's raw landmark z, which is far too noisy to teleop with.
     hand_scale = float(np.linalg.norm(landmarks[_MIDDLE_MCP] - wrist))
+    position = np.array([wrist[0], wrist[1], hand_scale])
     if hand_scale < 1e-6:
         return HandReading(position, np.array([1.0, 0.0, 0.0, 0.0]), 0.0, True)
 
@@ -231,19 +236,27 @@ class MediaPipeHandTracker:
         # Mirror for a natural selfie view (after drawing, so overlays match).
         frame = cv2.flip(frame, 1)
 
-        green, red, white = (0, 200, 0), (0, 0, 255), (255, 255, 255)
+        # High-contrast semi-transparent HUD panel, pinned to the top-left corner.
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        panel_w, panel_h = 470, 134
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (panel_w, panel_h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+
+        green, red, white = (0, 230, 0), (60, 60, 255), (255, 255, 255)
         if reading.present:
-            status, colour = f"TRACKING   grip {reading.open_close * 100:3.0f}% open", green
+            status, colour = f"TRACKING   hand {reading.open_close * 100:3.0f}% open", green
         else:
             status, colour = "NO HAND - holding (clutched)", red
-        cv2.putText(frame, status, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2)
-        instructions = [
-            "Move hand: drive the arm   |   Lift hand out of frame: clutch / re-center",
-            "Open hand: release grip    |   Make a fist: squeeze grip",
-            "Close this window or Ctrl-C the sim to stop",
-        ]
-        for i, line in enumerate(instructions):
-            cv2.putText(frame, line, (10, 60 + i * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, white, 1)
+        cv2.putText(frame, status, (12, 26), font, 0.62, colour, 2)
+        for i, line in enumerate(
+            [
+                "Move hand: drive arm     Lift out of frame: clutch",
+                "Toward camera: forward   Away from camera: back",
+                "Open hand: release       Make a fist: grip",
+            ]
+        ):
+            cv2.putText(frame, line, (12, 58 + i * 24), font, 0.48, white, 1)
         return frame
 
     def read(self) -> HandReading:
