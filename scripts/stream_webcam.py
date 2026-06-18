@@ -35,6 +35,16 @@ _BOUNDARY = "frame"
 
 def _make_handler(camera: int, jpeg_quality: int) -> type[BaseHTTPRequestHandler]:
     class MJPEGHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+            # Reachability/firewall pre-flight check (`curl -I`): headers only, no
+            # body, no camera open — answers "can the client reach me?" with 200.
+            if self.path not in ("/", "/video"):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={_BOUNDARY}")
+            self.end_headers()
+
         def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
             if self.path not in ("/", "/video"):
                 self.send_error(404)
