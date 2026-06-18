@@ -118,7 +118,7 @@ tools via `uv run` (mypy as `uv run python -m mypy`, since the relocated
 
 ## Code conventions
 
-- Python ≥ 3.10. Favor high-level Python; **no C/C++/Rust extensions, no ROS.**
+- Python ≥ 3.12. Favor high-level Python; **no C/C++/Rust extensions, no ROS.**
 - Lint/format with ruff; type-check with mypy; test with pytest. Config in `pyproject.toml`.
 - Built milestone by milestone — see `docs/`. Respect each milestone's anti-scope;
   don't pull future work forward.
@@ -191,8 +191,8 @@ them, never re-declare a local pose/command/observation/delta struct:
 - A spec built up in stages → plain `@dataclass` (methods/`@property` are fine).
 - Behavioral interface → `typing.Protocol`; add `@runtime_checkable` only when a test
   asserts conformance — mypy structural typing is the real guarantee.
-- On-disk dict shape → `TypedDict`. Optional keys via the base-class + `total=False`
-  split, **not** `typing.NotRequired` (3.11+; the project targets 3.10).
+- On-disk dict shape → `TypedDict`. Optional keys via `typing.NotRequired` (the
+  project targets 3.12; the old base-class + `total=False` split is no longer required).
 - A closed set of string values → `Literal`, aliased at module top (e.g. `HoleShape`).
 
 Respect the dependency DAG: `common/` is the leaf, `domain/` depends on `common/`, and

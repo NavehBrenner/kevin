@@ -50,7 +50,7 @@ ground truth — for offline analysis only, never fed to a deployed policy.
 from __future__ import annotations
 
 import json
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
@@ -110,7 +110,7 @@ COLUMN_SHAPES: dict[str, tuple[int, ...]] = {
 }
 
 
-class TerminalReason(str, Enum):
+class TerminalReason(StrEnum):
     """Why an episode ended (stamped into per-episode metadata)."""
 
     SUCCESS = "success"  # insertion depth past threshold
