@@ -106,8 +106,11 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | Flag | Default | Meaning |
 |---|---|---|
 | `--headless` | off | Skip the viewer; run the loop and print a one-line summary. |
+| `--input {scripted,vision}` | `scripted` | Base command source: scripted noisy human, or webcam hand tracking (MediaPipe; needs the viewer + the `vision-input` extra). |
+| `--camera SRC` | `0` | Camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/video`). Use a URL on WSL2 — see the README's webcam setup. |
+| `--no-cam-window` | off | Hide the live camera/landmark debug window (`--input vision`; shown by default). |
 | `--seed N` | `0` | Seed for the scripted human's noise and the `SimEnv`. |
-| `--max-steps N` | script default | Episode step budget (one step = one 2 ms sim tick). |
+| `--max-steps N` | script default | Episode step budget (one step = one 2 ms sim tick). **`0` = no limit** — run until you close the viewer or Ctrl-C (free-play). |
 | `--generated-wall` | off | Run on a freshly generated procedural wall instead of the static scene. |
 | `--wall-seed N` | `7` | Seed for `--generated-wall`. |
 | `--distractors N` | — | Distractor-hole count for `--generated-wall`. |
@@ -117,6 +120,7 @@ uv run kvn smoke --no-viewer    # headless (CI)
 uv run kvn episode                                  # interactive viewer
 uv run kvn episode --headless --seed 7 --max-steps 1500
 uv run kvn episode --headless --generated-wall --wall-seed 3 --distractors 4
+uv run kvn episode --input vision --max-steps 0     # webcam free-play, no step limit
 ```
 
 #### `kvn harness` — M2 controller dev harness

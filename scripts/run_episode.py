@@ -45,7 +45,8 @@ def main() -> int:
         "--max-steps",
         type=int,
         default=DEFAULT_MAX_STEPS,
-        help="Episode step budget (one step == one 2 ms sim tick).",
+        help="Episode step budget (one step == one 2 ms sim tick). Use 0 for no limit — "
+        "run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
     )
     p.add_argument(
         "--generated-wall",
@@ -134,27 +135,34 @@ def main() -> int:
         f"{np.array2string(target_position, precision=3)} "
         f"({start_dist * 1000:.0f} mm from home EE)"
     )
-    print(f"Running {args.max_steps} steps with {args.input} input + NoAssist...")
+    # --max-steps 0 (or negative) => run effectively forever; range() is lazy.
+    max_steps = args.max_steps if args.max_steps > 0 else sys.maxsize
+    budget = "unlimited" if args.max_steps <= 0 else f"{args.max_steps} steps"
+    print(f"Running {budget} with {args.input} input + NoAssist (Ctrl-C to stop)...")
 
+    result = None
     try:
         result = run_episode(
             env,
             controller,
             input_strategy,
             assist,
-            max_steps=args.max_steps,
+            max_steps=max_steps,
             render=not args.headless,
         )
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
     finally:
         if tracker is not None:
             tracker.close()
 
-    final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
-    print(
-        f"\nEpisode done: {result.n_steps} steps  "
-        f"final lock state = {result.lock_status.state.value}  "
-        f"EE-to-hole {start_dist * 1000:.0f} mm -> {final_dist * 1000:.0f} mm"
-    )
+    if result is not None:
+        final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
+        print(
+            f"\nEpisode done: {result.n_steps} steps  "
+            f"final lock state = {result.lock_status.state.value}  "
+            f"EE-to-hole {start_dist * 1000:.0f} mm -> {final_dist * 1000:.0f} mm"
+        )
     env.close()
     return 0
 

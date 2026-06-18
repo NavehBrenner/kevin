@@ -182,6 +182,11 @@ class MediaPipeHandTracker:
         )
 
         self._latest = _ABSENT
+        # Annotated display frame produced by the capture thread; rendered from
+        # read() (main thread) — see _render_window for why.
+        self._display_frame: np.ndarray | None = None
+        self._frame_id = 0
+        self._last_rendered_id = -1
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="hand-tracker", daemon=True)
@@ -203,15 +208,17 @@ class MediaPipeHandTracker:
                     [[lm.x, lm.y, lm.z] for lm in hand_landmarks[0].landmark], dtype=np.float64
                 )
                 reading = reading_from_landmarks(points)
+            display = self._annotate(frame, hand_landmarks, reading) if self._show_window else None
             with self._lock:
                 self._latest = reading
-            if self._show_window:
-                self._draw_window(frame, hand_landmarks, reading)
-        if self._show_window:
-            self._cv2.destroyAllWindows()
+                if display is not None:
+                    self._display_frame = display
+                    self._frame_id += 1
 
-    def _draw_window(self, frame: np.ndarray, hand_landmarks: object, reading: HandReading) -> None:
-        """Show the camera feed with MediaPipe landmarks + a teleop HUD overlay."""
+    def _annotate(
+        self, frame: np.ndarray, hand_landmarks: object, reading: HandReading
+    ) -> np.ndarray:
+        """Draw MediaPipe landmarks + a teleop HUD onto the frame (no GUI calls)."""
         cv2 = self._cv2
         if hand_landmarks:
             self._mp_drawing.draw_landmarks(
@@ -237,19 +244,33 @@ class MediaPipeHandTracker:
         ]
         for i, line in enumerate(instructions):
             cv2.putText(frame, line, (10, 60 + i * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, white, 1)
-        cv2.imshow("ai_teleop — hand tracking", frame)
-        cv2.waitKey(1)  # pump the HighGUI event loop; required for imshow to render
+        return frame
 
     def read(self) -> HandReading:
-        """Latest hand reading (non-blocking). ``present=False`` on drop-out."""
+        """Latest hand reading (non-blocking). ``present=False`` on drop-out.
+
+        Also pumps the debug window when enabled: OpenCV HighGUI only paints from
+        the thread that owns the event loop, and read() is called from the main
+        (control-loop) thread, so the actual imshow/waitKey happen here, not on
+        the capture thread (which would render a blank window under WSLg/Qt).
+        """
         with self._lock:
-            return self._latest
+            reading = self._latest
+            frame = self._display_frame
+            frame_id = self._frame_id
+        if self._show_window and frame is not None and frame_id != self._last_rendered_id:
+            self._cv2.imshow("ai_teleop - hand tracking", frame)
+            self._cv2.waitKey(1)  # required for HighGUI to actually render
+            self._last_rendered_id = frame_id
+        return reading
 
     def close(self) -> None:
         self._stop.set()
         self._thread.join(timeout=1.0)
         self._capture.release()
         self._hands.close()
+        if self._show_window:
+            self._cv2.destroyAllWindows()
         log.info("MediaPipe hand tracker stopped")
 
     def __enter__(self) -> MediaPipeHandTracker:

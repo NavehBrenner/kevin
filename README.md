@@ -125,8 +125,11 @@ a Windows PowerShell window**; steps 4–5 run **back in your WSL terminal**.
 
 5. **(WSL)** Launch the teleop against that stream (reuses `$WIN_HOST` from step 4):
    ```bash
-   kvn episode --input vision --camera "http://$WIN_HOST:8080/video"
+   kvn episode --input vision --camera "http://$WIN_HOST:8080/video" --max-steps 0
    ```
+   `--max-steps 0` runs with no step limit (free-play) until you close the viewer
+   or `Ctrl-C`; drop it for the default fixed-length episode. A second window
+   shows the camera feed with the tracked hand and the controls.
 
 The MuJoCo viewer opens via WSLg and your hand drives the arm. When you're done,
 `Ctrl-C` the PowerShell streamer window to release the camera. Full flag
