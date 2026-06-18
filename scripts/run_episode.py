@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
-from ai_teleop.input import ScriptedNoisyHuman  # noqa: E402
+from ai_teleop.input import ScriptedNoisyHuman, VisionInput  # noqa: E402
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
@@ -51,6 +51,16 @@ def main() -> int:
         action="store_true",
         help="Run on a freshly generated procedural wall instead of the static scene.",
     )
+    p.add_argument(
+        "--input",
+        choices=["scripted", "vision"],
+        default="scripted",
+        help="Base command source: 'scripted' noisy human (default) or 'vision' webcam hand "
+        "tracking (MediaPipe; needs the viewer + the vision-input extra).",
+    )
+    p.add_argument(
+        "--camera", type=int, default=0, help="Camera index for --input vision (default 0)."
+    )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
@@ -62,6 +72,10 @@ def main() -> int:
         help="Controller command clamp in m/step (approach-speed / strictness knob).",
     )
     args = p.parse_args()
+
+    if args.input == "vision" and args.headless:
+        print("FATAL: --input vision needs the viewer (drop --headless).", file=sys.stderr)
+        return 2
 
     scene_path = resolve_scene_path(
         generated=args.generated_wall,
@@ -89,9 +103,18 @@ def main() -> int:
     # full-target command into a smooth bounded approach.
     target_position = obs.hole_poses[obs.target_hole_index][:3].copy()
     home_quat = controller.home_pose[3:]
-    target_pose = np.concatenate([target_position, home_quat])
-    human = ScriptedNoisyHuman(target_pose, seed=args.seed)
     assist = NoAssist()
+
+    tracker = None
+    if args.input == "vision":
+        from ai_teleop.input.hand_tracker import MediaPipeHandTracker
+
+        tracker = MediaPipeHandTracker(camera_index=args.camera)
+        input_strategy = VisionInput(tracker)
+        print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
+    else:
+        target_pose = np.concatenate([target_position, home_quat])
+        input_strategy = ScriptedNoisyHuman(target_pose, seed=args.seed)
 
     start_dist = float(np.linalg.norm(obs.ee_pose[:3] - target_position))
     print(
@@ -99,16 +122,20 @@ def main() -> int:
         f"{np.array2string(target_position, precision=3)} "
         f"({start_dist * 1000:.0f} mm from home EE)"
     )
-    print(f"Running {args.max_steps} steps with ScriptedNoisyHuman + NoAssist...")
+    print(f"Running {args.max_steps} steps with {args.input} input + NoAssist...")
 
-    result = run_episode(
-        env,
-        controller,
-        human,
-        assist,
-        max_steps=args.max_steps,
-        render=not args.headless,
-    )
+    try:
+        result = run_episode(
+            env,
+            controller,
+            input_strategy,
+            assist,
+            max_steps=args.max_steps,
+            render=not args.headless,
+        )
+    finally:
+        if tracker is not None:
+            tracker.close()
 
     final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
     print(
