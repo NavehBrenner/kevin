@@ -51,11 +51,16 @@ ControlMode = Literal["mirror", "expo", "rate"]
   dead-zone (kills resting drift) + a cubic expo curve (tiny near rest ⇒
   precision, near-linear at full sweep ⇒ reach). The intuitive default.
 - ``rate`` — "point to steer": the direction the two driving fingers point sets
-  the in-plane EE *velocity*, hand pitch drives forward/back, and motion happens
-  only while the two-finger gesture is held (relax = lock). Position-independent
-  and low-fatigue; unlimited range (no camera-FoV ceiling). See
+  the in-plane EE *velocity*, pushing/pulling the hand toward/away from the
+  camera drives forward/back, and motion happens only while the two-finger
+  gesture is held (relax = lock). Position-independent and low-fatigue; unlimited
+  range (no camera-FoV ceiling). See
   :class:`~ai_teleop.input.hand_tracker.HandReading`.
 """
+
+# rate-mode tuning. ponytail: hand-tuned calibration knobs the live feel needs —
+# adjust from operator feedback, not magic numbers.
+_RATE_DEPTH_DEADZONE = 0.01  # hand-size units ignored around the push/pull neutral
 
 
 def _deadzone(value: np.ndarray, width: float) -> np.ndarray:
@@ -194,10 +199,18 @@ class VisionInput:
     rate_speed:
         In-plane EE speed (m/s) while the two-finger drive gesture is held
         (``rate`` mode). Scaled by ``gain``.
-    pitch_gain:
-        Forward/back EE speed (m/s) per unit hand pitch (``rate`` mode). Larger
-        than ``rate_speed`` because the pitch signal's usable swing is small.
-        Scaled by ``gain``.
+    depth_gain:
+        Forward/back EE speed (m/s) per unit of push/pull (``rate`` mode): hand
+        toward camera ⇒ forward, away ⇒ back, auto-zeroed to your hand's pose at
+        the moment you start pointing. Scaled by ``gain``.
+    leash:
+        Max distance (m, per axis) the velocity target may lead the actual EE in
+        ``rate`` mode. Bounds run-away when the arm can't keep up and sets the
+        effective top speed (bigger ⇒ larger impedance error ⇒ faster). On lock
+        the target snaps back to the arm, so there's no catch-up drift.
+    lock_delay:
+        Seconds the drive gesture may drop out before the arm locks (``rate``
+        mode) — a debounce so brief tracking glitches don't freeze you.
     track_orientation:
         When True, the held orientation follows the filtered hand orientation;
         default False holds the start orientation (round peg ⇒ roll irrelevant).
@@ -216,8 +229,10 @@ class VisionInput:
         mode: ControlMode = "expo",
         deadzone: float = 0.03,
         expo: float = 0.6,
-        rate_speed: float = 0.4,
-        pitch_gain: float = 6.0,
+        rate_speed: float = 4.0,
+        depth_gain: float = 25.0,
+        leash: float = 0.2,
+        lock_delay: float = 0.2,
         track_orientation: bool = False,
         min_cutoff: float = 2.0,
         beta: float = 1.5,
@@ -235,7 +250,9 @@ class VisionInput:
         self._expo = expo
         rate_scale = gain if mode == "rate" else 1.0
         self._rate_speed = rate_speed * rate_scale
-        self._pitch_gain = pitch_gain * rate_scale
+        self._depth_gain = depth_gain * rate_scale
+        self._leash = leash
+        self._lock_delay = lock_delay
         self._track_orientation = track_orientation
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)
 
@@ -244,6 +261,9 @@ class VisionInput:
         self._hand_anchor: np.ndarray | None = None  # camera-space pose at engage
         self._ee_anchor: np.ndarray | None = None  # world EE position at engage
         self._prev_time: float | None = None  # for rate-mode integration
+        self._driving = False  # rate-mode drive/lock state (with lock_delay debounce)
+        self._last_point_time = 0.0  # last tick the drive gesture was seen
+        self._depth_neutral: float | None = None  # push/pull zero, captured on engage
 
     def get_command(self, observation: Observation) -> Command:
         # Seed the held pose from the current EE pose on the first tick, so a
@@ -278,42 +298,72 @@ class VisionInput:
 
         assert self._hand_anchor is not None and self._ee_anchor is not None
         assert self._prev_time is not None
-        camera_delta = reading.position - self._hand_anchor
 
         if self._mode == "rate":
-            # "Point to steer": pointing direction sets in-plane velocity, hand
-            # pitch sets forward/back, integrated onto the running target — but
-            # only while the two-finger drive gesture is held (else frozen = lock).
-            dt = float(np.clip(observation.sim_time - self._prev_time, 0.0, 0.1))
-            self._prev_time = observation.sim_time
-            world_velocity = np.zeros(3)
-            if reading.is_pointing:
-                sign = self._calibration.axis_sign
-                point = reading.point_direction
-                world_velocity[1] = sign[1] * self._rate_speed * float(point[0])  # L/R ← image-x
-                world_velocity[2] = sign[2] * self._rate_speed * float(point[1])  # U/D ← image-y
-                pitch = math.copysign(max(abs(reading.pitch) - self._deadzone, 0.0), reading.pitch)
-                world_velocity[0] = sign[0] * self._pitch_gain * pitch  # fwd/back ← hand pitch
-            raw_target = self._held.target_position + world_velocity * dt
-        elif self._mode == "expo":
+            return self._rate_command(reading, observation)
+
+        camera_delta = reading.position - self._hand_anchor
+        if self._mode == "expo":
             shaped = _expo(_deadzone(camera_delta, self._deadzone), self._expo)
             raw_target = self._ee_anchor + self._calibration.map_delta(shaped)
         else:  # mirror
             raw_target = self._ee_anchor + self._calibration.map_delta(camera_delta)
 
         target_position = self._position_filter(raw_target, observation.sim_time)
-
         target_quaternion = (
             reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
         )
         # Fist → squeeze, open hand → release (open=1 ⇒ release, fist=0 ⇒ squeeze).
-        # In rate mode, hold grip steady while steering (the drive gesture curls
-        # ring/pinky, which would otherwise read as a partial squeeze) — adjust
-        # grip only when locked.
-        if self._mode == "rate" and reading.is_pointing:
-            delta_grip_force = self._held.delta_grip_force
-        else:
-            delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
+        delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
 
         self._held = Command(target_position, target_quaternion, delta_grip_force)
+        return self._held
+
+    def _rate_command(self, reading: HandReading, observation: Observation) -> Command:
+        """`rate` "point to steer": pointing direction → in-plane velocity, hand
+        push/pull → forward/back, integrated while the two-finger gesture is held."""
+        assert self._held is not None and self._prev_time is not None
+        dt = float(np.clip(observation.sim_time - self._prev_time, 0.0, 0.1))
+        self._prev_time = observation.sim_time
+        ee_position = observation.ee_pose[:3]
+
+        # Drive/lock with a debounce: engage instantly on the gesture, but only
+        # lock once it's been gone for `lock_delay` (brief glitches don't freeze).
+        if reading.is_pointing:
+            if not self._driving:
+                self._depth_neutral = float(reading.position[2])  # auto-zero push/pull
+            self._driving = True
+            self._last_point_time = observation.sim_time
+        elif observation.sim_time - self._last_point_time > self._lock_delay:
+            self._driving = False
+
+        if not self._driving:
+            # Locked: freeze at the arm's actual pose (no catch-up drift), and
+            # let the gripper be set from open/close while you're stopped.
+            grip = (2.0 * reading.open_close - 1.0) * self._grip_force
+            self._held = Command(ee_position.copy(), observation.ee_pose[3:].copy(), grip)
+            return self._held
+
+        world_velocity = np.zeros(3)
+        if reading.is_pointing:  # else (grace window): velocity 0, just pause
+            sign = self._calibration.axis_sign
+            point = reading.point_direction
+            world_velocity[1] = sign[1] * self._rate_speed * float(point[0])  # L/R ← image-x
+            world_velocity[2] = sign[2] * self._rate_speed * float(point[1])  # U/D ← image-y
+            depth = float(reading.position[2]) - (self._depth_neutral or float(reading.position[2]))
+            depth = math.copysign(max(abs(depth) - _RATE_DEPTH_DEADZONE, 0.0), depth)
+            world_velocity[0] = sign[0] * self._depth_gain * depth  # fwd/back ← push/pull
+
+        raw_target = self._held.target_position + world_velocity * dt
+        # Leash the target to the arm so it can't run far ahead (anti-runaway; also
+        # sets the effective top speed via the steady-state impedance error).
+        raw_target = ee_position + np.clip(raw_target - ee_position, -self._leash, self._leash)
+        target_position = self._position_filter(raw_target, observation.sim_time)
+
+        target_quaternion = (
+            reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
+        )
+        # Hold grip steady while steering (the gesture curls ring/pinky, which
+        # would otherwise read as a partial squeeze) — grip is set only when locked.
+        self._held = Command(target_position, target_quaternion, self._held.delta_grip_force)
         return self._held

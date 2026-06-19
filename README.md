@@ -139,12 +139,12 @@ a Windows PowerShell window**; steps 4–5 run **back in your WSL terminal**.
      rest, fast on big sweeps. Your hand *is* the arm.
    - **`mirror`** — plain linear position control (the raw version of `expo`).
    - **`rate`** — *point to steer*. Hold up two fingers (index + middle) and the
-     arm flies in the direction you point; tilt those fingers toward the camera
-     to go forward, away to go back. **Relax the gesture (any other hand shape)
-     to lock** the arm in place — that's the clutch. Adjust the gripper
+     arm flies in the direction you point; push your hand toward the camera to go
+     forward, pull it back to go back (auto-zeroed to your pose the moment you
+     start pointing, so there's no drift). **Relax the gesture (any other hand
+     shape) to lock** the arm in place — that's the clutch. Adjust the gripper
      (fist/open) while locked. Position-independent and low-fatigue: your hand
-     can sit anywhere in frame. Tune in-plane speed and forward/back speed with
-     `--gain`.
+     can sit anywhere in frame. `--gain` scales the speed.
 
    `rate` is the easiest for long reaches; `expo` feels the most direct. Try both.
 

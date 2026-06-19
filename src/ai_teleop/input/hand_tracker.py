@@ -83,10 +83,8 @@ class HandReading:
         True for the two-finger drive gesture (index + middle extended, ring +
         pinky curled). In ``rate`` mode the arm moves only while this holds; any
         other hand shape freezes it (the "lock"). Ignored by mirror/expo.
-    pitch:
-        Forward/back signal: hand-pitch proxy, positive when the fingers tilt
-        *toward* the camera (≈ "forward"). Derived from the extended fingertips'
-        depth; noisy, so the strategy dead-zones it.
+        Detection is deliberately forgiving (lenient on the two driving fingers,
+        strict on the curled ones) so the gesture holds without losing it.
     """
 
     position: np.ndarray
@@ -95,7 +93,6 @@ class HandReading:
     present: bool
     point_direction: np.ndarray = field(default_factory=lambda: np.zeros(2))
     is_pointing: bool = False
-    pitch: float = 0.0
 
 
 _ABSENT = HandReading(
@@ -134,16 +131,21 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
     orientation = _palm_orientation(landmarks)
 
     # Two-finger "drive" gesture + pointing direction (rate "point to steer").
-    # A finger is "extended" when its tip is farther from the wrist than its PIP
-    # joint, measured in the image plane — robust to hand orientation and dodges
-    # the noisy landmark z.
-    def extended(tip: int, pip: int) -> bool:
-        return float(np.linalg.norm(landmarks[tip, :2] - wrist[:2])) > float(
+    # A finger is "extended" when its tip is `margin`× farther from the wrist than
+    # its PIP joint (image plane — robust to hand orientation, dodges the noisy
+    # landmark z). Lenient margin on index/middle (< 1: count them out readily) and
+    # strict on ring/pinky (> 1: must clearly extend to break the gesture) widens
+    # the "pointing" basin so the arm doesn't lock the moment the hand wavers.
+    def extended(tip: int, pip: int, margin: float) -> bool:
+        return float(np.linalg.norm(landmarks[tip, :2] - wrist[:2])) > margin * float(
             np.linalg.norm(landmarks[pip, :2] - wrist[:2])
         )
 
     is_pointing = (
-        extended(*_INDEX) and extended(*_MIDDLE) and not extended(*_RING) and not extended(*_PINKY)
+        extended(*_INDEX, 0.9)
+        and extended(*_MIDDLE, 0.9)
+        and not extended(*_RING, 1.2)
+        and not extended(*_PINKY, 1.2)
     )
     # In-plane pointing direction: knuckle midpoint → fingertip midpoint of the
     # two driving fingers, unit-normalized. Independent of hand position in frame.
@@ -152,9 +154,6 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
     point_vec = finger_tip - finger_base
     point_norm = float(np.linalg.norm(point_vec))
     point_direction = point_vec / point_norm if point_norm > 1e-6 else np.zeros(2)
-    # Forward/back: MediaPipe z is wrist-origin, negative toward the camera, so
-    # fingers tilted toward the camera ⇒ negative tip z ⇒ positive ("forward").
-    pitch = -float(np.mean([landmarks[_INDEX[0], 2], landmarks[_MIDDLE[0], 2]]))
 
     return HandReading(
         position,
@@ -163,7 +162,6 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
         present=True,
         point_direction=point_direction,
         is_pointing=is_pointing,
-        pitch=pitch,
     )
 
 
@@ -312,7 +310,7 @@ class MediaPipeHandTracker:
         if self._mode == "rate":
             lines = [
                 "Point index+middle: steer where you point",
-                "Tilt fingers toward camera: forward / back",
+                "Push hand toward camera: forward  / pull: back",
                 "Relax hand: lock    Fist/open (locked): grip",
             ]
         else:
