@@ -85,6 +85,11 @@ class HandReading:
         other hand shape freezes it (the "lock"). Ignored by mirror/expo.
         Detection is deliberately forgiving (lenient on the two driving fingers,
         strict on the curled ones) so the gesture holds without losing it.
+    forwardness:
+        How much the driving fingers point *into* the camera (≈ "forward"):
+        ~0 when pointing across the image plane, larger as the fingertips angle
+        toward the lens. From the fingertips' depth (negative MediaPipe z = toward
+        camera). Noisy; the strategy dead-zones it and drives only a gentle creep.
     """
 
     position: np.ndarray
@@ -93,6 +98,7 @@ class HandReading:
     present: bool
     point_direction: np.ndarray = field(default_factory=lambda: np.zeros(2))
     is_pointing: bool = False
+    forwardness: float = 0.0
 
 
 _ABSENT = HandReading(
@@ -154,6 +160,9 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
     point_vec = finger_tip - finger_base
     point_norm = float(np.linalg.norm(point_vec))
     point_direction = point_vec / point_norm if point_norm > 1e-6 else np.zeros(2)
+    # Forwardness: fingertips angled toward the camera ⇒ negative tip z ⇒ positive.
+    # The wrist is MediaPipe's z origin, so the tip z is already wrist-relative.
+    forwardness = -float(np.mean([landmarks[_INDEX[0], 2], landmarks[_MIDDLE[0], 2]]))
 
     return HandReading(
         position,
@@ -162,6 +171,7 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
         present=True,
         point_direction=point_direction,
         is_pointing=is_pointing,
+        forwardness=forwardness,
     )
 
 
@@ -299,19 +309,21 @@ class MediaPipeHandTracker:
         green, red, white, amber = (0, 230, 0), (60, 60, 255), (255, 255, 255), (0, 200, 255)
         if not reading.present:
             status, colour = "NO HAND - holding (clutched)", red
-        elif self._mode == "rate" and not reading.is_pointing:
-            status, colour = "LOCKED - point 2 fingers to drive", amber
         elif self._mode == "rate":
-            status, colour = "DRIVING", green
+            if reading.is_pointing:
+                status, colour = "DRIVING - steer", green
+            elif reading.open_close < 0.25:
+                status, colour = "DRIVING - back (fist)", green
+            else:
+                status, colour = "LOCKED - point or fist to drive", amber
         else:
             status, colour = f"TRACKING   hand {reading.open_close * 100:3.0f}% open", green
         cv2.putText(frame, status, (12, 26), font, 0.62, colour, 2)
 
         if self._mode == "rate":
             lines = [
-                "Point index+middle: steer where you point",
-                "Push hand toward camera: forward  / pull: back",
-                "Relax hand: lock    Fist/open (locked): grip",
+                "Point index+middle: steer (angle at camera = forward)",
+                "Make a fist: back up        Open / relax: lock",
             ]
         else:
             lines = [

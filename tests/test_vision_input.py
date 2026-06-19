@@ -116,6 +116,12 @@ def test_two_finger_gesture_detected_and_points_up():
     assert reading.point_direction[1] < -0.9  # unit vector pointing up the image (−y)
 
 
+def test_forwardness_positive_when_fingertips_angle_toward_camera():
+    points = _two_finger_point()
+    points[8, 2] = points[12, 2] = -0.2  # tips toward camera (negative MediaPipe z)
+    assert reading_from_landmarks(points).forwardness > 0.0
+
+
 def test_open_and_fist_are_not_the_drive_gesture():
     # All fingers out (open) and all curled (fist) must not read as "pointing".
     assert not reading_from_landmarks(_flat_open_hand()).is_pointing
@@ -223,14 +229,17 @@ def test_expo_softens_small_motion_vs_mirror():
     assert 0.0 < travel("expo") < travel("mirror")  # soft centre ⇒ smaller for small input
 
 
-def _pointing(direction: np.ndarray, *, depth: float = 0.0, open_close: float = 0.5) -> HandReading:
+def _pointing(
+    direction: np.ndarray, *, forwardness: float = 0.0, open_close: float = 0.5
+) -> HandReading:
     return HandReading(
-        np.array([0.5, 0.5, depth]),
+        np.array([0.5, 0.5, 0.0]),
         np.array([1.0, 0, 0, 0]),
         open_close,
         present=True,
         point_direction=direction,
         is_pointing=True,
+        forwardness=forwardness,
     )
 
 
@@ -250,19 +259,35 @@ def test_rate_mode_steers_in_pointed_direction():
     assert z2 > z1 > 0.5  # default axis_sign maps pointing-up → world +z
 
 
-def test_rate_mode_push_pull_drives_forward_back():
-    """Push toward camera (hand_scale grows past the engage neutral) ⇒ +x."""
-    push = _pointing(np.array([0.0, -1.0]), depth=0.3)  # bigger hand ⇒ closer ⇒ forward
+def test_rate_mode_pointing_into_camera_creeps_forward():
+    """Forwardness above the dead-zone eases the EE forward (+x, default sign)."""
+    at_cam = _pointing(np.array([0.0, -1.0]), forwardness=0.3)
     vision = VisionInput(
-        _FakeSource([_pointing(np.array([0.0, -1.0]), depth=0.2), push, push]),
-        mode="rate",
-        leash=10.0,
-        min_cutoff=50.0,
+        _FakeSource([at_cam, at_cam, at_cam]), mode="rate", leash=10.0, min_cutoff=50.0
     )
-    vision.get_command(_observation(0.00))  # engage, neutral depth = 0.2
-    x_before = vision.get_command(_observation(0.02)).target_position[0]
-    x_after = vision.get_command(_observation(0.04)).target_position[0]
-    assert x_after > x_before  # pushing past neutral moves +x (forward, default sign)
+    vision.get_command(_observation(0.00))  # engage
+    x1 = vision.get_command(_observation(0.02)).target_position[0]
+    x2 = vision.get_command(_observation(0.04)).target_position[0]
+    assert x2 > x1 > 0.5  # angling into the camera drives forward
+
+
+def test_rate_mode_flat_pointing_does_not_creep_forward():
+    """Pointing across the plane (forwardness ~0) stays within the dead-zone ⇒ no creep."""
+    flat = _pointing(np.array([1.0, 0.0]), forwardness=0.0)  # point sideways, no forward angle
+    vision = VisionInput(_FakeSource([flat, flat, flat]), mode="rate", leash=10.0, min_cutoff=50.0)
+    vision.get_command(_observation(0.00))
+    vision.get_command(_observation(0.02))
+    assert np.isclose(vision.get_command(_observation(0.04)).target_position[0], 0.5)
+
+
+def test_rate_mode_fist_drives_backward():
+    """A fist (curled, no point gesture) eases the EE backward (−x, default sign)."""
+    fist = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.0, present=True)
+    vision = VisionInput(_FakeSource([fist, fist, fist]), mode="rate", leash=10.0, min_cutoff=50.0)
+    vision.get_command(_observation(0.00))  # engage (fist is a drive gesture)
+    x1 = vision.get_command(_observation(0.02)).target_position[0]
+    x2 = vision.get_command(_observation(0.04)).target_position[0]
+    assert x2 < x1 < 0.5  # fist retracts
 
 
 def test_rate_mode_locks_and_freezes_at_arm_after_delay():
@@ -281,8 +306,8 @@ def test_rate_mode_locks_and_freezes_at_arm_after_delay():
     assert np.allclose(locked, _observation().ee_pose[:3])  # snapped to the arm, no catch-up
 
 
-def test_rate_mode_holds_grip_while_steering_then_adjusts_when_locked():
-    """Grip is frozen during the drive gesture, set from open/close while locked."""
+def test_rate_mode_holds_grip_constant():
+    """Grip is parked in rate mode — it holds the seed regardless of open/close."""
     vision = VisionInput(
         _FakeSource(
             [_pointing(np.array([0.0, -1.0]), open_close=1.0), _not_pointing(open_close=1.0)]
@@ -292,10 +317,8 @@ def test_rate_mode_holds_grip_while_steering_then_adjusts_when_locked():
         lock_delay=0.0,
         min_cutoff=50.0,
     )
-    driving = vision.get_command(_observation(0.00))  # pointing: grip held at seed (0)
-    assert driving.delta_grip_force == 0.0
-    locked = vision.get_command(_observation(0.02))  # locked + open hand ⇒ release (+)
-    assert locked.delta_grip_force > 0.0
+    assert vision.get_command(_observation(0.00)).delta_grip_force == 0.0  # steering
+    assert vision.get_command(_observation(0.02)).delta_grip_force == 0.0  # locked
 
 
 def test_dropout_freezes_at_current_ee_pose_then_reengage_no_jump():
