@@ -164,8 +164,8 @@ def test_relative_mapping_moves_from_engage_anchor():
     assert command.target_position[0] > 0.5 + 0.05  # moved in +x (filter lag aside)
 
 
-def test_dropout_holds_then_reengage_reanchors_without_jump():
-    """Lift hand out (hold), bring it back at a new spot ⇒ no jump (re-anchor)."""
+def test_dropout_freezes_at_current_ee_pose_then_reengage_no_jump():
+    """Lift hand out ⇒ arm freezes at its current EE pose; re-entry re-anchors."""
     calib = WorkspaceCalibration(
         scale=np.array([1.0, 1.0, 1.0]), axis_map=(0, 1, 2), axis_sign=np.array([1.0, 1.0, 1.0])
     )
@@ -180,11 +180,13 @@ def test_dropout_holds_then_reengage_reanchors_without_jump():
         min_cutoff=50.0,
     )
 
-    vision.get_command(_observation(0.00))  # engage at EE x=0.5
-    after_move = vision.get_command(_observation(0.02))  # hand +0.2 ⇒ EE ~0.7
-    held = vision.get_command(_observation(0.04))  # drop-out ⇒ hold
-    assert np.allclose(held.target_position, after_move.target_position)
-    # re-entry at x=0.9 re-anchors to the held EE; staying put ⇒ no further jump
+    vision.get_command(_observation(0.00))  # engage
+    vision.get_command(_observation(0.02))  # drive the arm
+    held = vision.get_command(_observation(0.04))  # drop-out ⇒ freeze at current EE pose
+    assert np.allclose(
+        held.target_position, _observation().ee_pose[:3]
+    )  # frozen at the arm, not target
+    # re-entry far away re-anchors from the frozen pose ⇒ no jump
     vision.get_command(_observation(0.06))  # re-engage tick
     settled = vision.get_command(_observation(0.08))
     assert abs(settled.target_position[0] - held.target_position[0]) < 0.05

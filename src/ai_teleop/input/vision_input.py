@@ -131,7 +131,7 @@ class WorkspaceCalibration:
 
     scale: np.ndarray = field(default_factory=lambda: np.array([1.8, 0.6, 0.6]))
     axis_map: tuple[int, int, int] = (2, 0, 1)
-    axis_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, -1.0, -1.0]))
+    axis_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, -1.0]))
 
     def map_delta(self, camera_delta: np.ndarray) -> np.ndarray:
         """Map a camera-space displacement to a world-frame EE displacement (m)."""
@@ -192,9 +192,16 @@ class VisionInput:
 
         reading = self._source.read()
 
-        # Drop-out (or disengaged): hold the last command verbatim.
+        # Drop-out (or disengaged): freeze the arm exactly where it physically is
+        # right now — command the current EE pose (keeping the last grip). Holds
+        # static, never drifts toward home, and re-acquiring re-anchors from here.
         if not reading.present:
             self._engaged = False
+            self._held = Command(
+                observation.ee_pose[:3].copy(),
+                observation.ee_pose[3:].copy(),
+                self._held.delta_grip_force,
+            )
             return self._held
 
         # Fresh engage (drop-out → present, or first detection): re-anchor so the
