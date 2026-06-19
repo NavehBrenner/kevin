@@ -13,10 +13,13 @@ from ai_teleop.common.log import (
     get_logger,
 )
 from ai_teleop.common.observation import Observation
+from ai_teleop.common.seating import PEG_HALF_LENGTH, SeatingGeometry
 
 __all__ = [
+    "PEG_HALF_LENGTH",
     "Command",
     "Observation",
+    "SeatingGeometry",
     "add_logging_arguments",
     "configure_from_args",
     "configure_logging",
