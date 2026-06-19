@@ -114,6 +114,7 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | `--seed N` | `0` | Seed for the scripted human's noise and the `SimEnv`. |
 | `--max-steps N` | script default | Episode step budget (one step = one 2 ms sim tick). **`0` = no limit** — run until you close the viewer or Ctrl-C (free-play). |
 | `--generated-wall` | off | Run on a freshly generated procedural wall instead of the static scene. |
+| `--wrist-cam` | off | Open the viewer locked to the Panda's wrist camera (robot's-eye POV) instead of the free camera; viewer keys still switch cameras live. |
 | `--wall-seed N` | `7` | Seed for `--generated-wall`. |
 | `--distractors N` | — | Distractor-hole count for `--generated-wall`. |
 | `--max-dpos M` | `0.025` (`0.08` for vision) | Controller command clamp in m/step. Larger = the arm springs toward the target faster (responsive mirror); smaller = the slew-limited careful-insertion feel. `--input vision` also lowers joint damping for responsive tracking. |

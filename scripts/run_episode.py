@@ -54,6 +54,12 @@ def main() -> int:
         help="Run on a freshly generated procedural wall instead of the static scene.",
     )
     p.add_argument(
+        "--wrist-cam",
+        action="store_true",
+        help="Open the viewer locked to the Panda's wrist camera (robot's-eye POV) "
+        "instead of the free camera; viewer keys still switch cameras live.",
+    )
+    p.add_argument(
         "--input",
         choices=["scripted", "vision"],
         default="scripted",
@@ -118,7 +124,7 @@ def main() -> int:
     env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
     obs = env.reset()
     if not args.headless:
-        env.launch_viewer()
+        env.launch_viewer(wrist_cam=args.wrist_cam)
 
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
     # careful-insertion backbone (which feels like velocity control): a bigger

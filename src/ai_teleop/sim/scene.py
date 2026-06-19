@@ -359,12 +359,14 @@ class SimEnv:
         self._renderer.update_scene(self._data, camera=self._wrist_camera_id)
         return self._renderer.render()
 
-    def launch_viewer(self) -> None:
+    def launch_viewer(self, *, wrist_cam: bool = False) -> None:
         """Open the interactive passive viewer (no-op if already open).
 
         Only valid when render_mode='viewer'. Done lazily so SimEnv can be
         constructed in viewer mode without immediately blocking on a window
-        being available.
+        being available. With ``wrist_cam=True`` the view starts locked to the
+        Panda's wrist camera (the robot's-eye POV) instead of the free camera;
+        the usual viewer keys still switch cameras live.
         """
         if self._render_mode != "viewer":
             raise RuntimeError(
@@ -375,7 +377,11 @@ class SimEnv:
         # Imported here so headless tests don't load GLFW.
         import mujoco.viewer as mjv  # noqa: PLC0415
 
-        self._viewer = mjv.launch_passive(self._model, self._data)
+        viewer = mjv.launch_passive(self._model, self._data)
+        if wrist_cam:
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            viewer.cam.fixedcamid = self._wrist_camera_id
+        self._viewer = viewer
 
     # ------------------------------------------------------------------
     # Teardown.
