@@ -168,6 +168,18 @@ headless without a GPU.
   placeholders in the design docs precisely pending this).
 - **Reproducibility.** Seeds, knob settings, and checkpoint hash are captured with
   the run so the comparison re-runs bit-for-bit.
+- **Eval log → offline KPIs.** Each eval episode is persisted as a trajectory log of
+  the *realized environment state* — the `Observation` stream + `sim_time`, plus
+  `base_command`/`delta` — reusing M4's `EpisodeRecorder` (**one log format, two
+  contexts**: a training corpus vs an eval trace, separate files — not two schemas).
+  The harness then computes KPIs **offline** by replaying that log through the same
+  `TrialObserver`: every KPI is a pure function of the realized state, so no episode
+  is re-run, and a metric defined later (e.g. time-to-insert as a *training* signal)
+  is computed from stored logs instead of re-executing the seed set. Logging the
+  realized state — rather than re-deriving it by re-simulating the command stream —
+  is also robust to sim nondeterminism / version drift. The live observer path stays
+  (it must run live to early-abort on force and to end the trial on seating); offline
+  replay drives the *same* calculator over the log.
 
 **Acceptance (LAB-37):** a calibrated difficulty setting where human-only success is
 demonstrably sub-ceiling; a paired run over the seed set produces two KPI records per
@@ -211,7 +223,9 @@ config; tests in `tests/test_ablation.py`.
 
 The paired-seed runner over the two configs, plus the calibration sweep that pins the
 difficulty knobs against the human-only baseline. Records seeds + knobs + checkpoint
-hash for reproducibility.
+hash for reproducibility. Persists each eval episode as a realized-state trajectory
+log (`--log`, reusing `EpisodeRecorder`) and adds the offline path that replays a
+stored log through the `TrialObserver`, so KPIs compute without re-running.
 
 ### Step 3 — KPI tables + plots + Phase-1 results writeup · LAB-38 (~3–4 h)
 
