@@ -14,6 +14,12 @@ Plug it in as the runner's ``step_callback``::
     run_episode(env, controller, human, assist, max_steps=N, step_callback=observer)
     kpis = observer.result()   # TrialKPIs
 
+Because it is a plain per-tick callback that reads only its ``observation``
+argument (never the runner), the *same* observer computes the *same* KPIs whether
+driven live by ``run_episode`` or replayed offline over a logged trajectory — the
+eval-log producer/consumer split LAB-37 adds. The metric math has one home, not
+two; "offline" just points this calculator at a recorded ``Observation`` stream.
+
 The observer self-detects a trial boundary from ``sim_time`` resetting toward 0
 (the same signal the stateful policy uses for its per-episode reset), so a fresh
 instance per trial and a reused instance across episodes both behave correctly.
