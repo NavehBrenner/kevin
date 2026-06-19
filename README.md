@@ -129,9 +129,16 @@ a Windows PowerShell window**; steps 4–5 run **back in your WSL terminal**.
    ```
    `--max-steps 0` runs with no step limit (free-play) until you close the viewer
    or `Ctrl-C`; drop it for the default fixed-length episode. A second window
-   shows the camera feed with the tracked hand and the controls. The arm mirrors
+   shows the camera feed with the tracked hand and the controls. The arm follows
    your hand position (it springs toward where you point, not a slow drift); tune
    the feel with `--gain` (motion size) and `--max-dpos` (tracking snappiness).
+
+   The hand→arm mapping is selectable with `--control-mode` (default `expo`):
+   `expo` is position control with a dead-zone and soft centre — precise near
+   rest, fast on big sweeps; `mirror` is plain linear position; `rate` is a
+   joystick where your hand's *offset* from where you engaged sets the arm's
+   *velocity* (low fatigue, no camera-frame range limit). Try `expo` vs `rate`
+   and keep whichever feels more intuitive.
 
 The MuJoCo viewer opens via WSLg and your hand drives the arm. When you're done,
 `Ctrl-C` the PowerShell streamer window to release the camera. Full flag

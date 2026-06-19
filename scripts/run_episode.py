@@ -78,6 +78,14 @@ def main() -> int:
         help="Vision input position gain (--input vision): higher = the arm mirrors hand "
         "motion more aggressively. 1.0 = the tuned mirror default.",
     )
+    p.add_argument(
+        "--control-mode",
+        choices=["mirror", "expo", "rate"],
+        default="expo",
+        help="Vision mapping (--input vision): 'expo' (default) = position control with "
+        "a dead-zone + soft centre (precise near rest, fast on big sweeps); 'mirror' = "
+        "plain linear position; 'rate' = joystick (hand offset sets EE velocity).",
+    )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
@@ -141,7 +149,7 @@ def main() -> int:
         # A bare integer is a device index; anything else is a stream URL / path.
         camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
         tracker = MediaPipeHandTracker(camera=camera, show_window=not args.no_cam_window)
-        input_strategy = VisionInput(tracker, gain=args.gain)
+        input_strategy = VisionInput(tracker, gain=args.gain, mode=args.control_mode)
         print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
     else:
         target_pose = np.concatenate([target_position, home_quat])

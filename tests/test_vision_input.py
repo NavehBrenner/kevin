@@ -157,7 +157,9 @@ def test_relative_mapping_moves_from_engage_anchor():
     )
     anchor = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
     moved = HandReading(np.array([0.6, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
-    vision = VisionInput(_FakeSource([anchor, moved]), calibration=calib, min_cutoff=50.0)
+    vision = VisionInput(
+        _FakeSource([anchor, moved]), calibration=calib, mode="mirror", min_cutoff=50.0
+    )
 
     vision.get_command(_observation(sim_time=0.0))  # engage, anchors at EE x=0.5
     command = vision.get_command(_observation(sim_time=0.02))  # +0.1 in camera x
@@ -178,6 +180,41 @@ def test_gain_amplifies_mapped_motion():
         return float(v.get_command(_observation(0.02)).target_position[0] - 0.5)
 
     assert travel(2.0) > 1.8 * travel(1.0)  # ~2x motion (filter lag aside)
+
+
+def test_expo_softens_small_motion_vs_mirror():
+    """Near the anchor, expo mode moves the EE *less* than plain mirror (precision)."""
+    calib = WorkspaceCalibration(
+        scale=np.array([1.0, 1.0, 1.0]), axis_map=(0, 1, 2), axis_sign=np.array([1.0, 1.0, 1.0])
+    )
+    anchor = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
+    small = HandReading(np.array([0.55, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
+
+    def travel(mode: str) -> float:
+        v = VisionInput(_FakeSource([anchor, small]), calibration=calib, mode=mode, min_cutoff=50.0)
+        v.get_command(_observation(0.0))
+        return float(v.get_command(_observation(0.02)).target_position[0] - 0.5)
+
+    assert 0.0 < travel("expo") < travel("mirror")  # soft centre ⇒ smaller for small input
+
+
+def test_rate_mode_integrates_offset_into_motion():
+    """In rate mode a held offset keeps moving the EE tick after tick (velocity)."""
+    calib = WorkspaceCalibration(
+        scale=np.array([1.0, 1.0, 1.0]), axis_map=(0, 1, 2), axis_sign=np.array([1.0, 1.0, 1.0])
+    )
+    anchor = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
+    leaned = HandReading(np.array([0.8, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
+    vision = VisionInput(
+        _FakeSource([anchor, leaned, leaned, leaned]),
+        calibration=calib,
+        mode="rate",
+        min_cutoff=50.0,
+    )
+    vision.get_command(_observation(0.00))  # engage, offset 0
+    x1 = vision.get_command(_observation(0.02)).target_position[0]
+    x2 = vision.get_command(_observation(0.04)).target_position[0]
+    assert x2 > x1 > 0.5  # same lean keeps advancing the target ⇒ rate control
 
 
 def test_dropout_freezes_at_current_ee_pose_then_reengage_no_jump():

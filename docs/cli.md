@@ -109,7 +109,8 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | `--input {scripted,vision}` | `scripted` | Base command source: scripted noisy human, or webcam hand tracking (MediaPipe; needs the viewer + the `vision-input` extra). |
 | `--camera SRC` | `0` | Camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/video`). Use a URL on WSL2 — see the README's webcam setup. |
 | `--no-cam-window` | off | Hide the live camera/landmark debug window (`--input vision`; shown by default). |
-| `--gain G` | `1.0` | Vision input position gain (`--input vision`): higher = the arm mirrors hand motion more aggressively. |
+| `--gain G` | `1.0` | Vision input gain (`--input vision`): higher = the arm follows hand motion more aggressively (scales position scale in `mirror`/`expo`, velocity in `rate`). |
+| `--control-mode {mirror,expo,rate}` | `expo` | Vision hand→arm mapping (`--input vision`): `expo` = position control with a dead-zone + soft centre (precise near rest, fast on big sweeps); `mirror` = plain linear position; `rate` = joystick (hand offset from the engage anchor sets EE velocity — low fatigue, unlimited range). |
 | `--seed N` | `0` | Seed for the scripted human's noise and the `SimEnv`. |
 | `--max-steps N` | script default | Episode step budget (one step = one 2 ms sim tick). **`0` = no limit** — run until you close the viewer or Ctrl-C (free-play). |
 | `--generated-wall` | off | Run on a freshly generated procedural wall instead of the static scene. |

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 
@@ -40,6 +40,30 @@ from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 
 from .hand_tracker import HandReading
+
+ControlMode = Literal["mirror", "expo", "rate"]
+"""How a hand displacement drives the EE:
+
+- ``mirror`` — absolute position: ``EE = anchor + scale·(hand − hand_anchor)``.
+  Direct, but one linear gain can't be both "cross the workspace" and "nudge
+  2 mm", and hand tremor maps straight in.
+- ``expo`` — same position control, but the camera delta passes through a
+  dead-zone (kills resting drift) + a cubic expo curve (tiny near rest ⇒
+  precision, near-linear at full sweep ⇒ reach). The intuitive default.
+- ``rate`` — joystick: the hand's *offset* from the engage anchor sets EE
+  *velocity*, integrated each tick. Low fatigue, unlimited range (no camera-FoV
+  ceiling), centre = stop. Less "my hand is the arm" but easier to position.
+"""
+
+
+def _deadzone(value: np.ndarray, width: float) -> np.ndarray:
+    """Per-axis dead-zone: zero inside ±width, shifted-linear outside (no step)."""
+    return np.sign(value) * np.maximum(np.abs(value) - width, 0.0)
+
+
+def _expo(value: np.ndarray, amount: float) -> np.ndarray:
+    """Cubic expo blend in [0,1]: 0 = linear, 1 = pure cubic (soft centre)."""
+    return (1.0 - amount) * value + amount * value**3
 
 
 class _HandSource(Protocol):
@@ -157,6 +181,17 @@ class VisionInput:
     gain:
         Scalar multiplier on the calibration's per-axis scale — the live "how
         much the arm mirrors the hand" knob. >1 amplifies hand motion, <1 damps.
+        In ``rate`` mode it scales the velocity coefficient instead.
+    mode:
+        Control mapping — see :data:`ControlMode`. Default ``expo``.
+    deadzone:
+        Camera-space half-width (image-normalized units) zeroed around the
+        anchor in ``expo``/``rate`` modes, so a still hand commands nothing.
+    expo:
+        Cubic expo amount in [0,1] for ``expo`` mode (0 = linear, 1 = soft).
+    rate_gain:
+        Velocity coefficient (1/s) for ``rate`` mode: EE speed = ``rate_gain ·
+        scale · offset``. Scaled by ``gain``.
     track_orientation:
         When True, the held orientation follows the filtered hand orientation;
         default False holds the start orientation (round peg ⇒ roll irrelevant).
@@ -172,14 +207,25 @@ class VisionInput:
         calibration: WorkspaceCalibration | None = None,
         gain: float = 1.0,
         grip_force: float = 5.0,
+        mode: ControlMode = "expo",
+        deadzone: float = 0.03,
+        expo: float = 0.6,
+        rate_gain: float = 3.0,
         track_orientation: bool = False,
         min_cutoff: float = 2.0,
         beta: float = 1.5,
     ) -> None:
         self._source = hand_source
         base = calibration or WorkspaceCalibration()
-        self._calibration = replace(base, scale=base.scale * gain) if gain != 1.0 else base
+        # In rate mode `gain` scales the velocity coefficient, not the position scale.
+        self._calibration = (
+            replace(base, scale=base.scale * gain) if gain != 1.0 and mode != "rate" else base
+        )
         self._grip_force = grip_force
+        self._mode = mode
+        self._deadzone = deadzone
+        self._expo = expo
+        self._rate_gain = rate_gain * (gain if mode == "rate" else 1.0)
         self._track_orientation = track_orientation
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)
 
@@ -187,6 +233,7 @@ class VisionInput:
         self._held: Command | None = None  # last commanded pose (held on disengage)
         self._hand_anchor: np.ndarray | None = None  # camera-space pose at engage
         self._ee_anchor: np.ndarray | None = None  # world EE position at engage
+        self._prev_time: float | None = None  # for rate-mode integration
 
     def get_command(self, observation: Observation) -> Command:
         # Seed the held pose from the current EE pose on the first tick, so a
@@ -216,11 +263,26 @@ class VisionInput:
             self._engaged = True
             self._hand_anchor = reading.position.copy()
             self._ee_anchor = self._held.target_position.copy()
+            self._prev_time = observation.sim_time
             self._position_filter.reset()
 
         assert self._hand_anchor is not None and self._ee_anchor is not None
-        world_delta = self._calibration.map_delta(reading.position - self._hand_anchor)
-        target_position = self._position_filter(self._ee_anchor + world_delta, observation.sim_time)
+        camera_delta = reading.position - self._hand_anchor
+
+        if self._mode == "rate":
+            # Hand offset from the anchor sets EE velocity; integrate onto the
+            # running target. Centre (within the dead-zone) ⇒ hold still.
+            dt = float(np.clip(observation.sim_time - (self._prev_time or 0.0), 0.0, 0.1))
+            self._prev_time = observation.sim_time
+            velocity = self._calibration.map_delta(_deadzone(camera_delta, self._deadzone))
+            raw_target = self._held.target_position + self._rate_gain * velocity * dt
+        else:
+            shaped = camera_delta
+            if self._mode == "expo":
+                shaped = _expo(_deadzone(camera_delta, self._deadzone), self._expo)
+            raw_target = self._ee_anchor + self._calibration.map_delta(shaped)
+
+        target_position = self._position_filter(raw_target, observation.sim_time)
 
         target_quaternion = (
             reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
