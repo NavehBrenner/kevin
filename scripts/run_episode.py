@@ -148,7 +148,9 @@ def main() -> int:
 
         # A bare integer is a device index; anything else is a stream URL / path.
         camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
-        tracker = MediaPipeHandTracker(camera=camera, show_window=not args.no_cam_window)
+        tracker = MediaPipeHandTracker(
+            camera=camera, show_window=not args.no_cam_window, mode=args.control_mode
+        )
         input_strategy = VisionInput(tracker, gain=args.gain, mode=args.control_mode)
         print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
     else:

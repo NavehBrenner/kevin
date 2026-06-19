@@ -50,9 +50,11 @@ ControlMode = Literal["mirror", "expo", "rate"]
 - ``expo`` — same position control, but the camera delta passes through a
   dead-zone (kills resting drift) + a cubic expo curve (tiny near rest ⇒
   precision, near-linear at full sweep ⇒ reach). The intuitive default.
-- ``rate`` — joystick: the hand's *offset* from the engage anchor sets EE
-  *velocity*, integrated each tick. Low fatigue, unlimited range (no camera-FoV
-  ceiling), centre = stop. Less "my hand is the arm" but easier to position.
+- ``rate`` — "point to steer": the direction the two driving fingers point sets
+  the in-plane EE *velocity*, hand pitch drives forward/back, and motion happens
+  only while the two-finger gesture is held (relax = lock). Position-independent
+  and low-fatigue; unlimited range (no camera-FoV ceiling). See
+  :class:`~ai_teleop.input.hand_tracker.HandReading`.
 """
 
 
@@ -181,17 +183,21 @@ class VisionInput:
     gain:
         Scalar multiplier on the calibration's per-axis scale — the live "how
         much the arm mirrors the hand" knob. >1 amplifies hand motion, <1 damps.
-        In ``rate`` mode it scales the velocity coefficient instead.
+        In ``rate`` mode it scales the velocities (``rate_speed``/``pitch_gain``).
     mode:
         Control mapping — see :data:`ControlMode`. Default ``expo``.
     deadzone:
-        Camera-space half-width (image-normalized units) zeroed around the
-        anchor in ``expo``/``rate`` modes, so a still hand commands nothing.
+        In ``expo`` mode, the camera-space half-width zeroed around the anchor so
+        a still hand commands nothing. In ``rate`` mode, the pitch dead-zone.
     expo:
         Cubic expo amount in [0,1] for ``expo`` mode (0 = linear, 1 = soft).
-    rate_gain:
-        Velocity coefficient (1/s) for ``rate`` mode: EE speed = ``rate_gain ·
-        scale · offset``. Scaled by ``gain``.
+    rate_speed:
+        In-plane EE speed (m/s) while the two-finger drive gesture is held
+        (``rate`` mode). Scaled by ``gain``.
+    pitch_gain:
+        Forward/back EE speed (m/s) per unit hand pitch (``rate`` mode). Larger
+        than ``rate_speed`` because the pitch signal's usable swing is small.
+        Scaled by ``gain``.
     track_orientation:
         When True, the held orientation follows the filtered hand orientation;
         default False holds the start orientation (round peg ⇒ roll irrelevant).
@@ -210,14 +216,16 @@ class VisionInput:
         mode: ControlMode = "expo",
         deadzone: float = 0.03,
         expo: float = 0.6,
-        rate_gain: float = 3.0,
+        rate_speed: float = 0.4,
+        pitch_gain: float = 6.0,
         track_orientation: bool = False,
         min_cutoff: float = 2.0,
         beta: float = 1.5,
     ) -> None:
         self._source = hand_source
         base = calibration or WorkspaceCalibration()
-        # In rate mode `gain` scales the velocity coefficient, not the position scale.
+        # rate mode is direction-driven, not offset-driven: `gain` scales the
+        # velocities (below), not the position scale, so leave the calibration be.
         self._calibration = (
             replace(base, scale=base.scale * gain) if gain != 1.0 and mode != "rate" else base
         )
@@ -225,7 +233,9 @@ class VisionInput:
         self._mode = mode
         self._deadzone = deadzone
         self._expo = expo
-        self._rate_gain = rate_gain * (gain if mode == "rate" else 1.0)
+        rate_scale = gain if mode == "rate" else 1.0
+        self._rate_speed = rate_speed * rate_scale
+        self._pitch_gain = pitch_gain * rate_scale
         self._track_orientation = track_orientation
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)
 
@@ -267,29 +277,43 @@ class VisionInput:
             self._position_filter.reset()
 
         assert self._hand_anchor is not None and self._ee_anchor is not None
+        assert self._prev_time is not None
         camera_delta = reading.position - self._hand_anchor
 
         if self._mode == "rate":
-            # Hand offset from the anchor sets EE velocity; integrate onto the
-            # running target. Centre (within the dead-zone) ⇒ hold still.
-            dt = float(np.clip(observation.sim_time - (self._prev_time or 0.0), 0.0, 0.1))
+            # "Point to steer": pointing direction sets in-plane velocity, hand
+            # pitch sets forward/back, integrated onto the running target — but
+            # only while the two-finger drive gesture is held (else frozen = lock).
+            dt = float(np.clip(observation.sim_time - self._prev_time, 0.0, 0.1))
             self._prev_time = observation.sim_time
-            velocity = self._calibration.map_delta(_deadzone(camera_delta, self._deadzone))
-            raw_target = self._held.target_position + self._rate_gain * velocity * dt
-        else:
-            shaped = camera_delta
-            if self._mode == "expo":
-                shaped = _expo(_deadzone(camera_delta, self._deadzone), self._expo)
+            world_velocity = np.zeros(3)
+            if reading.is_pointing:
+                sign = self._calibration.axis_sign
+                point = reading.point_direction
+                world_velocity[1] = sign[1] * self._rate_speed * float(point[0])  # L/R ← image-x
+                world_velocity[2] = sign[2] * self._rate_speed * float(point[1])  # U/D ← image-y
+                pitch = math.copysign(max(abs(reading.pitch) - self._deadzone, 0.0), reading.pitch)
+                world_velocity[0] = sign[0] * self._pitch_gain * pitch  # fwd/back ← hand pitch
+            raw_target = self._held.target_position + world_velocity * dt
+        elif self._mode == "expo":
+            shaped = _expo(_deadzone(camera_delta, self._deadzone), self._expo)
             raw_target = self._ee_anchor + self._calibration.map_delta(shaped)
+        else:  # mirror
+            raw_target = self._ee_anchor + self._calibration.map_delta(camera_delta)
 
         target_position = self._position_filter(raw_target, observation.sim_time)
 
         target_quaternion = (
             reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
         )
-        # Fist → squeeze, open hand → release. Sign matched to the gripper's
-        # observed delta-force convention (open=1 ⇒ release, fist=0 ⇒ squeeze).
-        delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
+        # Fist → squeeze, open hand → release (open=1 ⇒ release, fist=0 ⇒ squeeze).
+        # In rate mode, hold grip steady while steering (the drive gesture curls
+        # ring/pinky, which would otherwise read as a partial squeeze) — adjust
+        # grip only when locked.
+        if self._mode == "rate" and reading.is_pointing:
+            delta_grip_force = self._held.delta_grip_force
+        else:
+            delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
 
         self._held = Command(target_position, target_quaternion, delta_grip_force)
         return self._held

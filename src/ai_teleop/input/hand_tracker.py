@@ -24,7 +24,7 @@ function (and its tests) work without the ``vision-input`` extra installed.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import mujoco
 import numpy as np
@@ -39,6 +39,11 @@ _INDEX_MCP = 5
 _MIDDLE_MCP = 9
 _PINKY_MCP = 17
 _FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, pinky tips (thumb excluded)
+# (tip, pip) per finger — extension test for the two-finger "drive" gesture.
+_INDEX = (8, 6)
+_MIDDLE = (12, 10)
+_RING = (16, 14)
+_PINKY = (20, 18)
 
 # Empirical open/close bounds for the fingertip-spread ratio (tip→wrist distance
 # over hand scale). Fist ≈ 1.0, flat open hand ≈ 2.4. ponytail: hand-tuned
@@ -69,12 +74,28 @@ class HandReading:
         Grip proxy in [0, 1]: 0 = closed fist, 1 = flat open hand.
     present:
         False when no hand was detected this frame (drop-out).
+    point_direction:
+        Shape (2,) — unit in-plane direction the extended fingers point, in image
+        coords (x right, y down), or zeros if not pointing. Position-independent:
+        it's *where the hand points*, not where it sits. Drives the ``rate``
+        "point to steer" mode. ``[0, 0]`` when degenerate.
+    is_pointing:
+        True for the two-finger drive gesture (index + middle extended, ring +
+        pinky curled). In ``rate`` mode the arm moves only while this holds; any
+        other hand shape freezes it (the "lock"). Ignored by mirror/expo.
+    pitch:
+        Forward/back signal: hand-pitch proxy, positive when the fingers tilt
+        *toward* the camera (≈ "forward"). Derived from the extended fingertips'
+        depth; noisy, so the strategy dead-zones it.
     """
 
     position: np.ndarray
     orientation: np.ndarray
     open_close: float
     present: bool
+    point_direction: np.ndarray = field(default_factory=lambda: np.zeros(2))
+    is_pointing: bool = False
+    pitch: float = 0.0
 
 
 _ABSENT = HandReading(
@@ -111,7 +132,39 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
     open_close = float(np.clip(open_close, 0.0, 1.0))
 
     orientation = _palm_orientation(landmarks)
-    return HandReading(position, orientation, open_close, present=True)
+
+    # Two-finger "drive" gesture + pointing direction (rate "point to steer").
+    # A finger is "extended" when its tip is farther from the wrist than its PIP
+    # joint, measured in the image plane — robust to hand orientation and dodges
+    # the noisy landmark z.
+    def extended(tip: int, pip: int) -> bool:
+        return float(np.linalg.norm(landmarks[tip, :2] - wrist[:2])) > float(
+            np.linalg.norm(landmarks[pip, :2] - wrist[:2])
+        )
+
+    is_pointing = (
+        extended(*_INDEX) and extended(*_MIDDLE) and not extended(*_RING) and not extended(*_PINKY)
+    )
+    # In-plane pointing direction: knuckle midpoint → fingertip midpoint of the
+    # two driving fingers, unit-normalized. Independent of hand position in frame.
+    finger_base = (landmarks[_INDEX_MCP, :2] + landmarks[_MIDDLE_MCP, :2]) / 2.0
+    finger_tip = (landmarks[_INDEX[0], :2] + landmarks[_MIDDLE[0], :2]) / 2.0
+    point_vec = finger_tip - finger_base
+    point_norm = float(np.linalg.norm(point_vec))
+    point_direction = point_vec / point_norm if point_norm > 1e-6 else np.zeros(2)
+    # Forward/back: MediaPipe z is wrist-origin, negative toward the camera, so
+    # fingers tilted toward the camera ⇒ negative tip z ⇒ positive ("forward").
+    pitch = -float(np.mean([landmarks[_INDEX[0], 2], landmarks[_MIDDLE[0], 2]]))
+
+    return HandReading(
+        position,
+        orientation,
+        open_close,
+        present=True,
+        point_direction=point_direction,
+        is_pointing=is_pointing,
+        pitch=pitch,
+    )
 
 
 def _palm_orientation(landmarks: np.ndarray) -> np.ndarray:
@@ -160,6 +213,7 @@ class MediaPipeHandTracker:
         tracking_confidence: float = 0.5,
         target_fps: float = 30.0,
         show_window: bool = False,
+        mode: str = "mirror",
     ) -> None:
         # Lazy import: only the live path needs the vision-input extra. The legacy
         # `solutions` API (pinned mediapipe==0.10.21) bundles the landmark drawing
@@ -172,6 +226,7 @@ class MediaPipeHandTracker:
         self._mp_drawing = drawing_utils
         self._mp_styles = drawing_styles
         self._show_window = show_window
+        self._mode = mode
         # `camera` is an int device index, or a string OpenCV can open: a stream
         # URL (e.g. an MJPEG/RTSP feed) or a device path. WSL2 has no UVC driver
         # for a host webcam, so there it must be a stream URL — see docs/cli.md.
@@ -243,19 +298,30 @@ class MediaPipeHandTracker:
         cv2.rectangle(overlay, (0, 0), (panel_w, panel_h), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
-        green, red, white = (0, 230, 0), (60, 60, 255), (255, 255, 255)
-        if reading.present:
-            status, colour = f"TRACKING   hand {reading.open_close * 100:3.0f}% open", green
-        else:
+        green, red, white, amber = (0, 230, 0), (60, 60, 255), (255, 255, 255), (0, 200, 255)
+        if not reading.present:
             status, colour = "NO HAND - holding (clutched)", red
+        elif self._mode == "rate" and not reading.is_pointing:
+            status, colour = "LOCKED - point 2 fingers to drive", amber
+        elif self._mode == "rate":
+            status, colour = "DRIVING", green
+        else:
+            status, colour = f"TRACKING   hand {reading.open_close * 100:3.0f}% open", green
         cv2.putText(frame, status, (12, 26), font, 0.62, colour, 2)
-        for i, line in enumerate(
-            [
+
+        if self._mode == "rate":
+            lines = [
+                "Point index+middle: steer where you point",
+                "Tilt fingers toward camera: forward / back",
+                "Relax hand: lock    Fist/open (locked): grip",
+            ]
+        else:
+            lines = [
                 "Move hand: drive arm     Lift out of frame: clutch",
                 "Toward camera: forward   Away from camera: back",
                 "Open hand: release       Make a fist: grip",
             ]
-        ):
+        for i, line in enumerate(lines):
             cv2.putText(frame, line, (12, 58 + i * 24), font, 0.48, white, 1)
         return frame
 

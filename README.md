@@ -134,11 +134,19 @@ a Windows PowerShell window**; steps 4–5 run **back in your WSL terminal**.
    the feel with `--gain` (motion size) and `--max-dpos` (tracking snappiness).
 
    The hand→arm mapping is selectable with `--control-mode` (default `expo`):
-   `expo` is position control with a dead-zone and soft centre — precise near
-   rest, fast on big sweeps; `mirror` is plain linear position; `rate` is a
-   joystick where your hand's *offset* from where you engaged sets the arm's
-   *velocity* (low fatigue, no camera-frame range limit). Try `expo` vs `rate`
-   and keep whichever feels more intuitive.
+
+   - **`expo`** — position control with a dead-zone and soft centre: precise near
+     rest, fast on big sweeps. Your hand *is* the arm.
+   - **`mirror`** — plain linear position control (the raw version of `expo`).
+   - **`rate`** — *point to steer*. Hold up two fingers (index + middle) and the
+     arm flies in the direction you point; tilt those fingers toward the camera
+     to go forward, away to go back. **Relax the gesture (any other hand shape)
+     to lock** the arm in place — that's the clutch. Adjust the gripper
+     (fist/open) while locked. Position-independent and low-fatigue: your hand
+     can sit anywhere in frame. Tune in-plane speed and forward/back speed with
+     `--gain`.
+
+   `rate` is the easiest for long reaches; `expo` feels the most direct. Try both.
 
 The MuJoCo viewer opens via WSLg and your hand drives the arm. When you're done,
 `Ctrl-C` the PowerShell streamer window to release the camera. Full flag
