@@ -164,6 +164,22 @@ def test_relative_mapping_moves_from_engage_anchor():
     assert command.target_position[0] > 0.5 + 0.05  # moved in +x (filter lag aside)
 
 
+def test_gain_amplifies_mapped_motion():
+    """A larger gain moves the EE further for the same hand displacement."""
+    calib = WorkspaceCalibration(
+        scale=np.array([1.0, 1.0, 1.0]), axis_map=(0, 1, 2), axis_sign=np.array([1.0, 1.0, 1.0])
+    )
+    anchor = HandReading(np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
+    moved = HandReading(np.array([0.6, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), 0.5, present=True)
+
+    def travel(gain: float) -> float:
+        v = VisionInput(_FakeSource([anchor, moved]), calibration=calib, gain=gain, min_cutoff=50.0)
+        v.get_command(_observation(0.0))
+        return float(v.get_command(_observation(0.02)).target_position[0] - 0.5)
+
+    assert travel(2.0) > 1.8 * travel(1.0)  # ~2x motion (filter lag aside)
+
+
 def test_dropout_freezes_at_current_ee_pose_then_reengage_no_jump():
     """Lift hand out ⇒ arm freezes at its current EE pose; re-entry re-anchors."""
     calib = WorkspaceCalibration(

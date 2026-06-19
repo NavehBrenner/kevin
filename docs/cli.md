@@ -109,12 +109,13 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | `--input {scripted,vision}` | `scripted` | Base command source: scripted noisy human, or webcam hand tracking (MediaPipe; needs the viewer + the `vision-input` extra). |
 | `--camera SRC` | `0` | Camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/video`). Use a URL on WSL2 — see the README's webcam setup. |
 | `--no-cam-window` | off | Hide the live camera/landmark debug window (`--input vision`; shown by default). |
+| `--gain G` | `1.0` | Vision input position gain (`--input vision`): higher = the arm mirrors hand motion more aggressively. |
 | `--seed N` | `0` | Seed for the scripted human's noise and the `SimEnv`. |
 | `--max-steps N` | script default | Episode step budget (one step = one 2 ms sim tick). **`0` = no limit** — run until you close the viewer or Ctrl-C (free-play). |
 | `--generated-wall` | off | Run on a freshly generated procedural wall instead of the static scene. |
 | `--wall-seed N` | `7` | Seed for `--generated-wall`. |
 | `--distractors N` | — | Distractor-hole count for `--generated-wall`. |
-| `--max-dpos M` | `0.025` | Controller command clamp in m/step (approach-speed / strictness knob). |
+| `--max-dpos M` | `0.025` (`0.08` for vision) | Controller command clamp in m/step. Larger = the arm springs toward the target faster (responsive mirror); smaller = the slew-limited careful-insertion feel. `--input vision` also lowers joint damping for responsive tracking. |
 
 ```bash
 uv run kvn episode                                  # interactive viewer

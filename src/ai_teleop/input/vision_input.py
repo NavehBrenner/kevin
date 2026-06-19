@@ -31,7 +31,7 @@ readings.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 import numpy as np
@@ -114,10 +114,10 @@ class WorkspaceCalibration:
     ----------
     scale:
         Metres of EE travel per unit of camera displacement, per *world* axis
-        (x, y, z). A full image-plane hand sweep is ~0.5 normalized, so ~0.6
-        fits the ~0.3 m workspace; the forward/back axis is driven by the
-        hand-size proxy, whose usable swing is smaller (~0.1), so world-x gets a
-        bigger gain.
+        (x, y, z). Sized so the hand *mirrors* the arm — a partial hand sweep
+        spans the workspace rather than slowly nudging it. The forward/back axis
+        is driven by the hand-size proxy, whose usable swing is smaller, so
+        world-x gets a bigger gain. Scaled live by ``VisionInput(gain=...)``.
     axis_map:
         For each world axis, which camera axis (0=image_x, 1=image_y, 2=depth)
         drives it. Default maps depth→world-x, image_x→world-y, image_y→world-z —
@@ -129,7 +129,7 @@ class WorkspaceCalibration:
         if an axis feels inverted.
     """
 
-    scale: np.ndarray = field(default_factory=lambda: np.array([1.8, 0.6, 0.6]))
+    scale: np.ndarray = field(default_factory=lambda: np.array([3.0, 1.2, 1.2]))
     axis_map: tuple[int, int, int] = (2, 0, 1)
     axis_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, -1.0]))
 
@@ -154,11 +154,15 @@ class VisionInput:
         Newton magnitude the open/close scalar maps onto: a flat open hand
         commands ``-grip_force`` (release), a fist ``+grip_force`` (squeeze),
         additive on the baseline grip (see :class:`Command`).
+    gain:
+        Scalar multiplier on the calibration's per-axis scale — the live "how
+        much the arm mirrors the hand" knob. >1 amplifies hand motion, <1 damps.
     track_orientation:
         When True, the held orientation follows the filtered hand orientation;
         default False holds the start orientation (round peg ⇒ roll irrelevant).
     min_cutoff, beta:
-        One-euro filter parameters for the mapped position.
+        One-euro filter parameters for the mapped position. Tuned responsive
+        (low lag) so the arm tracks the hand rather than lagging behind it.
     """
 
     def __init__(
@@ -166,13 +170,15 @@ class VisionInput:
         hand_source: _HandSource,
         *,
         calibration: WorkspaceCalibration | None = None,
+        gain: float = 1.0,
         grip_force: float = 5.0,
         track_orientation: bool = False,
-        min_cutoff: float = 1.0,
-        beta: float = 0.7,
+        min_cutoff: float = 2.0,
+        beta: float = 1.5,
     ) -> None:
         self._source = hand_source
-        self._calibration = calibration or WorkspaceCalibration()
+        base = calibration or WorkspaceCalibration()
+        self._calibration = replace(base, scale=base.scale * gain) if gain != 1.0 else base
         self._grip_force = grip_force
         self._track_orientation = track_orientation
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)

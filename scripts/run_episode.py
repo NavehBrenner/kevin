@@ -71,6 +71,13 @@ def main() -> int:
         action="store_true",
         help="Hide the live camera/landmark debug window (--input vision; shown by default).",
     )
+    p.add_argument(
+        "--gain",
+        type=float,
+        default=1.0,
+        help="Vision input position gain (--input vision): higher = the arm mirrors hand "
+        "motion more aggressively. 1.0 = the tuned mirror default.",
+    )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
@@ -78,8 +85,10 @@ def main() -> int:
     p.add_argument(
         "--max-dpos",
         type=float,
-        default=0.025,
-        help="Controller command clamp in m/step (approach-speed / strictness knob).",
+        default=None,
+        help="Controller command clamp in m/step (approach-speed / strictness knob). "
+        "Default 0.025 (careful insertion); --input vision defaults to 0.08 for responsive "
+        "mirror-like tracking.",
     )
     args = p.parse_args()
 
@@ -103,7 +112,16 @@ def main() -> int:
     if not args.headless:
         env.launch_viewer()
 
-    controller = Controller(env, max_dpos_per_step=args.max_dpos)
+    # --input vision wants responsive, mirror-like tracking, not the slew-limited
+    # careful-insertion backbone (which feels like velocity control): a bigger
+    # command clamp lets the impedance spring toward the hand, and lower joint
+    # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
+    if args.input == "vision":
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.08
+        controller = Controller(env, max_dpos_per_step=max_dpos, joint_damping=1.5)
+    else:
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
+        controller = Controller(env, max_dpos_per_step=max_dpos)
 
     # Aim the scripted human at the active trial's hole *position*, but keep the
     # home grasp orientation rather than the hole-site frame: M3 is plumbing, and
@@ -123,7 +141,7 @@ def main() -> int:
         # A bare integer is a device index; anything else is a stream URL / path.
         camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
         tracker = MediaPipeHandTracker(camera=camera, show_window=not args.no_cam_window)
-        input_strategy = VisionInput(tracker)
+        input_strategy = VisionInput(tracker, gain=args.gain)
         print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
     else:
         target_pose = np.concatenate([target_position, home_quat])
