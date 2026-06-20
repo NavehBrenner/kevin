@@ -215,17 +215,26 @@ Build the `step_callback`-compatible observer that owns trial start/end detectio
 success/failure classification, and KPI computation off the `Observation` stream.
 No controller dependency. Per-trial KPI record out.
 
-### Step 2 — Ablation orchestration + difficulty calibration · LAB-37 (~4–5 h)
+### Step 2 — Ablation infrastructure + difficulty-calibration harness · LAB-37 (~4–5 h)
 
-Files: `src/ai_teleop/eval/ablation.py` (paired-seed runner),
-`scripts/evaluate.py` (the CLI driver, registered as a `kvn`/poe entry), a difficulty
-config; tests in `tests/test_ablation.py`.
+> **Split.** LAB-37 was divided into the *infrastructure* (this step, needs only the
+> LAB-36 harness) and the *run* (**LAB-53** — the ~100-seed head-to-head against the
+> fine-tuned residual + the final difficulty pin, which needs the LAB-52 policy).
 
-The paired-seed runner over the two configs, plus the calibration sweep that pins the
-difficulty knobs against the human-only baseline. Records seeds + knobs + checkpoint
-hash for reproducibility. Persists each eval episode as a realized-state trajectory
-log (`--log`, reusing `EpisodeRecorder`) and adds the offline path that replays a
-stored log through the `TrialObserver`, so KPIs compute without re-running.
+Files: `src/ai_teleop/eval/trace.py` (realized-state eval log — its own honest schema,
+**not** the M4 BC corpus: raw wrench, assist-under-test Δ, no privileged success
+flags), `src/ai_teleop/eval/ablation.py` (`Config` + `run_trial`/`run_paired` paired
+mechanism + `replay_kpis` offline path), `scripts/evaluate.py` (the `pair` / `sweep`
+CLI driver, registered as the `kvn evaluate` entry); tests in `tests/test_eval_trace.py`
+and `tests/test_ablation.py`.
+
+The paired-seed runner over configs (one trial = one `(master_seed, episode_index)`
+pair → identical scene + identical open-loop operator stream; only the assist differs),
+the eval-log producer/consumer (persist realized state, replay through the same
+`TrialObserver` so KPIs recompute offline with no re-run), and the human-only difficulty
+**sweep harness** over the command-clamp knob. The final operating-point pin against the
+residual margin, the ~100-seed run, and the checkpoint-hash reproducibility capture move
+to LAB-53.
 
 ### Step 3 — KPI tables + plots + Phase-1 results writeup · LAB-38 (~3–4 h)
 

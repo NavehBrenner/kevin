@@ -294,12 +294,22 @@ def _module_dir(module_name: str) -> pathlib.Path:
     return pathlib.Path(importlib.import_module(module_name).__file__).parent
 
 
-def test_eval_does_not_import_control():
+# The eval *measurement core* — the observer + its record/trace contracts — must
+# never reach into the controller (the LAB-36 DIP pillar: trial/success/KPI concepts
+# stay independent of the control stack). `ablation.py` is deliberately exempt: it is
+# the experiment *orchestrator* and, exactly like `data/generate.py`, composes
+# SimEnv + Controller + operator + assist to drive `run_episode`. The load-bearing
+# direction — control/ never importing eval/ — is asserted in full below and still
+# holds; the controller stays mode-less and trial-unaware.
+_MEASUREMENT_CORE = ("observer.py", "schema.py", "trace.py")
+
+
+def test_eval_measurement_core_does_not_import_control():
     eval_dir = _module_dir("ai_teleop.eval")
-    for python_file in eval_dir.rglob("*.py"):
-        source = python_file.read_text()
+    for filename in _MEASUREMENT_CORE:
+        source = (eval_dir / filename).read_text()
         matches = re.findall(r"^\s*(?:import|from)\s+ai_teleop\.control", source, re.MULTILINE)
-        assert not matches, f"control import found in eval/{python_file.name}"
+        assert not matches, f"control import found in eval/{filename}"
 
 
 def test_control_does_not_import_eval():
