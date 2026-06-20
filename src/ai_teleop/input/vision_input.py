@@ -50,17 +50,18 @@ ControlMode = Literal["mirror", "expo", "rate"]
 - ``expo`` — same position control, but the camera delta passes through a
   dead-zone (kills resting drift) + a cubic expo curve (tiny near rest ⇒
   precision, near-linear at full sweep ⇒ reach). The intuitive default.
-- ``rate`` — "point to steer": the two-finger gesture sets the in-plane EE
-  *velocity* from the direction it points, plus a gentle forward creep scaled by
-  how much it angles into the camera; a fist drives slowly backward; an open /
-  relaxed hand locks. Position-independent and low-fatigue; unlimited range (no
-  camera-FoV ceiling). See :class:`~ai_teleop.input.hand_tracker.HandReading`.
+- ``rate`` — "point to steer": an open hand sets the in-plane EE *velocity* from
+  the direction it points, plus a gentle forward creep scaled by how much it
+  angles into the camera; a fist drives slowly backward; a half-closed hand
+  locks. Position-independent and low-fatigue; unlimited range (no camera-FoV
+  ceiling). See :class:`~ai_teleop.input.hand_tracker.HandReading`.
 """
 
 # rate-mode tuning. ponytail: hand-tuned calibration knobs the live feel needs —
 # adjust from operator feedback, not magic numbers.
-_RATE_FWD_DEADZONE = 0.04  # forwardness ignored below this (keeps in-plane pointing from creeping)
-_RATE_FIST_THRESHOLD = 0.25  # open_close below this (with no point gesture) ⇒ fist ⇒ drive back
+_RATE_FWD_DEADZONE = 0.01  # forwardness ignored below this (keeps flat pointing from creeping)
+_RATE_OPEN_THRESHOLD = 0.6  # open_close above this ⇒ open hand ⇒ steer (+ forward)
+_RATE_FIST_THRESHOLD = 0.1  # open_close below this ⇒ fist ⇒ drive back; between the two ⇒ lock
 
 
 def _deadzone(value: np.ndarray, width: float) -> np.ndarray:
@@ -233,7 +234,7 @@ class VisionInput:
         deadzone: float = 0.03,
         expo: float = 0.6,
         rate_speed: float = 4.0,
-        forward_gain: float = 2.0,
+        forward_gain: float = 6.0,
         back_speed: float = 0.3,
         leash: float = 0.2,
         lock_delay: float = 0.2,
@@ -324,20 +325,23 @@ class VisionInput:
         return self._held
 
     def _rate_command(self, reading: HandReading, observation: Observation) -> Command:
-        """`rate` "point to steer": two-finger gesture → in-plane velocity + gentle
-        forward creep (angle into camera); fist → slow backward; else lock."""
+        """`rate` "point to steer": an open hand → in-plane velocity (where it
+        points) + gentle forward creep (angle into camera); a fist → slow
+        backward; a half-closed hand → lock. Open vs fist comes from open_close,
+        which is foreshortening-robust, so pointing into the camera stays "open"."""
         assert self._held is not None and self._prev_time is not None
         dt = float(np.clip(observation.sim_time - self._prev_time, 0.0, 0.1))
         self._prev_time = observation.sim_time
         ee_position = observation.ee_pose[:3]
 
-        # A fist (no point gesture, fingers curled) drives backward; the two-finger
-        # gesture steers. Either one is "driving"; anything else locks.
-        is_fist = not reading.is_pointing and reading.open_close < _RATE_FIST_THRESHOLD
+        # Open hand steers (+ creeps forward); a fist drives backward; in between
+        # locks. Either drive gesture is "driving".
+        is_open = reading.open_close > _RATE_OPEN_THRESHOLD
+        is_fist = reading.open_close < _RATE_FIST_THRESHOLD
 
         # Drive/lock with a debounce: engage instantly on a drive gesture, but only
         # lock once it's been gone for `lock_delay` (brief glitches don't freeze).
-        if reading.is_pointing or is_fist:
+        if is_open or is_fist:
             self._driving = True
             self._last_drive_time = observation.sim_time
         elif observation.sim_time - self._last_drive_time > self._lock_delay:
@@ -353,7 +357,9 @@ class VisionInput:
 
         sign = self._calibration.axis_sign
         world_velocity = np.zeros(3)
-        if reading.is_pointing:
+        if is_open:
+            # point_direction magnitude shrinks as the hand angles into the camera,
+            # so in-plane motion fades out exactly as the forward component grows.
             point = reading.point_direction
             world_velocity[1] = sign[1] * self._rate_speed * float(point[0])  # L/R ← image-x
             world_velocity[2] = sign[2] * self._rate_speed * float(point[1])  # U/D ← image-y

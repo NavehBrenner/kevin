@@ -138,13 +138,14 @@ a Windows PowerShell window**; steps 4–5 run **back in your WSL terminal**.
    - **`expo`** — position control with a dead-zone and soft centre: precise near
      rest, fast on big sweeps. Your hand *is* the arm.
    - **`mirror`** — plain linear position control (the raw version of `expo`).
-   - **`rate`** — *point to steer*. Hold up two fingers (index + middle) and the
-     arm flies in the direction you point, with a gentle forward creep as you
-     angle the fingers into the camera (point across the frame to pan; angle
-     toward the lens to ease forward). **Make a fist to drive slowly backward**,
-     and **open / relax your hand to lock** the arm in place (the clutch).
-     Position-independent and low-fatigue: your hand can sit anywhere in frame.
-     `--gain` scales the speed.
+   - **`rate`** — *point to steer*. Hold an **open hand** and the arm flies in
+     the direction the hand points, with a gentle forward creep as you angle the
+     hand into the camera (point across the frame to pan; angle toward the lens
+     to ease forward). **Make a fist to drive slowly backward**, and **half-close
+     the hand to lock** the arm in place (the clutch). Open-vs-fist is read from
+     the grip, which stays reliable even when the hand points into the camera, so
+     forward doesn't get mistaken for a fist. Position-independent and
+     low-fatigue: your hand can sit anywhere in frame. `--gain` scales the speed.
 
    `rate` is the easiest for long reaches; `expo` feels the most direct. Try both.
 

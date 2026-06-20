@@ -38,19 +38,6 @@ def _closed_fist() -> np.ndarray:
     return points
 
 
-def _two_finger_point() -> np.ndarray:
-    """Index + middle extended upward, ring + pinky curled — the drive gesture."""
-    points = np.zeros((21, 3))
-    points[0] = [0.5, 0.9, 0.0]  # wrist (bottom centre)
-    # index (MCP 5, PIP 6, TIP 8) and middle (9,10,12): tips far up the image
-    points[5], points[6], points[8] = [0.45, 0.6, 0], [0.45, 0.45, 0], [0.45, 0.2, 0]
-    points[9], points[10], points[12] = [0.55, 0.6, 0], [0.55, 0.45, 0], [0.55, 0.2, 0]
-    # ring (13,14,16) and pinky (17,18,20): tips curled back near the knuckles
-    points[13], points[14], points[16] = [0.6, 0.6, 0], [0.6, 0.55, 0], [0.6, 0.62, 0]
-    points[17], points[18], points[20] = [0.65, 0.6, 0], [0.65, 0.55, 0], [0.65, 0.62, 0]
-    return points
-
-
 def _observation(sim_time: float = 0.0) -> Observation:
     return Observation(
         joint_positions=np.zeros(7),
@@ -110,22 +97,16 @@ def test_reading_orientation_is_unit_quaternion():
     assert np.isclose(np.linalg.norm(quat), 1.0)
 
 
-def test_two_finger_gesture_detected_and_points_up():
-    reading = reading_from_landmarks(_two_finger_point())
-    assert reading.is_pointing  # index+middle out, ring+pinky curled
-    assert reading.point_direction[1] < -0.9  # unit vector pointing up the image (−y)
+def test_point_direction_follows_where_the_hand_points():
+    # Fingers below the wrist (image +y) ⇒ the hand points "down" in image coords.
+    assert reading_from_landmarks(_flat_open_hand()).point_direction[1] > 0.5
 
 
 def test_forwardness_positive_when_fingertips_angle_toward_camera():
-    points = _two_finger_point()
-    points[8, 2] = points[12, 2] = -0.2  # tips toward camera (negative MediaPipe z)
+    points = _flat_open_hand()
+    for tip in (8, 12, 16, 20):
+        points[tip, 2] = -0.2  # tips toward camera (negative MediaPipe z)
     assert reading_from_landmarks(points).forwardness > 0.0
-
-
-def test_open_and_fist_are_not_the_drive_gesture():
-    # All fingers out (open) and all curled (fist) must not read as "pointing".
-    assert not reading_from_landmarks(_flat_open_hand()).is_pointing
-    assert not reading_from_landmarks(_closed_fist()).is_pointing
 
 
 # ---------------------------------------------------------------------------
@@ -229,21 +210,22 @@ def test_expo_softens_small_motion_vs_mirror():
     assert 0.0 < travel("expo") < travel("mirror")  # soft centre ⇒ smaller for small input
 
 
-def _pointing(
-    direction: np.ndarray, *, forwardness: float = 0.0, open_close: float = 0.5
+def _open_hand(
+    direction: np.ndarray, *, forwardness: float = 0.0, open_close: float = 1.0
 ) -> HandReading:
+    """An open hand (drives in rate mode) pointing `direction` in image coords."""
     return HandReading(
         np.array([0.5, 0.5, 0.0]),
         np.array([1.0, 0, 0, 0]),
         open_close,
         present=True,
         point_direction=direction,
-        is_pointing=True,
         forwardness=forwardness,
     )
 
 
-def _not_pointing(open_close: float = 0.5) -> HandReading:
+def _half_closed(open_close: float = 0.4) -> HandReading:
+    """Neither open nor fist ⇒ the rate-mode lock state."""
     return HandReading(
         np.array([0.5, 0.5, 0.0]), np.array([1.0, 0, 0, 0]), open_close, present=True
     )
@@ -251,7 +233,7 @@ def _not_pointing(open_close: float = 0.5) -> HandReading:
 
 def test_rate_mode_steers_in_pointed_direction():
     """Pointing up (image −y) drives the EE up tick after tick (velocity)."""
-    up = _pointing(np.array([0.0, -1.0]))  # image y grows down ⇒ −y = up
+    up = _open_hand(np.array([0.0, -1.0]))  # image y grows down ⇒ −y = up
     vision = VisionInput(_FakeSource([up, up, up, up]), mode="rate", leash=10.0, min_cutoff=50.0)
     vision.get_command(_observation(0.00))  # engage
     z1 = vision.get_command(_observation(0.02)).target_position[2]
@@ -261,7 +243,7 @@ def test_rate_mode_steers_in_pointed_direction():
 
 def test_rate_mode_pointing_into_camera_creeps_forward():
     """Forwardness above the dead-zone eases the EE forward (+x, default sign)."""
-    at_cam = _pointing(np.array([0.0, -1.0]), forwardness=0.3)
+    at_cam = _open_hand(np.array([0.0, -1.0]), forwardness=0.3)
     vision = VisionInput(
         _FakeSource([at_cam, at_cam, at_cam]), mode="rate", leash=10.0, min_cutoff=50.0
     )
@@ -273,7 +255,7 @@ def test_rate_mode_pointing_into_camera_creeps_forward():
 
 def test_rate_mode_flat_pointing_does_not_creep_forward():
     """Pointing across the plane (forwardness ~0) stays within the dead-zone ⇒ no creep."""
-    flat = _pointing(np.array([1.0, 0.0]), forwardness=0.0)  # point sideways, no forward angle
+    flat = _open_hand(np.array([1.0, 0.0]), forwardness=0.0)  # point sideways, no forward angle
     vision = VisionInput(_FakeSource([flat, flat, flat]), mode="rate", leash=10.0, min_cutoff=50.0)
     vision.get_command(_observation(0.00))
     vision.get_command(_observation(0.02))
@@ -292,9 +274,9 @@ def test_rate_mode_fist_drives_backward():
 
 def test_rate_mode_locks_and_freezes_at_arm_after_delay():
     """Relax the gesture past lock_delay ⇒ arm locks, frozen at its actual pose."""
-    up = _pointing(np.array([0.0, -1.0]))
+    up = _open_hand(np.array([0.0, -1.0]))
     vision = VisionInput(
-        _FakeSource([up, up, _not_pointing(), _not_pointing()]),
+        _FakeSource([up, up, _half_closed(), _half_closed()]),
         mode="rate",
         lock_delay=0.0,  # lock immediately once the gesture is gone
         leash=10.0,
@@ -307,18 +289,16 @@ def test_rate_mode_locks_and_freezes_at_arm_after_delay():
 
 
 def test_rate_mode_holds_grip_constant():
-    """Grip is parked in rate mode — it holds the seed regardless of open/close."""
+    """Grip is parked in rate mode — it holds the seed across drive and lock."""
     vision = VisionInput(
-        _FakeSource(
-            [_pointing(np.array([0.0, -1.0]), open_close=1.0), _not_pointing(open_close=1.0)]
-        ),
+        _FakeSource([_open_hand(np.array([0.0, -1.0])), _half_closed()]),
         mode="rate",
         grip_force=5.0,
         lock_delay=0.0,
         min_cutoff=50.0,
     )
-    assert vision.get_command(_observation(0.00)).delta_grip_force == 0.0  # steering
-    assert vision.get_command(_observation(0.02)).delta_grip_force == 0.0  # locked
+    assert vision.get_command(_observation(0.00)).delta_grip_force == 0.0  # steering (open)
+    assert vision.get_command(_observation(0.02)).delta_grip_force == 0.0  # locked (half-closed)
 
 
 def test_dropout_freezes_at_current_ee_pose_then_reengage_no_jump():

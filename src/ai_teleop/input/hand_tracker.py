@@ -37,13 +37,9 @@ log = get_logger("hand_tracker")
 _WRIST = 0
 _INDEX_MCP = 5
 _MIDDLE_MCP = 9
+_MIDDLE_FINGERTIP = 12
 _PINKY_MCP = 17
 _FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, pinky tips (thumb excluded)
-# (tip, pip) per finger — extension test for the two-finger "drive" gesture.
-_INDEX = (8, 6)
-_MIDDLE = (12, 10)
-_RING = (16, 14)
-_PINKY = (20, 18)
 
 # Empirical open/close bounds for the fingertip-spread ratio (tip→wrist distance
 # over hand scale). Fist ≈ 1.0, flat open hand ≈ 2.4. ponytail: hand-tuned
@@ -75,21 +71,22 @@ class HandReading:
     present:
         False when no hand was detected this frame (drop-out).
     point_direction:
-        Shape (2,) — unit in-plane direction the extended fingers point, in image
-        coords (x right, y down), or zeros if not pointing. Position-independent:
-        it's *where the hand points*, not where it sits. Drives the ``rate``
-        "point to steer" mode. ``[0, 0]`` when degenerate.
-    is_pointing:
-        True for the two-finger drive gesture (index + middle extended, ring +
-        pinky curled). In ``rate`` mode the arm moves only while this holds; any
-        other hand shape freezes it (the "lock"). Ignored by mirror/expo.
-        Detection is deliberately forgiving (lenient on the two driving fingers,
-        strict on the curled ones) so the gesture holds without losing it.
+        Shape (2,) — the in-plane direction the hand points (wrist → middle
+        fingertip), in image coords (x right, y down), scaled by hand size so its
+        *magnitude* shrinks as the hand angles into the camera (foreshortening).
+        Position-independent: it's *where the hand points*, not where it sits.
+        Drives in-plane steering in ``rate`` mode; the shrinking magnitude blends
+        in-plane motion out as the forward (into-camera) component takes over.
     forwardness:
-        How much the driving fingers point *into* the camera (≈ "forward"):
-        ~0 when pointing across the image plane, larger as the fingertips angle
-        toward the lens. From the fingertips' depth (negative MediaPipe z = toward
-        camera). Noisy; the strategy dead-zones it and drives only a gentle creep.
+        How much the hand points *into* the camera (≈ "forward"): ~0 when pointing
+        across the image plane, larger as the fingertips angle toward the lens.
+        From the fingertips' depth (negative MediaPipe z = toward camera). Noisy;
+        the strategy dead-zones it and drives a gentle forward creep.
+
+    The ``rate`` mode reads the open/close grip to pick a gesture — an open hand
+    steers (+ creeps forward), a fist drives back — so it is robust where a
+    finger-extension test fails: ``open_close`` is built from 3-D landmark
+    distances and stays "open" even when the hand foreshortens toward the camera.
     """
 
     position: np.ndarray
@@ -97,7 +94,6 @@ class HandReading:
     open_close: float
     present: bool
     point_direction: np.ndarray = field(default_factory=lambda: np.zeros(2))
-    is_pointing: bool = False
     forwardness: float = 0.0
 
 
@@ -136,33 +132,14 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
 
     orientation = _palm_orientation(landmarks)
 
-    # Two-finger "drive" gesture + pointing direction (rate "point to steer").
-    # A finger is "extended" when its tip is `margin`× farther from the wrist than
-    # its PIP joint (image plane — robust to hand orientation, dodges the noisy
-    # landmark z). Lenient margin on index/middle (< 1: count them out readily) and
-    # strict on ring/pinky (> 1: must clearly extend to break the gesture) widens
-    # the "pointing" basin so the arm doesn't lock the moment the hand wavers.
-    def extended(tip: int, pip: int, margin: float) -> bool:
-        return float(np.linalg.norm(landmarks[tip, :2] - wrist[:2])) > margin * float(
-            np.linalg.norm(landmarks[pip, :2] - wrist[:2])
-        )
-
-    is_pointing = (
-        extended(*_INDEX, 0.9)
-        and extended(*_MIDDLE, 0.9)
-        and not extended(*_RING, 1.2)
-        and not extended(*_PINKY, 1.2)
-    )
-    # In-plane pointing direction: knuckle midpoint → fingertip midpoint of the
-    # two driving fingers, unit-normalized. Independent of hand position in frame.
-    finger_base = (landmarks[_INDEX_MCP, :2] + landmarks[_MIDDLE_MCP, :2]) / 2.0
-    finger_tip = (landmarks[_INDEX[0], :2] + landmarks[_MIDDLE[0], :2]) / 2.0
-    point_vec = finger_tip - finger_base
-    point_norm = float(np.linalg.norm(point_vec))
-    point_direction = point_vec / point_norm if point_norm > 1e-6 else np.zeros(2)
+    # In-plane pointing: wrist → middle fingertip, scaled by hand size so the
+    # vector is distance-invariant and *shrinks* as the hand angles into the
+    # camera (the fingertip foreshortens toward the wrist). Kept un-normalized on
+    # purpose: the magnitude blends in-plane steering out as forwardness rises.
+    point_direction = (landmarks[_MIDDLE_FINGERTIP, :2] - wrist[:2]) / hand_scale
     # Forwardness: fingertips angled toward the camera ⇒ negative tip z ⇒ positive.
-    # The wrist is MediaPipe's z origin, so the tip z is already wrist-relative.
-    forwardness = -float(np.mean([landmarks[_INDEX[0], 2], landmarks[_MIDDLE[0], 2]]))
+    # The wrist is MediaPipe's z origin, so tip z is already wrist-relative.
+    forwardness = -float(np.mean(landmarks[list(_FINGERTIPS), 2]))
 
     return HandReading(
         position,
@@ -170,7 +147,6 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
         open_close,
         present=True,
         point_direction=point_direction,
-        is_pointing=is_pointing,
         forwardness=forwardness,
     )
 
@@ -310,20 +286,20 @@ class MediaPipeHandTracker:
         if not reading.present:
             status, colour = "NO HAND - holding (clutched)", red
         elif self._mode == "rate":
-            if reading.is_pointing:
-                status, colour = "DRIVING - steer", green
+            if reading.open_close > 0.6:
+                status, colour = "DRIVING - steer (open hand)", green
             elif reading.open_close < 0.25:
                 status, colour = "DRIVING - back (fist)", green
             else:
-                status, colour = "LOCKED - point or fist to drive", amber
+                status, colour = "LOCKED - open hand or fist to drive", amber
         else:
             status, colour = f"TRACKING   hand {reading.open_close * 100:3.0f}% open", green
         cv2.putText(frame, status, (12, 26), font, 0.62, colour, 2)
 
         if self._mode == "rate":
             lines = [
-                "Point index+middle: steer (angle at camera = forward)",
-                "Make a fist: back up        Open / relax: lock",
+                "Open hand: steer where it points (at camera = fwd)",
+                "Make a fist: back up        Half-close: lock",
             ]
         else:
             lines = [
