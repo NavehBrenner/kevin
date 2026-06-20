@@ -48,7 +48,7 @@ import numpy as np
 
 from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
-from ai_teleop.common.utils.rotations import axis_from_quat
+from ai_teleop.common.seating import SeatingGeometry
 from ai_teleop.control import Controller
 from ai_teleop.data.schema import DatasetConfig, ResBCDatasetMetadata
 from ai_teleop.data.trajectory import (
@@ -70,7 +70,6 @@ log = get_logger("generate")
 
 SCENE_PATH = STATIC_TASK_SCENE  # static 3-hole task wall — the default scene
 
-_PEG_HALF_LENGTH = 0.030
 DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
 DEFAULT_LATERAL_TOLERANCE = 0.006  # max lateral error for a "seated" peg (m)
@@ -105,29 +104,21 @@ def _cached_matches(path: Path, fingerprint: str) -> bool:
     return bool(metadata.get("fingerprint") == fingerprint)
 
 
-def _peg_tip_and_axis(peg_pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    axis = axis_from_quat(peg_pose[3:], 2)
-    return peg_pose[:3] + _PEG_HALF_LENGTH * axis, axis
-
-
 class _SeatingMetrics:
-    """Geometry needed to both log a step and decide termination.
+    """Seating geometry plus the force read needed to decide termination.
 
-    Computed once per step from the privileged peg/hole poses so the recorder
-    and the termination check (and the baseline probe) share one definition of
-    "seated" rather than drifting apart.
+    The geometry (penetration / lateral error / distance) comes from the shared
+    ``common.seating`` definition so generation and the M6 eval harness cannot
+    drift on what "seated" means; the force magnitude and the threshold policy
+    (:meth:`terminal_reason`) are data-generation's own concern.
     """
 
     def __init__(self, observation: Observation) -> None:
-        tip, _ = _peg_tip_and_axis(observation.peg_pose)
-        self.hole_pose = observation.hole_poses[observation.target_hole_index]
-        insertion_axis = axis_from_quat(self.hole_pose[3:], 0)
-
-        error = self.hole_pose[:3] - tip
-        axial_error = float(error @ insertion_axis)
-        self.distance = float(np.linalg.norm(error))
-        self.lateral_error = float(np.linalg.norm(error - axial_error * insertion_axis))
-        self.penetration = -axial_error
+        geometry = SeatingGeometry.from_observation(observation)
+        self.hole_pose = geometry.target_hole_pose
+        self.distance = geometry.distance
+        self.lateral_error = geometry.lateral_error
+        self.penetration = geometry.penetration
         self.force_magnitude = float(np.linalg.norm(observation.wrist_ft[:3]))
 
     def terminal_reason(

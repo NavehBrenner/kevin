@@ -59,6 +59,14 @@ APP_COMMANDS: dict[str, tuple[str, str]] = {
         "generate_dataset.py",
         "Generate the behavioral-cloning dataset (N episodes -> NPZ files).",
     ),
+    "train": (
+        "train_policy.py",
+        "Train the Phase-1 F/T residual via BC and write a deployable checkpoint.",
+    ),
+    "evaluate": (
+        "evaluate.py",
+        "M6 paired ablation (pair) + human-only difficulty sweep (sweep).",
+    ),
 }
 
 # command -> (poe task name, one-line help)

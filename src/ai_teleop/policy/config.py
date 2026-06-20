@@ -1,5 +1,11 @@
 from dataclasses import dataclass
 
+# Full-sequence BPTT by default; M4 episodes can be thousands of steps, so the
+# train loop chunks time into windows this long and carries a detached hidden
+# state across them (truncated BPTT) to bound memory. A window larger than any
+# episode == plain full BPTT.
+DEFAULT_TBPTT_STEPS = 256
+
 
 @dataclass(frozen=True)
 class PolicyConfig:
@@ -21,3 +27,17 @@ class PolicyConfig:
 
     # outputs
     output_dim: int = 7
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    """Optimization + early-stopping knobs (model/loss shape live in their own configs)."""
+
+    epochs: int = 40
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    tbptt_steps: int = DEFAULT_TBPTT_STEPS
+    patience: int = 8  # early-stop after this many epochs without val improvement
+    min_delta: float = 1e-4  # smallest val-loss drop that counts as improvement
+    lr_patience: int = 3  # ReduceLROnPlateau patience
+    lr_factor: float = 0.5
