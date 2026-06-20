@@ -350,6 +350,7 @@ By Milestone 4 we have: the human-only baseline mode (zero correction), the assi
    These stress the vision policy and produce strong demo-reel material. Built on top of the same MuJoCo scene — just shaders + lighting parameters.
 5. **Brief RL fine-tuning comparison** of the residual policy on top of the BC-trained weights — only as a final tail experiment, never the centerpiece.
 6. **MediaPipe Holistic** in place of MediaPipe Hands — adds full-arm pose tracking for richer teleop input.
+7. **Stereo hand tracking** — a second calibrated webcam triangulates the MediaPipe landmarks to a *metric* 3D hand pose, replacing the monocular depth proxy and unlocking true 6-DoF hand mirroring (see [`docs/design/teleop-input.md`](docs/design/teleop-input.md)).
 
 ## Key risks (named, mitigation deferred to implementation plan)
 
