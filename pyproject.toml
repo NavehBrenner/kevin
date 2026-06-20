@@ -42,7 +42,10 @@ ml = [
 ]
 vision-input = [
     "opencv-python>=4.9",
-    "mediapipe>=0.10",
+    # Pinned: the legacy `mediapipe.solutions.hands` API (+ its landmark drawing)
+    # is what the tracker uses; builds after 0.10.21 ship only the newer Tasks
+    # API and drop `solutions` entirely. Bump only alongside a Tasks-API rewrite.
+    "mediapipe==0.10.21",
 ]
 # Visualisation / recording for dev scripts (MP4 + GIF episode captures).
 # Not imported by the sim runtime; only the scripts/dev recorders use it.

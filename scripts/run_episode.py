@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
-from ai_teleop.input import ScriptedNoisyHuman  # noqa: E402
+from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
+from ai_teleop.input import ScriptedNoisyHuman, VisionInput  # noqa: E402
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
@@ -44,12 +45,52 @@ def main() -> int:
         "--max-steps",
         type=int,
         default=DEFAULT_MAX_STEPS,
-        help="Episode step budget (one step == one 2 ms sim tick).",
+        help="Episode step budget (one step == one 2 ms sim tick). Use 0 for no limit — "
+        "run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
     )
     p.add_argument(
         "--generated-wall",
         action="store_true",
         help="Run on a freshly generated procedural wall instead of the static scene.",
+    )
+    p.add_argument(
+        "--wrist-cam",
+        action="store_true",
+        help="Open the viewer locked to the Panda's wrist camera (robot's-eye POV) "
+        "instead of the free camera; viewer keys still switch cameras live.",
+    )
+    p.add_argument(
+        "--input",
+        choices=["scripted", "vision"],
+        default="scripted",
+        help="Base command source: 'scripted' noisy human (default) or 'vision' webcam hand "
+        "tracking (MediaPipe; needs the viewer + the vision-input extra).",
+    )
+    p.add_argument(
+        "--camera",
+        default="0",
+        help="Camera source for --input vision: a device index (e.g. 0), or a stream URL "
+        "(e.g. http://<host>:<port>/video) — use a URL on WSL2, which has no webcam device.",
+    )
+    p.add_argument(
+        "--no-cam-window",
+        action="store_true",
+        help="Hide the live camera/landmark debug window (--input vision; shown by default).",
+    )
+    p.add_argument(
+        "--gain",
+        type=float,
+        default=1.0,
+        help="Vision input position gain (--input vision): higher = the arm mirrors hand "
+        "motion more aggressively. 1.0 = the tuned mirror default.",
+    )
+    p.add_argument(
+        "--control-mode",
+        choices=["mirror", "expo", "rate"],
+        default="expo",
+        help="Vision mapping (--input vision): 'expo' (default) = position control with "
+        "a dead-zone + soft centre (precise near rest, fast on big sweeps); 'mirror' = "
+        "plain linear position; 'rate' = joystick (hand offset sets EE velocity).",
     )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
@@ -58,10 +99,16 @@ def main() -> int:
     p.add_argument(
         "--max-dpos",
         type=float,
-        default=0.025,
-        help="Controller command clamp in m/step (approach-speed / strictness knob).",
+        default=None,
+        help="Controller command clamp in m/step (approach-speed / strictness knob). "
+        "Default 0.025 (careful insertion); --input vision defaults to 0.08 for responsive "
+        "mirror-like tracking.",
     )
     args = p.parse_args()
+
+    if args.input == "vision" and args.headless:
+        print("FATAL: --input vision needs the viewer (drop --headless).", file=sys.stderr)
+        return 2
 
     scene_path = resolve_scene_path(
         generated=args.generated_wall,
@@ -77,9 +124,18 @@ def main() -> int:
     env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
     obs = env.reset()
     if not args.headless:
-        env.launch_viewer()
+        env.launch_viewer(wrist_cam=args.wrist_cam)
 
-    controller = Controller(env, max_dpos_per_step=args.max_dpos)
+    # --input vision wants responsive, mirror-like tracking, not the slew-limited
+    # careful-insertion backbone (which feels like velocity control): a bigger
+    # command clamp lets the impedance spring toward the hand, and lower joint
+    # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
+    if args.input == "vision":
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.08
+        controller = Controller(env, max_dpos_per_step=max_dpos, joint_damping=1.5)
+    else:
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
+        controller = Controller(env, max_dpos_per_step=max_dpos)
 
     # Aim the scripted human at the active trial's hole *position*, but keep the
     # home grasp orientation rather than the hole-site frame: M3 is plumbing, and
@@ -89,9 +145,23 @@ def main() -> int:
     # full-target command into a smooth bounded approach.
     target_position = obs.hole_poses[obs.target_hole_index][:3].copy()
     home_quat = controller.home_pose[3:]
-    target_pose = np.concatenate([target_position, home_quat])
-    human = ScriptedNoisyHuman(target_pose, seed=args.seed)
     assist = NoAssist()
+
+    input_strategy: InputStrategy
+    tracker = None
+    if args.input == "vision":
+        from ai_teleop.input.hand_tracker import MediaPipeHandTracker
+
+        # A bare integer is a device index; anything else is a stream URL / path.
+        camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
+        tracker = MediaPipeHandTracker(
+            camera=camera, show_window=not args.no_cam_window, mode=args.control_mode
+        )
+        input_strategy = VisionInput(tracker, gain=args.gain, mode=args.control_mode)
+        print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
+    else:
+        target_pose = np.concatenate([target_position, home_quat])
+        input_strategy = ScriptedNoisyHuman(target_pose, seed=args.seed)
 
     start_dist = float(np.linalg.norm(obs.ee_pose[:3] - target_position))
     print(
@@ -99,23 +169,34 @@ def main() -> int:
         f"{np.array2string(target_position, precision=3)} "
         f"({start_dist * 1000:.0f} mm from home EE)"
     )
-    print(f"Running {args.max_steps} steps with ScriptedNoisyHuman + NoAssist...")
+    # --max-steps 0 (or negative) => run effectively forever; range() is lazy.
+    max_steps = args.max_steps if args.max_steps > 0 else sys.maxsize
+    budget = "unlimited" if args.max_steps <= 0 else f"{args.max_steps} steps"
+    print(f"Running {budget} with {args.input} input + NoAssist (Ctrl-C to stop)...")
 
-    result = run_episode(
-        env,
-        controller,
-        human,
-        assist,
-        max_steps=args.max_steps,
-        render=not args.headless,
-    )
+    result = None
+    try:
+        result = run_episode(
+            env,
+            controller,
+            input_strategy,
+            assist,
+            max_steps=max_steps,
+            render=not args.headless,
+        )
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+    finally:
+        if tracker is not None:
+            tracker.close()
 
-    final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
-    print(
-        f"\nEpisode done: {result.n_steps} steps  "
-        f"final lock state = {result.lock_status.state.value}  "
-        f"EE-to-hole {start_dist * 1000:.0f} mm -> {final_dist * 1000:.0f} mm"
-    )
+    if result is not None:
+        final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
+        print(
+            f"\nEpisode done: {result.n_steps} steps  "
+            f"final lock state = {result.lock_status.state.value}  "
+            f"EE-to-hole {start_dist * 1000:.0f} mm -> {final_dist * 1000:.0f} mm"
+        )
     env.close()
     return 0
 

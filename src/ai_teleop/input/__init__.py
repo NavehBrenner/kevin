@@ -11,5 +11,14 @@ To be populated as needed across Milestones 3-5.
 """
 
 from ai_teleop.input.scripted_noisy_human import ScriptedNoisyHuman, bore_aligned_grasp
+from ai_teleop.input.vision_input import VisionInput, WorkspaceCalibration
 
-__all__ = ["ScriptedNoisyHuman", "bore_aligned_grasp"]
+# MediaPipeHandTracker / HandReading live in `.hand_tracker`; import them directly
+# (the tracker pulls in the optional `vision-input` extra only when constructed).
+
+__all__ = [
+    "ScriptedNoisyHuman",
+    "VisionInput",
+    "WorkspaceCalibration",
+    "bore_aligned_grasp",
+]

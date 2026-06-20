@@ -226,7 +226,7 @@
                         once the arm is positioned facing the wall.
                       -->
                       <camera name="wrist_cam" pos="0 -0.08 0.0"
-                              xyaxes="1 0 0 0 -1 0" fovy="75"/>
+                              xyaxes="-1 0 0 0 1 0" fovy="75"/>
                       <light name="wrist_light" pos="0 0 0.04" dir="0 0 1" diffuse="0.6 0.6 0.6" specular="0.1 0.1 0.1" cutoff="45" exponent="10" mode="fixed"/>
                       <body name="left_finger" pos="0 0 0.0584">
                         <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
