@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
+from ai_teleop.common.geometry import mat3_to_quat
 from ai_teleop.common.log import get_logger
 
 log = get_logger("hand_tracker")
@@ -42,8 +43,8 @@ _PINKY_MCP = 17
 _FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, pinky tips (thumb excluded)
 
 # Empirical open/close bounds for the fingertip-spread ratio (tip→wrist distance
-# over hand scale). Fist ≈ 1.0, flat open hand ≈ 2.4. ponytail: hand-tuned
-# constants — the calibration knob the physical signal needs, not magic numbers.
+# over hand scale). Fist ≈ 1.0, flat open hand ≈ 2.4 — hand-tuned; recalibrate
+# from operator feel if the grip proxy reads hot or cold.
 _GRIP_RATIO_CLOSED = 1.0
 _GRIP_RATIO_OPEN = 2.4
 
@@ -170,9 +171,7 @@ def _palm_orientation(landmarks: np.ndarray) -> np.ndarray:
     z_axis = z_axis / z_norm
     x_axis = np.cross(y_axis, z_axis)
 
-    rotation = np.column_stack([x_axis, y_axis, z_axis]).reshape(9)
-    quat = np.zeros(4)
-    mujoco.mju_mat2Quat(quat, rotation)
+    quat = mat3_to_quat(np.column_stack([x_axis, y_axis, z_axis]))
     mujoco.mju_normalize4(quat)
     return quat
 
@@ -185,8 +184,8 @@ class MediaPipeHandTracker:
     not stall on a ~30 fps camera. ``read`` never raises; on drop-out (or before
     the first frame) it returns a reading with ``present=False``.
 
-    ponytail: one daemon grabber thread + a lock. Fine for a single demo camera;
-    if multi-camera or recording is ever needed, swap for a proper capture queue.
+    One daemon grabber thread + a lock. Fine for a single demo camera; if
+    multi-camera or recording is ever needed, swap for a proper capture queue.
     """
 
     def __init__(

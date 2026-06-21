@@ -6,6 +6,7 @@ dependency DAG.
 
 from ai_teleop.common import utils
 from ai_teleop.common.command import Command
+from ai_teleop.common.geometry import mat3_to_quat
 from ai_teleop.common.log import (
     add_logging_arguments,
     configure_from_args,
@@ -24,5 +25,6 @@ __all__ = [
     "configure_from_args",
     "configure_logging",
     "get_logger",
+    "mat3_to_quat",
     "utils",
 ]

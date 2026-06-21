@@ -101,7 +101,7 @@ class EvalTraceRecorder:
 
     def record(self, observation: Observation, base_command: Command, delta: Delta) -> None:
         """Append one realized-state row from the per-tick objects."""
-        target_hole_pose = observation.hole_poses[observation.target_hole_index]
+        target_hole_pose = observation.target_hole_pose
         self._add(
             step=len(self._rows),
             sim_time=observation.sim_time,

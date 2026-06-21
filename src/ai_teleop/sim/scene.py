@@ -17,6 +17,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from ai_teleop.common.geometry import mat3_to_quat
 from ai_teleop.common.observation import Observation
 
 RenderMode = Literal["viewer", "headless"]
@@ -72,17 +73,6 @@ def _discover_hole_site_ids(model: mujoco.MjModel) -> np.ndarray:
         raise KeyError("scene contains no `hole_<i>` sites")
     found.sort()
     return np.array([site_id for _, site_id in found], dtype=np.int32)
-
-
-def _mat3_to_quat(mat_flat: np.ndarray) -> np.ndarray:
-    """Convert a flattened 3x3 row-major rotation matrix to a (w,x,y,z) unit quat.
-
-    `data.site_xmat` and `data.xmat` are stored as 9-element row-major flat arrays.
-    MuJoCo's mju_mat2Quat expects exactly this layout.
-    """
-    quat = np.zeros(4)
-    mujoco.mju_mat2Quat(quat, np.ascontiguousarray(mat_flat).reshape(9))
-    return quat
 
 
 class SimEnv:
@@ -317,7 +307,7 @@ class SimEnv:
         joint_velocities = data.qvel[self._arm_joint_vadr].copy()
 
         tcp_pos = data.site_xpos[self._tcp_site_id].copy()
-        tcp_quat = _mat3_to_quat(data.site_xmat[self._tcp_site_id])
+        tcp_quat = mat3_to_quat(data.site_xmat[self._tcp_site_id])
         ee_pose = np.concatenate([tcp_pos, tcp_quat])
 
         peg_pose = data.qpos[self._peg_qadr : self._peg_qadr + 7].copy()
@@ -326,7 +316,7 @@ class SimEnv:
         hole_poses = np.zeros((len(self._hole_site_ids), 7))
         for i, site_id in enumerate(self._hole_site_ids):
             hole_poses[i, 0:3] = data.site_xpos[site_id]
-            hole_poses[i, 3:7] = _mat3_to_quat(data.site_xmat[site_id])
+            hole_poses[i, 3:7] = mat3_to_quat(data.site_xmat[site_id])
 
         wrist_ft = np.concatenate(
             [
