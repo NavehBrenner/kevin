@@ -87,7 +87,7 @@ def run_trial(
     try:
         controller = Controller(environment, max_dpos_per_step=max_dpos)
         observation = environment.reset(episode_index)
-        target_position = observation.hole_poses[observation.target_hole_index][:3].copy()
+        target_position = observation.target_hole_position.copy()
         home_quaternion = controller.home_pose[3:]
         target_pose = np.concatenate([target_position, home_quaternion])
         human = ScriptedNoisyHuman(target_pose, seed=_human_seed(master_seed, episode_index))
@@ -176,8 +176,8 @@ def replay_kpis(trace_path: str | Path, **observer_kwargs: Any) -> TrialKPIs:
         config_label=metadata.get("config"),
         **observer_kwargs,
     )
+    # The observer does not read `command`; nothing to reconstruct from the trace.
     for step, observation, base_command, delta in replay_trace(columns):
-        command = None  # the observer does not read `command`; nothing to reconstruct
-        if observer(step, observation, base_command, delta, command):
+        if observer(step, observation, base_command, delta, command=None):
             break
     return observer.result()

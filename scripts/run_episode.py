@@ -143,7 +143,7 @@ def main() -> int:
     # approach fight the impedance law. Real orientation corrections are the
     # expert's job (M4). The controller's 2 cm/step command clamp turns the
     # full-target command into a smooth bounded approach.
-    target_position = obs.hole_poses[obs.target_hole_index][:3].copy()
+    target_position = obs.target_hole_position.copy()
     home_quat = controller.home_pose[3:]
     assist = NoAssist()
 

@@ -34,3 +34,13 @@ class Observation:
 
     # --- Timing ----------------------------------------------------------
     sim_time: float  # seconds since reset
+
+    @property
+    def target_hole_pose(self) -> np.ndarray:
+        """Pose (7,) of the active target hole — ``hole_poses[target_hole_index]``."""
+        return self.hole_poses[self.target_hole_index]
+
+    @property
+    def target_hole_position(self) -> np.ndarray:
+        """Position (3,) of the active target hole (a view; ``.copy()`` to keep)."""
+        return self.target_hole_pose[:3]

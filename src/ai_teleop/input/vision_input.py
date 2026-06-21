@@ -57,8 +57,7 @@ ControlMode = Literal["mirror", "expo", "rate"]
   ceiling). See :class:`~ai_teleop.input.hand_tracker.HandReading`.
 """
 
-# rate-mode tuning. ponytail: hand-tuned calibration knobs the live feel needs —
-# adjust from operator feedback, not magic numbers.
+# rate-mode tuning — hand-tuned calibration knobs; adjust from operator feedback.
 _RATE_FWD_DEADZONE = 0.01  # forwardness ignored below this (keeps flat pointing from creeping)
 _RATE_OPEN_THRESHOLD = 0.6  # open_close above this ⇒ open hand ⇒ steer (+ forward)
 _RATE_FIST_THRESHOLD = 0.1  # open_close below this ⇒ fist ⇒ drive back; between the two ⇒ lock

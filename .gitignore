@@ -79,3 +79,6 @@ docs/d1-design-review/sequence.png
 
 .gemini/
 gha-creds-*.json
+
+# Claude Code git worktrees — never commit as stray gitlinks (see LAB-57)
+.claude/worktrees/
