@@ -107,7 +107,7 @@ uv run kvn smoke --no-viewer    # headless (CI)
 |---|---|---|
 | `--headless` | off | Skip the viewer; run the loop and print a one-line summary. |
 | `--input {scripted,vision}` | `scripted` | Base command source: scripted noisy human, or webcam hand tracking (MediaPipe; needs the viewer + the `vision-input` extra). |
-| `--camera SRC` | `0` | Camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/video`). Use a URL on WSL2 — see the README's webcam setup. |
+| `--camera SRC` | `0` | Camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/0`). Use a URL on WSL2 — stream the camera from Windows with the [stereohand](https://github.com/NavehBrenner/stereohand) bridge. |
 | `--no-cam-window` | off | Hide the live camera/landmark debug window (`--input vision`; shown by default). |
 | `--gain G` | `1.0` | Vision input gain (`--input vision`): higher = the arm follows hand motion more aggressively (scales position scale in `mirror`/`expo`, the drive speeds in `rate`). |
 | `--control-mode {mirror,expo,rate}` | `expo` | Vision hand→arm mapping (`--input vision`): `expo` = position control with a dead-zone + soft centre (precise near rest, fast on big sweeps); `mirror` = plain linear position; `rate` = "point to steer" — hold an **open hand** and the arm flies in the direction it points, with a gentle forward creep as you angle the hand into the camera; a **fist** drives slowly backward; a half-closed hand locks. Position-independent, low fatigue. |
