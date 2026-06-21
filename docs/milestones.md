@@ -200,14 +200,23 @@ contribution of vision; runs in real time within the control budget.
 - `KeyboardInput` fallback strategy.
 - All three input strategies interchangeable behind the common interface.
 
+**Stereo upgrade (post-baseline, gated on a 2nd camera)**: the monocular sensor
+fakes depth (a hand-size proxy) and can't trust orientation (6-DoF off by default).
+A second calibrated camera triangulates the 21 landmarks to a *metric* 3D hand pose
+→ real depth + observable orientation → true 6-DoF mirroring. Keeps the `HandReading`
+contract and the strategy layer unchanged; touches only `hand_tracker.py`. Full
+rationale and build order in [`design/teleop-input.md`](design/teleop-input.md).
+
 **Deferred**: MediaPipe Holistic / full-arm tracking (stretch).
 
 **Acceptance**: a person can drive the arm via webcam and complete assisted insertions;
-keyboard fallback works; a handful of qualitative runs are recordable.
+keyboard fallback works; a handful of qualitative runs are recordable. *(Baseline met
+by the monocular path, LAB-50/51, PR #27; the stereo upgrade is an enhancement, not a
+gate.)*
 
 **Depends on**: M3 (input interface), works with any assist mode. **Component**: 5.
-**Rough effort**: 12–16 h. *(Lower priority than M5–M7 for the core results; needed for
-the final demo video.)*
+**Rough effort**: 12–16 h (monocular baseline) + ~10–14 h for the stereo upgrade.
+*(Lower priority than M5–M7 for the core results; needed for the final demo video.)*
 
 ---
 
