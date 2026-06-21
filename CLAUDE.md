@@ -98,6 +98,13 @@ One PR per issue is the norm; reference every issue a PR addresses. (Requires
 the workspace GitHub integration to be connected once, in Linear → Settings →
 Features → Integrations → GitHub.)
 
+### Creating Linear issues
+
+Every new issue is **linked to the `AI-Assisted Robotic Teleoperation` project**
+(team **Lab**) and **assigned to Naveh Brenner** — set both at creation time, never
+leave an issue project-less or unassigned. With the Linear MCP `save_issue`, pass
+`project: "AI-Assisted Robotic Teleoperation"` and `assignee: "Naveh Brenner"`.
+
 ### Hooks and CI
 
 Local git hooks live in `.githooks/` (version-controlled). Activate them once

@@ -51,6 +51,18 @@ By the end of M5 we can:
   held-out episodes (deeper seating / lower lateral error), the same headless
   spot-check shape M4 used for the expert. (Rigorous KPI numbers are **M6**.)
 
+> **2026-06-20 — reinterpreting the "beats human-only" bar.** A Phase-1 (no-vision)
+> residual cannot improve *success rate* outside a narrow **chamfer-contact band**: the
+> hole location is not inferable from F/T+proprio in free space, so the cloned
+> free-space correction is ≈0 by construction (wiki `concepts/privileged-learning.md` →
+> "The Phase-1 identifiability ceiling"). A spot-check **tie** at the *training* noise
+> (e.g. the LAB-34 40/40) is therefore expected, **not** a milestone failure. M5's real
+> bar is the **pipeline** (real-time `ResidualPolicy` behind the seam, captures the
+> achievable contact-reactive behavior without closed-loop drift); a *success-rate* win
+> is gated by **M6 difficulty-calibration** (place contact on the chamfer), with a
+> retrain on the calibrated scenarios only if that band differs (LAB-52). The robust
+> Phase-1 wins are time-to-insert and peak force.
+
 ## What's in M5
 
 - **BC dataset loader** (LAB-32, `data/`) — turns flat per-step NPZ rows into

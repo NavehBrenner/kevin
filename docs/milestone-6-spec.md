@@ -2,8 +2,20 @@
 
 **Goal**: turn M5's qualitative "it seems to seat the peg" into **measured,
 defensible numbers** — a reproducible two-way KPI comparison (human-only vs the
-Phase-1 F/T-residual) in which the residual *measurably* beats human-only. This is
+Phase-1 F/T-residual) that **honestly quantifies the residual's contribution**. This is
 the **first publishable result** and the close of Phase 1.
+
+> **Read first — the Phase-1 success-rate ceiling (2026-06-20).** A Phase-1 (no-vision)
+> residual **cannot** improve *success rate* outside a narrow **chamfer-contact band**:
+> the hole location is not inferable from command/F-T/proprioception in free space, so
+> the cloned free-space correction is ≈0 by construction, and flat-wall contact gives
+> the policy no lateral signal (full argument: wiki `concepts/privileged-learning.md` →
+> "The Phase-1 identifiability ceiling"). This **reframes M6's headline**: calibration
+> isn't merely "give the baseline headroom," it is "place the operating point in the
+> band where the policy can *physically* matter." Where M6 expects a success-rate win,
+> read it as **conditional on that calibrated band**; the **robust** Phase-1 wins are
+> **time-to-insert and peak force**, and a structurally-flat success delta in the
+> flat-wall regime is a *result*, not a failure. Vision (M7) is what lifts the ceiling.
 
 M5 delivered a trained `ResidualPolicy` that runs in real time behind the M3
 assistance seam and qualitatively improves seating on held-out episodes. M6 builds
@@ -32,7 +44,8 @@ By the end of M6 we can:
   stream, only the assist layer differs — reproducibly.
 - **Report**: KPI tables + plots (success rate, time-to-insert, peak force,
   contacts-before-success, smoothness) with the paired-design summary statistics,
-  and a short results writeup. The F/T residual beats human-only on success;
+  and a short results writeup. In the calibrated chamfer-contact band the F/T residual
+  improves on human-only (success in-band, and robustly time-to-insert + peak force);
   peak force is bounded by construction.
 
 ## What's in M6
@@ -81,6 +94,15 @@ operator might already be near ceiling on an easy task and a tiny relative delta
 would be unconvincing. That framing only works if the **unassisted baseline has
 headroom** — hence difficulty calibration (LAB-37) is not a tuning afterthought but
 a precondition for the result being meaningful.
+
+There is a **second, sharper precondition** (the 2026-06-20 ceiling above): the
+headroom must sit in the **chamfer-contact band** — operator error large enough that
+human-only fails, yet small enough that contact still lands on the *chamfer* (not the
+flat wall), since that is the only regime where the F/T residual has lateral signal to
+act on. Push the difficulty past that band and human-only *and* the residual both fail
+— headroom without a lever. So calibration pins **two** edges, not one: baseline below
+ceiling, *and* contact on the funnel. If the resulting band differs from the M5 training
+distribution, the policy is retrained on it (LAB-52), not tuned at the original noise.
 
 Two **orthogonal** geometric knobs do most of the work, each tightening a different
 error axis (see `evaluation-protocol.md`):
@@ -257,8 +279,10 @@ short writeup.
 - A paired-seed ablation over the seed set runs reproducibly and produces two KPI
   records per seed; identical seeds yield identical scripted-operator command streams
   across configs.
-- Tables + plots regenerate from stored records; the **F/T residual measurably beats
-  human-only on success rate**, and peak force is bounded by construction.
+- Tables + plots regenerate from stored records; in the calibrated chamfer-contact band
+  the **F/T residual measurably improves on human-only** (success in-band, and robustly
+  time-to-insert + peak force), reported honestly against the Phase-1 ceiling; peak
+  force is bounded by construction.
 - M5 (policy + seam), M4 (data-gen), M3 (runner), M2 (harness), M1 (smoke) all still
   pass — M6 adds the `eval/` layer and changes no existing contract.
 
@@ -266,9 +290,11 @@ short writeup.
 
 **10–14 hours**, 3–4 sessions, across three PRs. The long pole is **difficulty
 calibration** (LAB-37): it is an empirical sweep, and the genuine risk is that the
-Phase-1 F/T-only residual's headroom is narrow (without vision the operator's coarse
-command must already place the peg near the hole), forcing a careful operating point
-where human-only is sub-ceiling *and* the residual still wins. The harness (LAB-36)
+Phase-1 F/T-only residual's headroom is narrow (the chamfer-contact band above is
+thin) — forcing a careful operating point where human-only is sub-ceiling *and*
+contact still lands on the funnel so the residual has a lever. If the band turns out
+empty at the current geometry, widening the chamfer (more funnel) is the knob that
+re-opens it. The harness (LAB-36)
 and reporting (LAB-38) are mechanical given the locked protocol.
 
 ## Files this milestone touches
