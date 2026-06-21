@@ -1,0 +1,9 @@
+targets:
+  agents:
+    dest: ".agents/AGENTS.md"
+  rules:
+    dest: ".agents/rules"
+  skills:
+    dest: ".agents/skills"
+  commands:
+    dest: ".agents/workflows"

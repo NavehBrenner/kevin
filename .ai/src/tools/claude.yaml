@@ -1,0 +1,13 @@
+targets:
+  agents:
+    dest: "CLAUDE.md"
+  rules:
+    dest: ".claude/rules"
+  skills:
+    dest: ".claude/skills"
+  commands:
+    dest: ".claude/commands"
+  subagents:
+    dest: ".claude/agents"
+
+post_sync: "cp CLAUDE.md code/CLAUDE.md && mkdir -p code/.claude && cp -r .claude/* code/.claude/ 2>/dev/null || true"

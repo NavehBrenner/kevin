@@ -17,3 +17,9 @@ fi
 echo "pre-commit: ruff format on ${#files[@]} staged file(s)..."
 .venv/bin/ruff format "${files[@]}"
 git add "${files[@]}"
+
+# Sync AI agent configurations using AgentSync
+if [ -x /home/naveh-brenner/.local/bin/agentsync ]; then
+    /home/naveh-brenner/.local/bin/agentsync sync --force
+fi
+
