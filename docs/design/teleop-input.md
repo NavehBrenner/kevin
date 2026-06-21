@@ -37,6 +37,40 @@ A depth camera (RealSense / Azure Kinect) would also give metric 3D and skip cal
 
 The strategy layer (`vision_input.py`) is **unchanged in shape**: same relative clutch, same one-euro filter, same `WorkspaceCalibration`, same grip mapping. Metric depth and trustworthy orientation just flow into the existing transform. The clutch matters *more* here, not less: metric mapping means the operator's reachable hand volume must clutch-tile across the larger robot workspace exactly as before. The `rate`/`expo`/`mirror` control modes also carry over — with metric input, `mirror` (direct 1:1) finally becomes genuinely usable.
 
+### Hardware, sync, and calibration specifics
+
+The decisions that aren't obvious from "add a second camera":
+
+- **Two cameras, our own triangulation — no stereo model.** MediaPipe is monocular; we
+  run it per view and triangulate the 21 (trivially-corresponded) landmarks ourselves
+  via linear DLT (`cv2.triangulatePoints`). **Linear DLT is enough** — no bundle
+  adjustment / iterative refinement unless a measured error demands it. The failure mode
+  here is gold-plating the CV, not under-building it.
+- **Matched pair, rigidly co-mounted.** Cameras need not be identical for the math
+  (triangulation uses each camera's own intrinsics + the extrinsics), but a matched pair
+  on one rigid bar is the low-friction path for two reasons: (1) accuracy degrades to the
+  *weaker* camera, and (2) — more importantly — **synchronization dominates.** The hand
+  moves, so the two frames must be captured near-simultaneously or we triangulate two
+  different poses. Best-effort software sync (timestamp both grabs, reject pairs whose
+  skew exceeds a threshold) is sufficient given teleop is approximate; hardware sync is
+  overkill. Rolling-shutter mismatch between unmatched cameras is the nastiest case.
+- **Calibration is two separate things, don't conflate them.** *Camera calibration*
+  (new, LAB-54): per-camera intrinsics + lens distortion, then stereo extrinsics —
+  **ChArUco over a plain checkerboard** (robust to the partial/occluded board views you
+  get with two cameras at an angle) → `cv2.stereoCalibrate` / `cv2.stereoRectify` → P1/P2,
+  persisted once; valid until the rig is physically disturbed. *Workspace calibration*
+  (already shipped, `WorkspaceCalibration`): camera-rig→robot mapping; unchanged in shape,
+  but its scale knob becomes a true cm→robot unit conversion instead of a proxy fudge.
+- **Baseline/geometry is the real accuracy knob.** Too-small baseline → poor depth
+  resolution; too-wide → less view overlap and MediaPipe may lose the hand in one view.
+  Leave this tunable.
+- **Single hand only** (`max_num_hands=1`). Two detected hands, or left/right handedness
+  flipping *between* views, silently breaks landmark correspondence.
+- **Degrade to mono, don't freeze.** Hand missing/low-confidence in *either* view → that
+  tick is `present=False` (the clutch + one-euro filter already absorb gaps). If a camera
+  is absent/unplugged, fall back to the shipped monocular path — the `HandReading`
+  contract is identical, so nothing downstream knows.
+
 ## Build order (the stereo issues)
 
 Three issues, mirroring the sensor/strategy split, sequenced:
