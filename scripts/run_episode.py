@@ -124,6 +124,14 @@ def main() -> int:
         "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
         "Use this to rule the watchdog in/out while debugging.",
     )
+    p.add_argument(
+        "--recenter",
+        action="store_true",
+        help="Enable the open-palm-held-still recenter gesture (--input vision). Off by "
+        "default: in 'mirror' mode the recenter pose (open palm square to the camera) is "
+        "the normal driving pose, so it collides — holding steady would freeze the arm. "
+        "The lift-out-of-frame clutch already covers re-anchoring.",
+    )
     args = p.parse_args()
 
     if args.input == "vision" and args.headless:
@@ -196,11 +204,12 @@ def main() -> int:
             gain=args.gain,
             mode=args.control_mode,
             track_orientation=True,  # the stereo payoff: trustworthy 6-DoF mirroring
-            recenter=False,  # hold an open palm still (3 s) to set a new neutral
+            recenter=args.recenter,  # opt-in: collides with mirror's neutral pose (see --recenter)
         )
         print(
             "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). "
-            "Lift your hand out of frame to clutch, or hold an open palm still to recenter."
+            "Lift your hand out of frame to clutch."
+            + (" Hold an open palm still to recenter." if args.recenter else "")
         )
     else:
         target_pose = np.concatenate([target_position, home_quat])

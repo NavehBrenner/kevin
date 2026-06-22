@@ -84,9 +84,6 @@ def run_episode(
     steps = 0
     for step_index in range(max_steps):
         base_command = input_strategy.get_command(observation)
-        print("current ee:", base_command.target_position)
-        print("command ee:", observation.ee_pose)
-
         delta = assist.get_delta(observation, base_command)
         command = apply_delta(base_command, delta)
         stop = False
@@ -98,7 +95,6 @@ def run_episode(
         steps += 1
         if render:
             time.sleep(SIM_DT)
-            # time.sleep(0.2)
         if stop:
             break
 

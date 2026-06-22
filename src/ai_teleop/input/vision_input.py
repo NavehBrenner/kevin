@@ -323,7 +323,6 @@ class VisionInput:
             )
 
         reading = self._source.read()
-        print("Reading from input strat got: ", reading)
 
         # Drop-out handling, debounced. Stereo triangulation blinks out whenever the
         # hand is briefly low-confidence in either view; without a grace window every
