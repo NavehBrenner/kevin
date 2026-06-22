@@ -81,8 +81,9 @@ git config core.hooksPath .githooks
 - **pre-push** — blocks the push unless `mypy` passes.
 
 CI (`.github/workflows/ci.yml`) gates every **PR into `master`**: it installs
-`.[dev,scenegen,ml]` (the `ml` extra brings `torch`, which the M5 dataset-loader
-tests import) and must pass `mypy` and `pytest`. The hooks run the same
+all extras via `uv sync --all-extras` (which includes the `ml` extra bringing
+`torch`, used by the M5 dataset-loader tests) and must pass `mypy` and
+`pytest`. The hooks run the same
 tools via `uv run` (mypy as `uv run python -m mypy`, since the relocated
 `.venv` has stale console-script shebangs).
 
