@@ -18,7 +18,7 @@ Each run writes a self-documenting folder under ``--runs-root`` (default
 results), ``history.json``, and ``history.png`` — so runs can be monitored and
 compared without re-reading this code. See ``policy.run_artifacts``.
 
-Run from the ``code/`` directory::
+Run from the ``kevin/`` directory::
 
     uv run python scripts/train_policy.py data/dataset_1 --epochs 40
     uv run python scripts/train_policy.py data/dataset_1 --name ft_baseline --hidden-size 256

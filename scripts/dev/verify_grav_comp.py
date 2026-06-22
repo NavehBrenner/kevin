@@ -4,7 +4,7 @@ Runs 500 settle steps under each compensation scheme and reports how far each
 joint drifts from the home keyframe. The fix should shrink joint2/joint4 drift
 by ~an order of magnitude.
 
-Run from code/:
+Run from kevin/:
     .venv/bin/python scripts/dev/verify_grav_comp.py
 """
 

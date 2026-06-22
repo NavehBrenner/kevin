@@ -6,7 +6,7 @@ door (also reachable as `kvn episode`). It builds the concrete no-assist stack
 (scene + controller + scripted human aimed at the trial's target hole +
 NoAssist) and reports a one-line summary.
 
-Run from the `code/` directory:
+Run from the `kevin/` directory:
 
     uv run python scripts/run_episode.py                 # interactive viewer
     uv run python scripts/run_episode.py --headless      # CI / batch

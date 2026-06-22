@@ -9,7 +9,7 @@ tau = J^T F. We test two things at the home pose:
   2. A sideways (TCP +x) force loads a *different* joint pattern -- showing
      the mapping is direction-dependent, not a fixed "these joints are heavy".
 
-Run from code/:
+Run from kevin/:
     .venv/bin/python scripts/dev/demo_jacobian_transpose.py
 """
 
