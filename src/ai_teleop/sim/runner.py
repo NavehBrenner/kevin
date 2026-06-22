@@ -25,7 +25,10 @@ from dataclasses import dataclass
 
 from ai_teleop.common.observation import Observation
 from ai_teleop.control import LockStatus
+from ai_teleop.control.backbone import Controller
 from ai_teleop.domain import apply_delta
+from ai_teleop.domain.interfaces import AssistProvider, InputStrategy
+from ai_teleop.sim.scene import SimEnv
 
 # Sim runs at 500 Hz (dt=2 ms in the MJCF). One control tick == one sim step.
 SIM_DT = 0.002
@@ -42,10 +45,10 @@ class EpisodeResult:
 
 
 def run_episode(
-    environment,
-    controller,
-    input_strategy,
-    assist,
+    environment: SimEnv,
+    controller: Controller,
+    input_strategy: InputStrategy,
+    assist: AssistProvider,
     *,
     max_steps: int,
     render: bool = False,
@@ -81,6 +84,9 @@ def run_episode(
     steps = 0
     for step_index in range(max_steps):
         base_command = input_strategy.get_command(observation)
+        print("current ee:", base_command.target_position)
+        print("command ee:", observation.ee_pose)
+
         delta = assist.get_delta(observation, base_command)
         command = apply_delta(base_command, delta)
         stop = False
@@ -92,6 +98,7 @@ def run_episode(
         steps += 1
         if render:
             time.sleep(SIM_DT)
+            # time.sleep(0.2)
         if stop:
             break
 

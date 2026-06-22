@@ -194,28 +194,27 @@ contribution of vision; runs in real time within the control budget.
 **Goal**: let a real human drive the arm — for the demo and qualitative validation.
 
 **In scope**:
-- `VisionInput` strategy via MediaPipe Hands (webcam → hand pose → EE command).
-- Workspace calibration (camera-space → robot-space), clutching, gain, jitter filter
-  (one-euro), drop-out handling.
+- `VisionInput` strategy driven by **two-webcam stereo** hand tracking (the standalone
+  [stereohand](https://github.com/NavehBrenner/stereohand) package → metric 3D hand pose →
+  EE command).
+- Workspace calibration (metric camera-rig → robot-space), clutching + open-palm recenter,
+  gain, jitter filter (one-euro), drop-out handling, 6-DoF mirroring.
 - `KeyboardInput` fallback strategy.
-- All three input strategies interchangeable behind the common interface.
+- All input strategies interchangeable behind the common interface.
 
-**Stereo upgrade (post-baseline, gated on a 2nd camera)**: the monocular sensor
-fakes depth (a hand-size proxy) and can't trust orientation (6-DoF off by default).
-A second calibrated camera triangulates the 21 landmarks to a *metric* 3D hand pose
-→ real depth + observable orientation → true 6-DoF mirroring. Keeps the `HandReading`
-contract and the strategy layer unchanged; touches only `hand_tracker.py`. Full
-rationale and build order in [`design/teleop-input.md`](design/teleop-input.md).
+**History**: a monocular MediaPipe baseline (LAB-50/51) shipped first, then was **removed**
+(LAB-75) in favour of stereo-only — a second calibrated camera triangulates the 21 landmarks
+to *metric* 3D (real depth + observable orientation → true 6-DoF mirroring), which the
+single-camera path could only fake. Keeps the `HandReading` contract and the strategy layer
+unchanged. Full rationale in [`design/teleop-input.md`](design/teleop-input.md).
 
 **Deferred**: MediaPipe Holistic / full-arm tracking (stretch).
 
-**Acceptance**: a person can drive the arm via webcam and complete assisted insertions;
-keyboard fallback works; a handful of qualitative runs are recordable. *(Baseline met
-by the monocular path, LAB-50/51, PR #27; the stereo upgrade is an enhancement, not a
-gate.)*
+**Acceptance**: a person can drive the arm via the stereo rig and complete assisted insertions;
+keyboard fallback works; a handful of qualitative runs are recordable.
 
 **Depends on**: M3 (input interface), works with any assist mode. **Component**: 5.
-**Rough effort**: 12–16 h (monocular baseline) + ~10–14 h for the stereo upgrade.
+**Rough effort**: 12–16 h (baseline) + ~10–14 h for the stereo work.
 *(Lower priority than M5–M7 for the core results; needed for the final demo video.)*
 
 ---

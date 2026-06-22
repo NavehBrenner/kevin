@@ -78,18 +78,10 @@ def test_open_close_scalar_distinguishes_open_and_fist():
     assert fist_reading.open_close < 0.2
 
 
-def test_position_xy_is_wrist_and_z_is_depth_proxy():
+def test_position_is_real_metric_wrist_xyz():
     points = _flat_open_hand()
-    points[0] = [0.42, 0.61, -0.1]  # move the wrist
-    reading = reading_from_landmarks(points)
-    assert np.allclose(reading.position[:2], [0.42, 0.61])  # x,y = wrist image coords
-    assert reading.position[2] > 0.0  # z = apparent-hand-size depth proxy, not raw landmark z
-
-
-def test_depth_proxy_grows_as_hand_appears_larger():
-    small = _flat_open_hand()
-    big = small * 2.0  # all landmarks twice as far apart ⇒ hand looks closer
-    assert reading_from_landmarks(big).position[2] > reading_from_landmarks(small).position[2]
+    points[0] = [0.10, 0.20, 0.50]  # metric wrist xyz (metres in the rig frame)
+    assert np.allclose(reading_from_landmarks(points).position, [0.10, 0.20, 0.50])
 
 
 def test_reading_orientation_is_unit_quaternion():
@@ -107,6 +99,104 @@ def test_forwardness_positive_when_fingertips_angle_toward_camera():
     for tip in (8, 12, 16, 20):
         points[tip, 2] = -0.2  # tips toward camera (negative MediaPipe z)
     assert reading_from_landmarks(points).forwardness > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Stereo upgrade — metric landmarks → reading
+# ---------------------------------------------------------------------------
+
+
+def test_scale_invariant_signals_present():
+    """Grip + orientation are ratios/directions computed off the metric landmarks."""
+    assert reading_from_landmarks(_flat_open_hand()).open_close > 0.8
+    assert reading_from_landmarks(_closed_fist()).open_close < 0.2
+    quat = reading_from_landmarks(_flat_open_hand()).orientation
+    assert np.isclose(np.linalg.norm(quat), 1.0)
+
+
+def test_metric_calibration_maps_camera_depth_to_robot_forward():
+    calib = WorkspaceCalibration()  # the (now sole) metric default
+    toward_camera = calib.map_delta(np.array([0.0, 0.0, -0.1]))  # metric depth shrinks
+    away_from_camera = calib.map_delta(np.array([0.0, 0.0, 0.1]))
+    assert toward_camera[0] > 0.0  # hand toward camera ⇒ robot forward
+    assert away_from_camera[0] < 0.0  # hand away ⇒ robot back
+
+
+# ---------------------------------------------------------------------------
+# Recenter gesture (open palm held still → re-anchor)
+# ---------------------------------------------------------------------------
+
+
+def test_open_palm_facing_sets_recenter_pose():
+    assert reading_from_landmarks(_flat_open_hand()).recenter_pose
+    assert not reading_from_landmarks(_closed_fist()).recenter_pose
+
+
+def test_recenter_reanchors_to_actual_ee_after_hold():
+    """Holding the open-palm pose still past recenter_hold_s remaps the current hand
+    to the arm's actual pose, so motion is measured from the new neutral."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    p0 = np.zeros(3)
+    p1 = np.array([0.1, 0.05, 0.0])
+    engage = HandReading(p0, quat, 0.0, present=True)
+    hold = HandReading(p1, quat, 1.0, present=True, recenter_pose=True)
+    plain = HandReading(p1, quat, 1.0, present=True)  # same spot, but not the gesture
+    readings = [engage, hold, hold, hold, hold, plain]
+    times = [0.0, 0.5, 1.5, 2.5, 3.5, 4.0]  # hold spans >3 s, then a plain read
+
+    def _run(recenter: bool) -> np.ndarray:
+        vision = VisionInput(
+            _FakeSource(readings), mode="mirror", recenter=recenter, recenter_hold_s=3.0
+        )
+        cmd = None
+        for t in times:
+            cmd = vision.get_command(_observation(sim_time=t))
+        assert cmd is not None
+        return cmd.target_position
+
+    ee = _observation().ee_pose[:3]
+    # With recenter: the final plain read sits at the new anchor ⇒ command holds at EE.
+    assert np.allclose(_run(recenter=True), ee, atol=1e-6)
+    # Without it: the hand at p1 still maps from the original anchor ⇒ target ≠ EE.
+    assert not np.allclose(_run(recenter=False), ee, atol=1e-3)
+
+
+def test_recenter_holds_grip_during_the_open_palm_hold():
+    """The recenter pose is an open palm; it must not be read as 'release grip'."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    engage = HandReading(np.zeros(3), quat, 0.5, present=True)  # half-open ⇒ neutral grip (0 N)
+    hold = HandReading(
+        np.zeros(3), quat, 1.0, present=True, recenter_pose=True
+    )  # open ⇒ would release
+    vision = VisionInput(_FakeSource([engage, hold]), mode="mirror", recenter=True)
+    first = vision.get_command(_observation(sim_time=0.0))
+    assert first.delta_grip_force == 0.0  # neutral seed
+    cmd = vision.get_command(_observation(sim_time=0.1))
+    assert cmd.delta_grip_force == 0.0  # frozen during the hold, not driven to -grip_force
+
+
+def test_recenter_locks_arm_after_lock_delay():
+    """Once the calibration pose is held past recenter_lock_s, the arm freezes — it
+    must not drift toward the posed hand while the recenter countdown runs."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    pr = np.array([0.10, 0.0, 0.0])
+    drifted = np.array([0.115, 0.0, 0.0])  # 1.5 cm < move_tol ⇒ hold timer not reset
+    hold = HandReading(pr, quat, 1.0, present=True, recenter_pose=True)
+    hold_drifted = HandReading(drifted, quat, 1.0, present=True, recenter_pose=True)
+    vision = VisionInput(
+        _FakeSource([hold, hold, hold_drifted]),
+        mode="mirror",
+        recenter=True,
+        recenter_lock_s=0.5,
+        recenter_hold_s=3.0,
+        recenter_move_tol=0.02,
+        min_cutoff=1e6,
+    )
+    ee = _observation().ee_pose[:3]
+    vision.get_command(_observation(0.0))  # engage at pr, hold starts
+    vision.get_command(_observation(0.6))  # held 0.6 s > lock ⇒ arm locks
+    cmd = vision.get_command(_observation(0.7))  # hand drifted, but locked ⇒ frozen at EE
+    assert np.allclose(cmd.target_position, ee, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -319,14 +409,60 @@ def test_dropout_freezes_at_current_ee_pose_then_reengage_no_jump():
 
     vision.get_command(_observation(0.00))  # engage
     vision.get_command(_observation(0.02))  # drive the arm
-    held = vision.get_command(_observation(0.04))  # drop-out ⇒ freeze at current EE pose
+    # Sustained drop-out (past the default 0.2 s grace) ⇒ clutch releases, freeze at EE.
+    held = vision.get_command(_observation(0.30))
     assert np.allclose(
         held.target_position, _observation().ee_pose[:3]
     )  # frozen at the arm, not target
     # re-entry far away re-anchors from the frozen pose ⇒ no jump
-    vision.get_command(_observation(0.06))  # re-engage tick
-    settled = vision.get_command(_observation(0.08))
+    vision.get_command(_observation(0.32))  # re-engage tick
+    settled = vision.get_command(_observation(0.34))
     assert abs(settled.target_position[0] - held.target_position[0]) < 0.05
+
+
+def test_brief_dropout_within_grace_keeps_anchor():
+    """A single-frame stereo miss must NOT re-anchor — motion resumes from the same
+    reference, so sustained hand motion survives the constant stereo blips."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    p0 = np.zeros(3)
+    p1 = np.array([0.10, 0.0, 0.0])  # hand moved 10 cm from the engage anchor
+    present0 = HandReading(p0, quat, 0.5, present=True)
+    present1 = HandReading(p1, quat, 0.5, present=True)
+    absent = HandReading(np.zeros(3), quat, 0.0, present=False)
+    vision = VisionInput(
+        _FakeSource([present0, present1, absent, present1]),
+        mode="mirror",
+        dropout_grace_s=0.2,
+        min_cutoff=1e6,  # defeat the one-euro filter for an exact comparison
+    )
+    ee = _observation().ee_pose[:3]
+    vision.get_command(_observation(0.00))  # engage, anchor = p0
+    moved = vision.get_command(_observation(0.05)).target_position  # tracking p1
+    vision.get_command(_observation(0.10))  # one missed frame, within grace ⇒ hold
+    after = vision.get_command(_observation(0.15)).target_position  # reappear at p1
+    assert float(np.linalg.norm(moved - ee)) > 0.05  # it really did move off home
+    assert np.allclose(after, moved, atol=1e-6)  # same anchor ⇒ no re-anchor snap-back
+
+
+def test_sustained_dropout_past_grace_reanchors():
+    """Beyond the grace window the clutch releases; reappearing re-anchors (snap to EE)."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    p1 = np.array([0.10, 0.0, 0.0])
+    present0 = HandReading(np.zeros(3), quat, 0.5, present=True)
+    present1 = HandReading(p1, quat, 0.5, present=True)
+    absent = HandReading(np.zeros(3), quat, 0.0, present=False)
+    vision = VisionInput(
+        _FakeSource([present0, present1, absent, present1]),
+        mode="mirror",
+        dropout_grace_s=0.05,
+        min_cutoff=1e6,
+    )
+    ee = _observation().ee_pose[:3]
+    vision.get_command(_observation(0.00))  # engage
+    vision.get_command(_observation(0.10))  # tracking p1
+    vision.get_command(_observation(0.30))  # absent, 0.20 s > grace ⇒ release
+    after = vision.get_command(_observation(0.35)).target_position  # reappear ⇒ re-anchor
+    assert np.allclose(after, ee, atol=1e-6)  # re-anchored: hand maps to current EE
 
 
 def test_grip_open_and_fist_are_opposite_and_open_releases():

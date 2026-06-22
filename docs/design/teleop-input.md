@@ -1,4 +1,10 @@
-# Teleop Input — Hand-Tracking Design (monocular baseline → stereo upgrade)
+# Teleop Input — Stereo Hand-Tracking Design
+
+> **History (2026-06-22, LAB-75):** a monocular MediaPipe baseline (LAB-50/51) shipped
+> first and was then **removed** in favour of stereo-only input — the project drives the
+> arm exclusively from the two-webcam [stereohand](https://github.com/NavehBrenner/stereohand)
+> sensor. The monocular rationale is kept below only to explain *why* stereo was worth it;
+> there is no longer a single-camera code path or fallback.
 
 Companion docs: [problem-structure.md](problem-structure.md) · [evaluation-protocol.md](evaluation-protocol.md). The authoritative high-level scope is [`../../project-scope.md`](../../project-scope.md); milestone build-order lives in [`../milestones.md`](../milestones.md) (M8). This file pins down *how the human's hand becomes an EE command*, and locks the next step: a second camera for metric, stereo-triangulated hand pose.
 
@@ -13,9 +19,9 @@ Two layers behind the `InputStrategy` seam, and the upgrade touches only the low
 
 The seam means the input source is swappable at runtime (`--input {scripted,vision}`) with zero up/downstream change. The stereo upgrade keeps the `HandReading` contract and the strategy intact — it only changes *how well* the reading's position and orientation are estimated.
 
-## Monocular baseline (shipped — LAB-50 / LAB-51, PR #27)
+## Why a single camera wasn't enough (the monocular baseline, now removed)
 
-One webcam. Works, drives the arm, good enough for the demo. Two axes are weak by construction:
+The first iteration used one webcam. It drove the arm, but two axes are weak by construction — which is exactly what stereo fixes:
 
 - **Depth is a proxy, not metric.** A single camera can't triangulate distance, so `HandReading.position[2]` is an *apparent-hand-size* proxy (wrist→middle-MCP pixel distance — larger ⇒ closer). It gives a usable forward/back axis but it is monotonic-only, not metric: it drifts with hand pose (a tilted hand "shrinks"), and it can't be scaled into real centimeters. MediaPipe's own landmark `z` is worse, so the proxy is the better of two bad options.
 - **Orientation is jittery, so 6-DoF is off by default.** The hand-frame quaternion is estimated from a few palm landmarks in a single view; out-of-plane rotation is exactly where a monocular estimate is least observable. `VisionInput(track_orientation=False)` is the default because feeding that signal in tends to fight the controller. The peg being round (roll irrelevant) makes this acceptable for the baseline, but it means the operator can't actually *orient* the peg by hand.
@@ -66,10 +72,10 @@ The decisions that aren't obvious from "add a second camera":
   Leave this tunable.
 - **Single hand only** (`max_num_hands=1`). Two detected hands, or left/right handedness
   flipping *between* views, silently breaks landmark correspondence.
-- **Degrade to mono, don't freeze.** Hand missing/low-confidence in *either* view → that
-  tick is `present=False` (the clutch + one-euro filter already absorb gaps). If a camera
-  is absent/unplugged, fall back to the shipped monocular path — the `HandReading`
-  contract is identical, so nothing downstream knows.
+- **Drop out, don't freeze.** Hand missing/low-confidence in *either* view → that tick is
+  `present=False` (the clutch + one-euro filter already absorb gaps). There is no monocular
+  fallback any more: if a camera is unplugged, stereo simply reports drop-out and the arm
+  holds (clutched) until both views see the hand again.
 
 ## Build order (the stereo issues)
 
@@ -79,10 +85,27 @@ Three issues, mirroring the sensor/strategy split, sequenced:
 2. **Stereo hand triangulation → metric `HandReading`.** Run MediaPipe on both rectified views; match the 21 landmarks (same indices, trivially corresponded); triangulate to metric 3D; fit the palm frame. Replaces the size-proxy depth and the monocular orientation estimate inside `hand_tracker.py`, behind the same `HandReading` type. Drop-out = hand missing in *either* view.
 3. **Enable 6-DoF mirroring in `VisionInput`.** With metric position and a trustworthy orientation, flip `track_orientation` on by default, re-tune `WorkspaceCalibration` scale to the now-metric input, and confirm orientation mirroring doesn't fight the controller. This is the issue that delivers the "good hand mirroring" payoff.
 
-Each keeps the deterministic core unit-tested (triangulation math on synthetic landmark pairs; palm-frame fit on a known pose) the same way the monocular path is — the live two-camera path is manual.
+The deterministic core stays unit-tested (landmark→reading math; palm-frame fit on a known pose); the live two-camera path is manual.
 
-## Status / placement
+## Status / placement (stereo-only, LAB-74 / LAB-75)
 
-The monocular baseline already satisfies M8's acceptance, so the stereo work is a **post-baseline depth-accuracy upgrade** within M8, not on the critical path to a passing project (it can slip without endangering the core contribution). It is gated on actually acquiring the second camera. Hardware-arrival → execute issues 1→3 in order.
+Stereo capture + calibration + triangulation ship in the standalone
+[stereohand](https://github.com/NavehBrenner/stereohand) package (metric `(21, 3)` landmarks
+out of `StereoHandTracker`). kevin consumes them via:
 
-> Provenance: design locked 2026-06-20 from direct observation of the monocular baseline's behaviour (depth-proxy drift and orientation jitter in `hand_tracker.py` / `vision_input.py`), not from a `raw/` source.
+- `StereoHandSource` in `hand_tracker.py` — adapts `stereohand.StereoHandTracker` to the
+  `read() -> HandReading` seam, running `reading_from_landmarks` on the triangulated metric
+  landmarks. The sole live sensor (the monocular `MediaPipeHandTracker` was removed).
+- `WorkspaceCalibration` (the now-default, metric) — near-1:1 metre→metre scale, depth→world-x
+  remap, forward axis sign-flipped (metric depth grows *away* from the camera). The CLI
+  enables `track_orientation=True` for the 6-DoF payoff and `recenter=True` for the
+  open-palm re-anchor gesture.
+- `kvn episode --input vision --stereo-calib <path> --left <L> --right <R>` — `--stereo-calib`
+  is required; there is no single-camera mode.
+
+Packaging note: the `stereo-input` extra pulls stereohand, which brings a modern MediaPipe
+(Tasks API) + opencv-contrib transitively — the only vision stack now (the old `vision-input`
+extra and its legacy `mediapipe==0.10.21` pin are gone). The live two-camera path is manual;
+the deterministic core (metric landmark→reading, calibration mapping) is unit-tested.
+
+> Provenance: design locked 2026-06-20 from direct observation of the monocular baseline's behaviour (depth-proxy drift and orientation jitter), then the baseline was removed 2026-06-22 (LAB-75) in favour of stereo-only. Not from a `raw/` source.

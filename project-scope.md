@@ -20,7 +20,7 @@ A single integrated MuJoCo simulation in which:
 
 - A Franka Emika Panda manipulator attempts to insert a peg into a fixtured hole on a tabletop.
 - The peg's coarse trajectory is driven by a human-issued command stream.
-- **Three input modalities** are interchangeable behind a common interface: webcam (MediaPipe Hands), keyboard fallback, and a scripted "noisy human" for repeatable benchmarking.
+- **Three input modalities** are interchangeable behind a common interface: stereo webcam (two-camera metric hand tracking via the [stereohand](https://github.com/NavehBrenner/stereohand) package, MediaPipe under the hood), keyboard fallback, and a scripted "noisy human" for repeatable benchmarking.
 - **Two assistance modes** are interchangeable behind a common interface: no assistance (Δ=0) and the learned residual policy. Both run on the always-on impedance backbone + Δ-clamp / force cap.
 - The learned residual policy is **vision-conditioned**: it reads a wrist-mounted RGB camera, plus wrist force/torque, plus proprioception, and outputs bounded pose/grip corrections. It is trained offline via behavioral cloning from a scripted privileged-info expert.
 
@@ -309,7 +309,7 @@ Components 4 and 5 have since been **designed in detail** — see the design doc
 ### Component 5 — Input strategies
 
 - **Settled**: three swappable strategies (vision, keyboard, scripted noisy-human) behind a common interface; vision uses pretrained MediaPipe Hands; scripted noisy-human noise model is **structured low-frequency biased noise** (per-episode bias + correlated drift), per [`docs/design/human-generation.md`](docs/design/human-generation.md).
-- **Still open**: workspace calibration for MediaPipe vision input (camera-space → robot-workspace mapping, clutching, gain tuning, jitter filter design), noise magnitudes (deferred to post-baseline calibration), keyboard control bindings.
+- **Still open**: live stereo workspace-calibration tuning (metric scale, axis signs, gain — rig-dependent knobs in `WorkspaceCalibration`), noise magnitudes (deferred to post-baseline calibration), keyboard control bindings. *(The mapping/clutch/jitter-filter design itself is settled and metric.)*
 
 ### Component 6 — Evaluation harness
 
@@ -350,7 +350,8 @@ By Milestone 4 we have: the human-only baseline mode (zero correction), the assi
    These stress the vision policy and produce strong demo-reel material. Built on top of the same MuJoCo scene — just shaders + lighting parameters.
 5. **Brief RL fine-tuning comparison** of the residual policy on top of the BC-trained weights — only as a final tail experiment, never the centerpiece.
 6. **MediaPipe Holistic** in place of MediaPipe Hands — adds full-arm pose tracking for richer teleop input.
-7. **Stereo hand tracking** — a second calibrated webcam triangulates the MediaPipe landmarks to a *metric* 3D hand pose, replacing the monocular depth proxy and unlocking true 6-DoF hand mirroring (see [`docs/design/teleop-input.md`](docs/design/teleop-input.md)).
+
+*(Formerly listed here: stereo hand tracking — now **shipped** as the project's sole vision input, replacing the monocular baseline. See [`docs/design/teleop-input.md`](docs/design/teleop-input.md).)*
 
 ## Key risks (named, mitigation deferred to implementation plan)
 
