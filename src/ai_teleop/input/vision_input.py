@@ -245,6 +245,10 @@ class VisionInput:
     recenter_move_tol:
         How far (m) the hand may drift during the hold and still count as "still";
         exceeding it restarts the timer.
+    recenter_pose_grace_s:
+        Seconds the noisy ``recenter_pose`` flag may flicker off mid-hold without
+        restarting the countdown (a debounce mirroring stereohand's renderer); only a
+        sustained loss of the pose releases the hold.
     min_cutoff, beta:
         One-euro filter parameters for the mapped position. Tuned responsive
         (low lag) so the arm tracks the hand rather than lagging behind it.
@@ -271,6 +275,7 @@ class VisionInput:
         recenter_hold_s: float = 3.0,
         recenter_lock_s: float = 0.5,
         recenter_move_tol: float = 0.02,
+        recenter_pose_grace_s: float = 0.15,
         min_cutoff: float = 2.0,
         beta: float = 1.5,
     ) -> None:
@@ -297,10 +302,12 @@ class VisionInput:
         self._recenter_hold_s = recenter_hold_s
         self._recenter_lock_s = recenter_lock_s
         self._recenter_move_tol = recenter_move_tol
+        self._recenter_pose_grace_s = recenter_pose_grace_s
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)
 
         self._recenter_hold_start: float | None = None  # sim_time the open-palm hold began
         self._recenter_anchor: np.ndarray | None = None  # hand position at hold start
+        self._last_recenter_pose_time: float | None = None  # last tick the pose was detected
         self._recentered = False  # latched after a hold fires, until the pose releases
         self._in_recenter_hold = False  # pose held this tick ⇒ freeze grip
         self._recenter_locked = False  # pose held > recenter_lock_s ⇒ freeze the arm
@@ -403,6 +410,18 @@ class VisionInput:
         """
         assert self._held is not None
         if not reading.recenter_pose:
+            # Debounce like stereohand's renderer: ``recenter_pose`` comes from a noisy
+            # per-frame landmark test, so a single flicker shouldn't restart a hold in
+            # progress. Within the grace window, hold all recenter state as-is; only a
+            # sustained loss of the pose actually releases.
+            within_grace = (
+                self._recenter_hold_start is not None
+                and self._last_recenter_pose_time is not None
+                and observation.sim_time - self._last_recenter_pose_time
+                <= self._recenter_pose_grace_s
+            )
+            if within_grace:
+                return
             self._recenter_hold_start = None
             self._recenter_anchor = None
             self._recentered = False
@@ -410,6 +429,7 @@ class VisionInput:
             self._recenter_locked = False
             return
 
+        self._last_recenter_pose_time = observation.sim_time
         self._in_recenter_hold = True
         if self._recentered:
             return  # already fired for this hold; wait for the pose to release

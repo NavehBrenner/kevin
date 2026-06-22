@@ -161,6 +161,41 @@ def test_recenter_reanchors_to_actual_ee_after_hold():
     assert not np.allclose(_run(recenter=False), ee, atol=1e-3)
 
 
+def test_recenter_survives_single_frame_pose_flicker():
+    """A ``recenter_pose=False`` blip within the grace window (noisy landmark test) must
+    not restart the hold; a blip past the window must. Detected via 'final read holds at
+    EE' ⟺ the recenter fired (re-anchored hand→actual EE)."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    p1 = np.array([0.1, 0.05, 0.0])
+    engage = HandReading(np.zeros(3), quat, 0.0, present=True)
+    hold = HandReading(p1, quat, 1.0, present=True, recenter_pose=True)
+    blip = HandReading(p1, quat, 1.0, present=True)  # same spot, pose flag dropped
+    ee = _observation().ee_pose[:3]
+
+    def _run(steps: list[tuple[float, HandReading]]) -> np.ndarray:
+        vision = VisionInput(
+            _FakeSource([r for _, r in steps]),
+            mode="mirror",
+            recenter=True,
+            recenter_hold_s=3.0,
+            recenter_pose_grace_s=0.15,
+        )
+        cmd = None
+        for t, _ in steps:
+            cmd = vision.get_command(_observation(sim_time=t))
+        assert cmd is not None
+        return cmd.target_position
+
+    # Blip 0.1 s after the last pose frame (< grace) ⇒ countdown survives ⇒ fires at 3 s.
+    within = _run([(0.0, engage), (0.5, hold), (0.6, blip), (0.7, hold), (3.6, hold), (4.0, blip)])
+    assert np.allclose(within, ee, atol=1e-6)
+    # Blip 0.21 s after the last pose frame (> grace) ⇒ hold resets ⇒ never reaches 3 s.
+    sustained = _run(
+        [(0.0, engage), (0.5, hold), (0.71, blip), (0.8, hold), (3.6, hold), (4.0, blip)]
+    )
+    assert not np.allclose(sustained, ee, atol=1e-3)
+
+
 def test_recenter_holds_grip_during_the_open_palm_hold():
     """The recenter pose is an open palm; it must not be read as 'release grip'."""
     quat = np.array([1.0, 0.0, 0.0, 0.0])
