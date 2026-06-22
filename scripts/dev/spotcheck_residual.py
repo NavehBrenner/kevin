@@ -8,7 +8,7 @@ success rates, so you can eyeball whether the policy beats human-only on held-ou
 seeds. This is the M5 acceptance's *qualitative* check; the rigorous paired KPI
 comparison is M6.
 
-Run from the ``code/`` directory (point it at a run folder's ``checkpoint.pt``)::
+Run from the ``kevin/`` directory (point it at a run folder's ``checkpoint.pt``)::
 
     uv run python scripts/dev/spotcheck_residual.py outputs/policy/runs/<run>/checkpoint.pt \\
         --episodes 20 --seed 99

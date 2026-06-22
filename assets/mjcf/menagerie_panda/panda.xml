@@ -278,7 +278,7 @@
     Project modification: the arm actuators are pure torque (motor) actuators,
     not the Menagerie default position-PD `general` actuators. Reason: M2 runs
     a direction-dependent Cartesian impedance controller that produces joint
-    torques directly (see code/docs/milestone-2-spec.md, Step 1). With motor
+    torques directly (see kevin/docs/milestone-2-spec.md, Step 1). With motor
     actuators, `data.ctrl[0:7]` is joint torque in N*m, clamped to the per-joint
     forcerange below (Franka datasheet values, identical to the Menagerie
     `general` class defaults).

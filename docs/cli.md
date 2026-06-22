@@ -18,7 +18,7 @@ Source: [`src/ai_teleop/cli.py`](../src/ai_teleop/cli.py).
 
 ### Recommended: one-time setup (gives you a bare `kvn`)
 
-After cloning, run the setup script once from `code/`:
+After cloning, run the setup script once from `kevin/`:
 
 ```bash
 ./scripts/setup.sh
@@ -49,7 +49,7 @@ uv run kvn sim --seed 7        # run a command
 ```
 
 > **Relocated-venv note.** A `.venv` that is moved after creation leaves
-> console-script shebangs stale (see [`code/CLAUDE.md`](../CLAUDE.md)). The setup
+> console-script shebangs stale (see [`kevin/CLAUDE.md`](../CLAUDE.md)). The setup
 > launcher avoids this by invoking the interpreter directly. If you skipped setup
 > and `uv run kvn` fails for that reason, use one of these — they don't rely on the
 > shebang:

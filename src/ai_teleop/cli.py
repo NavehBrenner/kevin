@@ -23,7 +23,7 @@ Invocation, in order of preference:
 
 The console-script form needs ``uv pip install -e .`` to have run against the
 *current* venv location (a relocated venv leaves a stale shebang — see
-``code/CLAUDE.md``); the ``poe cli`` / ``python -m`` forms sidestep that.
+``kevin/CLAUDE.md``); the ``poe cli`` / ``python -m`` forms sidestep that.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from pathlib import Path
 
 from ai_teleop.common.log import configure_logging, get_logger
 
-# src/ai_teleop/cli.py -> parents[2] is the code/ repo root.
+# src/ai_teleop/cli.py -> parents[2] is the kevin/ repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         print(_usage(), file=sys.stderr)
         return 2
 
-    # Run from the repo root: the scripts and the poe tasks both assume code/ as cwd.
+    # Run from the repo root: the scripts and the poe tasks both assume kevin/ as cwd.
     return subprocess.call(cmd, cwd=REPO_ROOT)
 
 

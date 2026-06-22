@@ -2,7 +2,7 @@
 of the milestone-2 spec and (in headless mode) emit assertions + a CSV
 trace for tuning plots.
 
-Run from the `code/` directory:
+Run from the `kevin/` directory:
 
     uv run python scripts/dev_harness_controller.py                # interactive viewer
     uv run python scripts/dev_harness_controller.py --headless     # CI / regression

@@ -10,7 +10,7 @@ At the home pose we:
      a *task* direction (DLS-solved to move TCP in +x) and measure again.
         -> TCP moves ~as commanded.
 
-Run from code/:
+Run from kevin/:
     .venv/bin/python scripts/dev/demo_null_space.py
 """
 

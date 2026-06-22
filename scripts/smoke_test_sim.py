@@ -1,6 +1,6 @@
 """M1 smoke test — load the scene, step it, save a wrist-cam PNG, open viewer.
 
-Run from the `code/` directory:
+Run from the `kevin/` directory:
 
     uv run python scripts/smoke_test_sim.py
     uv run python scripts/smoke_test_sim.py --no-viewer    # CI / headless

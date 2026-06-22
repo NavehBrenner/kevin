@@ -8,7 +8,7 @@ This script does NOT fix the smoke test. It only prints the per-joint force
 terms after settling, so we can confirm the leak and see it concentrated on the
 pitch joints (joint2, joint4, joint6).
 
-Run from code/:
+Run from kevin/:
     .venv/bin/python scripts/dev/probe_peg_bias.py
 """
 

@@ -5,7 +5,7 @@ The generation pipeline is core functionality and lives in the package
 (also reachable as `kvn gen`). See that module for the algorithm, the on-disk
 layout, and the paired human-only baseline.
 
-Run from the `code/` directory:
+Run from the `kevin/` directory:
 
     uv run python scripts/generate_dataset.py --episodes 200            # → data/dataset_0
     uv run python scripts/generate_dataset.py --episodes 200 --seed 7   # → data/dataset_7
