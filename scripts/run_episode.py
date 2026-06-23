@@ -25,10 +25,16 @@ import numpy as np
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from ai_teleop.common.log import add_logging_arguments, configure_from_args  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
-from ai_teleop.input import ScriptedNoisyHuman, VisionInput, WorkspaceCalibration  # noqa: E402
+from ai_teleop.input import (  # noqa: E402
+    ScriptedNoisyHuman,
+    VisionInput,
+    WorkspaceCalibration,
+    calibrate_neutral,
+)
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
@@ -132,15 +138,9 @@ def main() -> int:
         "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
         "Use this to rule the watchdog in/out while debugging.",
     )
-    p.add_argument(
-        "--recenter",
-        action="store_true",
-        help="Enable the open-palm-held-still recenter gesture (--input vision). Off by "
-        "default: in 'mirror' mode the recenter pose (open palm square to the camera) is "
-        "the normal driving pose, so it collides — holding steady would freeze the arm. "
-        "The lift-out-of-frame clutch already covers re-anchoring.",
-    )
+    add_logging_arguments(p)
     args = p.parse_args()
+    configure_from_args(args)
 
     if args.input == "vision" and args.headless:
         print("FATAL: --input vision needs the viewer (drop --headless).", file=sys.stderr)
@@ -207,18 +207,28 @@ def main() -> int:
             show_window=not args.no_cam_window,
             max_fps=args.max_fps if args.max_fps is not None else "cam",
         )
+        # Startup centering: hold an open palm still to set neutral *before* the sim runs, so
+        # the arm holds home (no command piped) until a clean anchor — position and
+        # orientation — exists. Ctrl-C here exits without touching the arm.
+        try:
+            neutral = calibrate_neutral(tracker, on_tick=env.sync_viewer)
+        except KeyboardInterrupt:
+            print("\nInterrupted during centering.")
+            tracker.close()
+            env.close()
+            return 0
+        tracker.set_renderer_origin(neutral.hand_position)  # center the 3D view on neutral
         input_strategy = VisionInput(
             tracker,
             calibration=WorkspaceCalibration(),
             gain=args.gain,
             mode=args.control_mode,
             track_orientation=True,  # the stereo payoff: trustworthy 6-DoF mirroring
-            recenter=args.recenter,  # opt-in: collides with mirror's neutral pose (see --recenter)
+            initial_anchor=neutral,
         )
         print(
             "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). "
             "Lift your hand out of frame to clutch."
-            + (" Hold an open palm still to recenter." if args.recenter else "")
         )
     else:
         target_pose = np.concatenate([target_position, home_quat])

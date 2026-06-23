@@ -11,14 +11,21 @@ To be populated as needed across Milestones 3-5.
 """
 
 from ai_teleop.input.scripted_noisy_human import ScriptedNoisyHuman, bore_aligned_grasp
-from ai_teleop.input.vision_input import VisionInput, WorkspaceCalibration
+from ai_teleop.input.vision_input import (
+    NeutralAnchor,
+    VisionInput,
+    WorkspaceCalibration,
+    calibrate_neutral,
+)
 
 # StereoHandSource / HandReading live in `.hand_tracker`; import them directly
 # (StereoHandSource pulls in the optional `stereo-input` extra only when constructed).
 
 __all__ = [
+    "NeutralAnchor",
     "ScriptedNoisyHuman",
     "VisionInput",
     "WorkspaceCalibration",
     "bore_aligned_grasp",
+    "calibrate_neutral",
 ]

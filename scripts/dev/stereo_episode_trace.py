@@ -78,7 +78,6 @@ def main() -> None:
         mode=args.mode,
         gain=args.gain,
         track_orientation=not args.no_orientation,
-        recenter=True,  # hold an open palm still (3 s) to re-anchor
     )
 
     ee_start: np.ndarray | None = None

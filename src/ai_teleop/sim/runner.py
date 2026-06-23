@@ -94,9 +94,7 @@ def run_episode(
     observation = environment.reset(reset_episode_index)
     sim_steps = 0
     control_ticks = 0
-    saturated_ticks = 0  # ticks where catch-up hit the cap (physics couldn't keep up)
     wall_start = time.monotonic()
-    next_log = wall_start + 1.0  # debug real-time readout cadence (render only)
     while sim_steps < max_steps:
         base_command = input_strategy.get_command(observation)
         delta = assist.get_delta(observation, base_command)
@@ -115,8 +113,6 @@ def run_episode(
         if render:
             behind = round((time.monotonic() - wall_start) / SIM_DT) - sim_steps
             n_substeps = min(max(behind, 1), _MAX_CATCHUP_STEPS)
-            if behind > _MAX_CATCHUP_STEPS:
-                saturated_ticks += 1
         else:
             n_substeps = 1
 
@@ -136,15 +132,6 @@ def run_episode(
             ahead = (wall_start + sim_steps * SIM_DT) - time.monotonic()
             if ahead > 0:
                 time.sleep(ahead)
-            now = time.monotonic()
-            if now >= next_log:
-                elapsed = now - wall_start
-                print(
-                    f"real-time {sim_steps * SIM_DT / elapsed:.3f}x | "
-                    f"sim {sim_steps * SIM_DT:.1f}s in {elapsed:.1f}s wall | "
-                    f"control {control_ticks / elapsed:.0f} Hz | catch-up saturated {saturated_ticks}x"
-                )
-                next_log = now + 1.0
         if stop:
             break
 

@@ -93,9 +93,9 @@ class HandReading:
         dead-zones it and drives a gentle forward creep.
     recenter_pose:
         True when this frame is an open palm held square to the camera — the pose
-        that, held *still* for a few seconds, the strategy treats as a re-anchor
-        ("set neutral here") gesture, mirroring stereohand's recenter. The hold
-        timing lives in the strategy; this is just the per-frame pose test.
+        the startup centering (:func:`ai_teleop.input.calibrate_neutral`) requires the
+        operator to hold still to set the neutral anchor. The hold timing lives in the
+        calibration routine; this is just the per-frame pose test.
 
     The ``rate`` mode reads the open/close grip to pick a gesture — an open hand
     steers (+ creeps forward), a fist drives back — so it is robust where a
@@ -238,9 +238,9 @@ class StereoHandSource:
         calibration = StereoCalibration.load(calibration_path)
         self._show_window = show_window
         self._read_count = 0  # for throttling the cv2 window pump (see read())
-        # recenter=True only drives the window's countdown HUD so the operator sees the
-        # re-anchor gesture register; kevin runs its own gesture timer in VisionInput
-        # (same thresholds), and the renderer's origin offset is a no-op for us.
+        # recenter=True only drives the renderer's open-palm countdown HUD, a handy visual
+        # while the operator holds the startup-centering pose; kevin times the hold itself in
+        # calibrate_neutral, and the renderer's origin offset is a no-op for us.
         self._tracker = StereoHandTracker.open(
             calibration,
             left=left,
@@ -263,11 +263,25 @@ class StereoHandSource:
         if self._show_window:
             self._read_count += 1
             if self._read_count % _WINDOW_PUMP_STRIDE == 0:
+                # stereohand's split renderer draws in render_step() but flushes the imshow
+                # buffer to screen only in poll(); without the poll() the window stays blank.
                 self._tracker.render_step()
+                self._tracker.poll()
         reading = self._tracker.read()
         if not reading.present:
             return _ABSENT
         return reading_from_landmarks(reading.landmarks)
+
+    def set_renderer_origin(self, origin: np.ndarray) -> None:
+        """Center the preview's 3-D skeleton view on ``origin`` (metric left-camera frame).
+
+        No-op when the preview window is off (there's no renderer to update). Used to pin the
+        renderer's origin to the operator-set neutral from startup centering.
+        """
+        if self._show_window:
+            self._tracker.set_renderer_origin(
+                (float(origin[0]), float(origin[1]), float(origin[2]))
+            )
 
     def close(self) -> None:
         self._tracker.close()

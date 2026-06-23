@@ -32,15 +32,21 @@ readings.
 from __future__ import annotations
 
 import math
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
 
 import numpy as np
 
 from ai_teleop.common.command import Command
+from ai_teleop.common.geometry import quat_conjugate, quat_mul
+from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
 
 from .hand_tracker import HandReading
+
+log = get_logger("vision_input")
 
 ControlMode = Literal["mirror", "expo", "rate"]
 """How a hand displacement drives the EE:
@@ -78,6 +84,78 @@ class _HandSource(Protocol):
     """Anything that yields the latest hand reading — the live tracker or a fake."""
 
     def read(self) -> HandReading: ...
+
+
+@dataclass(frozen=True)
+class NeutralAnchor:
+    """Operator-defined neutral captured at startup (see :func:`calibrate_neutral`).
+
+    The hand pose that maps to the arm's home EE: feeding it to ``VisionInput`` as
+    ``initial_anchor`` means the arm sits still at home until the operator moves their
+    hand *relative* to this pose — no startup jump from anchoring on a bad first frame.
+    """
+
+    hand_position: np.ndarray
+    hand_orientation: np.ndarray
+
+
+def calibrate_neutral(
+    source: _HandSource,
+    *,
+    hold_s: float = 3.0,
+    move_tol: float = 0.02,
+    poll_interval_s: float = 0.005,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    on_tick: Callable[[], None] | None = None,
+) -> NeutralAnchor:
+    """Block until an open palm is held still for ``hold_s``; return the averaged neutral.
+
+    The startup centering step: run *before the sim is stepped* (wall-clock timed, not
+    ``sim_time``) so no command reaches the arm until a clean neutral exists. Reads ``source``
+    in a loop, requiring ``reading.recenter_pose`` with under ``move_tol`` drift from the
+    hold's start; on drift or pose loss the hold restarts. Returns the **mean** hand position
+    over the hold (a stable zero, immune to single-frame jitter) and the settled orientation.
+
+    ``on_tick`` runs every iteration — use it to pump the preview window / sync the viewer so
+    both stay responsive while the operator poses. A per-second countdown is logged.
+    """
+    hold_start: float | None = None
+    anchor: np.ndarray | None = None
+    positions: list[np.ndarray] = []
+    last_orientation = np.array([1.0, 0.0, 0.0, 0.0])
+    last_countdown: int | None = None
+    log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
+    while True:
+        if on_tick is not None:
+            on_tick()
+        reading = source.read()
+        if not (reading.present and reading.recenter_pose):
+            hold_start, anchor, last_countdown = None, None, None
+            positions.clear()
+            sleep(poll_interval_s)
+            continue
+        moved = anchor is not None and float(np.linalg.norm(reading.position - anchor)) > move_tol
+        if hold_start is None or moved:
+            hold_start = clock()
+            anchor = reading.position.copy()
+            positions = [reading.position.copy()]
+            last_countdown = None
+            sleep(poll_interval_s)
+            continue
+
+        positions.append(reading.position.copy())
+        last_orientation = reading.orientation.copy()
+        held_for = clock() - hold_start
+        remaining = math.ceil(hold_s - held_for)
+        if remaining > 0 and remaining != last_countdown:  # once per whole second
+            last_countdown = remaining
+            log.info("centering in %ds — hold still", remaining)
+        if held_for >= hold_s:
+            neutral_position = np.mean(positions, axis=0)
+            log.info("centering complete — neutral set")
+            return NeutralAnchor(neutral_position, last_orientation)
+        sleep(poll_interval_s)
 
 
 class _OneEuroVector:
@@ -229,29 +307,13 @@ class VisionInput:
     track_orientation:
         When True, the held orientation follows the filtered hand orientation;
         default False holds the start orientation (round peg ⇒ roll irrelevant).
-    recenter:
-        When True, an open palm held square to the camera and still for
-        ``recenter_hold_s`` seconds re-anchors ("set neutral here") — a gesture
-        alternative to the lift-out-of-frame clutch, mirroring stereohand's
-        recenter. Off by default; meaningful only in ``mirror``/``expo`` modes (the
-        velocity-driven ``rate`` mode has no anchor). The grip command is held
-        steady during the hold so recentering doesn't release the gripper.
-    recenter_hold_s:
-        Seconds the open-palm pose must be held still to trigger a recenter.
-    recenter_lock_s:
-        Seconds into a recenter hold after which the arm is *locked* (frozen in
-        place) for the rest of the hold — well before ``recenter_hold_s`` fires — so
-        the arm doesn't drift toward the posed hand while you wait out the countdown.
-    recenter_move_tol:
-        How far (m) the hand may drift during the hold and still count as "still";
-        exceeding it restarts the timer.
-    recenter_pose_grace_s:
-        Seconds the noisy ``recenter_pose`` flag may flicker off mid-hold without
-        restarting the countdown (a debounce mirroring stereohand's renderer); only a
-        sustained loss of the pose releases the hold.
     min_cutoff, beta:
         One-euro filter parameters for the mapped position. Tuned responsive
         (low lag) so the arm tracks the hand rather than lagging behind it.
+    initial_anchor:
+        Operator-set neutral from the startup centering (:func:`calibrate_neutral`).
+        When given, the first engage anchors here instead of the live first frame, so
+        the arm holds home until the hand moves *relative* to this pose — no startup jump.
     """
 
     def __init__(
@@ -271,13 +333,9 @@ class VisionInput:
         lock_delay: float = 0.2,
         dropout_grace_s: float = 0.2,
         track_orientation: bool = False,
-        recenter: bool = False,
-        recenter_hold_s: float = 3.0,
-        recenter_lock_s: float = 0.5,
-        recenter_move_tol: float = 0.02,
-        recenter_pose_grace_s: float = 0.15,
         min_cutoff: float = 2.0,
         beta: float = 1.5,
+        initial_anchor: NeutralAnchor | None = None,
     ) -> None:
         self._source = hand_source
         base = calibration or WorkspaceCalibration()
@@ -298,25 +356,16 @@ class VisionInput:
         self._lock_delay = lock_delay
         self._dropout_grace_s = dropout_grace_s
         self._track_orientation = track_orientation
-        self._recenter = recenter
-        self._recenter_hold_s = recenter_hold_s
-        self._recenter_lock_s = recenter_lock_s
-        self._recenter_move_tol = recenter_move_tol
-        self._recenter_pose_grace_s = recenter_pose_grace_s
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)
 
-        self._recenter_hold_start: float | None = None  # sim_time the open-palm hold began
-        self._recenter_anchor: np.ndarray | None = None  # hand position at hold start
-        self._last_recenter_pose_time: float | None = None  # last tick the pose was detected
-        self._recentered = False  # latched after a hold fires, until the pose releases
-        self._in_recenter_hold = False  # pose held this tick ⇒ freeze grip
-        self._recenter_locked = False  # pose held > recenter_lock_s ⇒ freeze the arm
-
+        self._initial_anchor = initial_anchor  # operator-set neutral; consumed on first engage
         self._engaged = False
         self._last_present_time: float | None = None  # sim_time of the last present reading
         self._held: Command | None = None  # last commanded pose (held on disengage)
         self._hand_anchor: np.ndarray | None = None  # camera-space pose at engage
         self._ee_anchor: np.ndarray | None = None  # world EE position at engage
+        self._hand_orientation_anchor: np.ndarray | None = None  # hand quat at engage
+        self._ee_orientation_anchor: np.ndarray | None = None  # EE quat at engage
         self._prev_time: float | None = None  # for rate-mode integration
         self._driving = False  # rate-mode drive/lock state (with lock_delay debounce)
         self._last_drive_time = 0.0  # last tick a drive gesture (point or fist) was seen
@@ -346,12 +395,15 @@ class VisionInput:
                 return self._held
             # Sustained loss: actually release the clutch. Freeze at the arm's real
             # pose (never drifts home); re-acquiring will re-anchor from here.
+            was_engaged = self._engaged
             self._engaged = False
             self._held = Command(
                 observation.ee_pose[:3].copy(),
                 observation.ee_pose[3:].copy(),
                 self._held.delta_grip_force,
             )
+            if was_engaged:  # transition-only: not every absent tick
+                log.info("clutch released — hand left frame; holding EE pose")
             return self._held
 
         self._last_present_time = observation.sim_time
@@ -360,23 +412,27 @@ class VisionInput:
         # so the current hand position maps to wherever the EE currently is — no jump.
         if not self._engaged:
             self._engaged = True
-            self._hand_anchor = reading.position.copy()
+            if self._initial_anchor is not None:
+                # Operator-set neutral from the startup centering: anchor here (not the live
+                # first frame, which may catch the hand still entering the frame), so the arm
+                # holds home until the hand moves *relative* to this pose.
+                self._hand_anchor = self._initial_anchor.hand_position.copy()
+                self._hand_orientation_anchor = self._initial_anchor.hand_orientation.copy()
+                self._initial_anchor = None  # consume once; clutch re-engages use live frames
+            else:
+                self._hand_anchor = reading.position.copy()
+                self._hand_orientation_anchor = reading.orientation.copy()
             self._ee_anchor = self._held.target_position.copy()
+            self._ee_orientation_anchor = self._held.target_quaternion.copy()
             self._prev_time = observation.sim_time
             self._position_filter.reset()
+            log.info("clutch engaged — anchored to current hand/EE pose")
 
         assert self._hand_anchor is not None and self._ee_anchor is not None
         assert self._prev_time is not None
 
         if self._mode == "rate":
             return self._rate_command(reading, observation)
-
-        if self._recenter:
-            self._maybe_recenter(reading, observation)
-            if self._recenter_locked:
-                # Holding the calibration pose: freeze the arm so it doesn't drift
-                # toward the posed hand while you wait out the recenter countdown.
-                return self._held
 
         camera_delta = reading.position - self._hand_anchor
         if self._mode == "expo":
@@ -386,79 +442,29 @@ class VisionInput:
             raw_target = self._ee_anchor + self._calibration.map_delta(camera_delta)
 
         target_position = self._position_filter(raw_target, observation.sim_time)
-        target_quaternion = (
-            reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
-        )
+        target_quaternion = self._oriented(reading)
         # Fist → squeeze, open hand → release (open=1 ⇒ release, fist=0 ⇒ squeeze).
         delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
-        if self._in_recenter_hold:
-            # The recenter pose is an open palm; don't read it as "release the grip".
-            delta_grip_force = self._held.delta_grip_force
 
         self._held = Command(target_position, target_quaternion, delta_grip_force)
         return self._held
 
-    def _maybe_recenter(self, reading: HandReading, observation: Observation) -> None:
-        """Open-palm-held-still gesture → re-anchor, without lifting out of frame.
+    def _oriented(self, reading: HandReading) -> np.ndarray:
+        """The held EE quaternion for this tick.
 
-        Mirrors stereohand's recenter: holding the open-palm pose
-        (``reading.recenter_pose``) still for ``recenter_hold_s`` seconds sets the
-        current hand position as the new neutral mapped to the current EE — the arm
-        stays put and subsequent motion is measured from here. Fires once per hold
-        (re-arms when the pose releases). Sets ``_in_recenter_hold`` so the caller
-        can freeze the grip during the hold.
+        When not tracking orientation, hold the start orientation. When tracking, mirror the
+        hand *relatively*: rotate the anchored EE orientation by the hand's rotation since the
+        anchor. At neutral (hand at the anchor pose) this is exactly the anchored EE
+        orientation, so engaging never snaps the wrist to the hand's absolute orientation.
         """
         assert self._held is not None
-        if not reading.recenter_pose:
-            # Debounce like stereohand's renderer: ``recenter_pose`` comes from a noisy
-            # per-frame landmark test, so a single flicker shouldn't restart a hold in
-            # progress. Within the grace window, hold all recenter state as-is; only a
-            # sustained loss of the pose actually releases.
-            within_grace = (
-                self._recenter_hold_start is not None
-                and self._last_recenter_pose_time is not None
-                and observation.sim_time - self._last_recenter_pose_time
-                <= self._recenter_pose_grace_s
-            )
-            if within_grace:
-                return
-            self._recenter_hold_start = None
-            self._recenter_anchor = None
-            self._recentered = False
-            self._in_recenter_hold = False
-            self._recenter_locked = False
-            return
-
-        self._last_recenter_pose_time = observation.sim_time
-        self._in_recenter_hold = True
-        if self._recentered:
-            return  # already fired for this hold; wait for the pose to release
-
-        moved = (
-            self._recenter_anchor is not None
-            and float(np.linalg.norm(reading.position - self._recenter_anchor))
-            > self._recenter_move_tol
-        )
-        if self._recenter_hold_start is None or moved:
-            # (Re)starting the hold — the operator is still positioning, so let the arm
-            # follow until the pose settles.
-            self._recenter_anchor = reading.position.copy()
-            self._recenter_hold_start = observation.sim_time
-            self._recenter_locked = False
-            return
-
-        held_for = observation.sim_time - self._recenter_hold_start
-        # Lock the arm once the pose has been held still a moment, well before the full
-        # recenter fires — so the countdown wait doesn't drift the arm toward the pose.
-        self._recenter_locked = held_for >= self._recenter_lock_s
-        if held_for >= self._recenter_hold_s:
-            # Re-anchor like the clutch does: map the current hand to where the arm
-            # actually *is* (not the last commanded target), so any accumulated
-            # target-vs-actual drift is cleared and the arm holds put.
-            self._hand_anchor = reading.position.copy()
-            self._ee_anchor = observation.ee_pose[:3].copy()
-            self._position_filter.reset()
-            self._recentered = True
+        if not self._track_orientation:
+            return self._held.target_quaternion
+        assert self._hand_orientation_anchor is not None
+        assert self._ee_orientation_anchor is not None
+        hand_delta = quat_mul(reading.orientation, quat_conjugate(self._hand_orientation_anchor))
+        target = quat_mul(hand_delta, self._ee_orientation_anchor)
+        return target / np.linalg.norm(target)
 
     def _rate_command(self, reading: HandReading, observation: Observation) -> Command:
         """`rate` "point to steer": an open hand → in-plane velocity (where it
@@ -478,9 +484,13 @@ class VisionInput:
         # Drive/lock with a debounce: engage instantly on a drive gesture, but only
         # lock once it's been gone for `lock_delay` (brief glitches don't freeze).
         if is_open or is_fist:
+            if not self._driving:  # transition-only
+                log.info("rate drive engaged — %s", "steering" if is_open else "reversing")
             self._driving = True
             self._last_drive_time = observation.sim_time
         elif observation.sim_time - self._last_drive_time > self._lock_delay:
+            if self._driving:  # transition-only
+                log.info("rate locked — arm frozen")
             self._driving = False
 
         # grip is parked for now (see project notes) — rate mode holds it steady.
@@ -514,8 +524,6 @@ class VisionInput:
         raw_target = ee_position + np.clip(raw_target - ee_position, -self._leash, self._leash)
         target_position = self._position_filter(raw_target, observation.sim_time)
 
-        target_quaternion = (
-            reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
-        )
+        target_quaternion = self._oriented(reading)
         self._held = Command(target_position, target_quaternion, self._held.delta_grip_force)
         return self._held

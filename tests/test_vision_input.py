@@ -11,7 +11,12 @@ import numpy as np
 
 from ai_teleop.common.observation import Observation
 from ai_teleop.domain import InputStrategy
-from ai_teleop.input import VisionInput, WorkspaceCalibration
+from ai_teleop.input import (
+    NeutralAnchor,
+    VisionInput,
+    WorkspaceCalibration,
+    calibrate_neutral,
+)
 from ai_teleop.input.hand_tracker import HandReading, reading_from_landmarks
 from ai_teleop.input.vision_input import _OneEuroVector
 
@@ -123,115 +128,13 @@ def test_metric_calibration_maps_camera_depth_to_robot_forward():
 
 
 # ---------------------------------------------------------------------------
-# Recenter gesture (open palm held still → re-anchor)
+# Open-palm pose sensor signal (consumed by the startup centering)
 # ---------------------------------------------------------------------------
 
 
 def test_open_palm_facing_sets_recenter_pose():
     assert reading_from_landmarks(_flat_open_hand()).recenter_pose
     assert not reading_from_landmarks(_closed_fist()).recenter_pose
-
-
-def test_recenter_reanchors_to_actual_ee_after_hold():
-    """Holding the open-palm pose still past recenter_hold_s remaps the current hand
-    to the arm's actual pose, so motion is measured from the new neutral."""
-    quat = np.array([1.0, 0.0, 0.0, 0.0])
-    p0 = np.zeros(3)
-    p1 = np.array([0.1, 0.05, 0.0])
-    engage = HandReading(p0, quat, 0.0, present=True)
-    hold = HandReading(p1, quat, 1.0, present=True, recenter_pose=True)
-    plain = HandReading(p1, quat, 1.0, present=True)  # same spot, but not the gesture
-    readings = [engage, hold, hold, hold, hold, plain]
-    times = [0.0, 0.5, 1.5, 2.5, 3.5, 4.0]  # hold spans >3 s, then a plain read
-
-    def _run(recenter: bool) -> np.ndarray:
-        vision = VisionInput(
-            _FakeSource(readings), mode="mirror", recenter=recenter, recenter_hold_s=3.0
-        )
-        cmd = None
-        for t in times:
-            cmd = vision.get_command(_observation(sim_time=t))
-        assert cmd is not None
-        return cmd.target_position
-
-    ee = _observation().ee_pose[:3]
-    # With recenter: the final plain read sits at the new anchor ⇒ command holds at EE.
-    assert np.allclose(_run(recenter=True), ee, atol=1e-6)
-    # Without it: the hand at p1 still maps from the original anchor ⇒ target ≠ EE.
-    assert not np.allclose(_run(recenter=False), ee, atol=1e-3)
-
-
-def test_recenter_survives_single_frame_pose_flicker():
-    """A ``recenter_pose=False`` blip within the grace window (noisy landmark test) must
-    not restart the hold; a blip past the window must. Detected via 'final read holds at
-    EE' ⟺ the recenter fired (re-anchored hand→actual EE)."""
-    quat = np.array([1.0, 0.0, 0.0, 0.0])
-    p1 = np.array([0.1, 0.05, 0.0])
-    engage = HandReading(np.zeros(3), quat, 0.0, present=True)
-    hold = HandReading(p1, quat, 1.0, present=True, recenter_pose=True)
-    blip = HandReading(p1, quat, 1.0, present=True)  # same spot, pose flag dropped
-    ee = _observation().ee_pose[:3]
-
-    def _run(steps: list[tuple[float, HandReading]]) -> np.ndarray:
-        vision = VisionInput(
-            _FakeSource([r for _, r in steps]),
-            mode="mirror",
-            recenter=True,
-            recenter_hold_s=3.0,
-            recenter_pose_grace_s=0.15,
-        )
-        cmd = None
-        for t, _ in steps:
-            cmd = vision.get_command(_observation(sim_time=t))
-        assert cmd is not None
-        return cmd.target_position
-
-    # Blip 0.1 s after the last pose frame (< grace) ⇒ countdown survives ⇒ fires at 3 s.
-    within = _run([(0.0, engage), (0.5, hold), (0.6, blip), (0.7, hold), (3.6, hold), (4.0, blip)])
-    assert np.allclose(within, ee, atol=1e-6)
-    # Blip 0.21 s after the last pose frame (> grace) ⇒ hold resets ⇒ never reaches 3 s.
-    sustained = _run(
-        [(0.0, engage), (0.5, hold), (0.71, blip), (0.8, hold), (3.6, hold), (4.0, blip)]
-    )
-    assert not np.allclose(sustained, ee, atol=1e-3)
-
-
-def test_recenter_holds_grip_during_the_open_palm_hold():
-    """The recenter pose is an open palm; it must not be read as 'release grip'."""
-    quat = np.array([1.0, 0.0, 0.0, 0.0])
-    engage = HandReading(np.zeros(3), quat, 0.5, present=True)  # half-open ⇒ neutral grip (0 N)
-    hold = HandReading(
-        np.zeros(3), quat, 1.0, present=True, recenter_pose=True
-    )  # open ⇒ would release
-    vision = VisionInput(_FakeSource([engage, hold]), mode="mirror", recenter=True)
-    first = vision.get_command(_observation(sim_time=0.0))
-    assert first.delta_grip_force == 0.0  # neutral seed
-    cmd = vision.get_command(_observation(sim_time=0.1))
-    assert cmd.delta_grip_force == 0.0  # frozen during the hold, not driven to -grip_force
-
-
-def test_recenter_locks_arm_after_lock_delay():
-    """Once the calibration pose is held past recenter_lock_s, the arm freezes — it
-    must not drift toward the posed hand while the recenter countdown runs."""
-    quat = np.array([1.0, 0.0, 0.0, 0.0])
-    pr = np.array([0.10, 0.0, 0.0])
-    drifted = np.array([0.115, 0.0, 0.0])  # 1.5 cm < move_tol ⇒ hold timer not reset
-    hold = HandReading(pr, quat, 1.0, present=True, recenter_pose=True)
-    hold_drifted = HandReading(drifted, quat, 1.0, present=True, recenter_pose=True)
-    vision = VisionInput(
-        _FakeSource([hold, hold, hold_drifted]),
-        mode="mirror",
-        recenter=True,
-        recenter_lock_s=0.5,
-        recenter_hold_s=3.0,
-        recenter_move_tol=0.02,
-        min_cutoff=1e6,
-    )
-    ee = _observation().ee_pose[:3]
-    vision.get_command(_observation(0.0))  # engage at pr, hold starts
-    vision.get_command(_observation(0.6))  # held 0.6 s > lock ⇒ arm locks
-    cmd = vision.get_command(_observation(0.7))  # hand drifted, but locked ⇒ frozen at EE
-    assert np.allclose(cmd.target_position, ee, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -510,3 +413,73 @@ def test_grip_open_and_fist_are_opposite_and_open_releases():
     assert open_cmd.delta_grip_force > 0  # release
     assert fist_cmd.delta_grip_force < 0  # squeeze
     assert open_cmd.delta_grip_force == -fist_cmd.delta_grip_force
+
+
+def test_clutch_transitions_are_logged(caplog):
+    """Engage on first detection, release on a sustained drop-out — logged once each
+    (not per tick), so the operator sees the clutch state in the terminal."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    present = HandReading(np.zeros(3), quat, 0.5, present=True)
+    absent = HandReading(np.zeros(3), quat, 0.0, present=False)
+    strategy = VisionInput(_FakeSource([present, absent, absent]), mode="mirror")
+    with caplog.at_level("INFO", logger="ai_teleop.vision_input"):
+        strategy.get_command(_observation(0.0))  # first present ⇒ engage
+        strategy.get_command(_observation(0.1))  # absent, within grace ⇒ silent
+        strategy.get_command(_observation(1.0))  # absent, past grace ⇒ release
+    messages = [r.message for r in caplog.records]
+    assert sum("clutch engaged" in m for m in messages) == 1
+    assert sum("clutch released" in m for m in messages) == 1
+
+
+def test_calibrate_neutral_averages_held_position():
+    """A held open palm sets neutral; the anchor is the mean position over the hold window."""
+    pos = np.array([0.1, 0.2, 0.3])
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    reading = HandReading(pos, quat, 1.0, present=True, recenter_pose=True)
+    pumped = []
+    clock = iter(np.arange(0.0, 100.0, 1.0))
+    anchor = calibrate_neutral(
+        _FakeSource([reading]),
+        hold_s=3.0,
+        clock=lambda: float(next(clock)),
+        sleep=lambda _s: None,
+        on_tick=lambda: pumped.append(1),
+    )
+    assert np.allclose(anchor.hand_position, pos)
+    assert np.allclose(anchor.hand_orientation, quat)
+    assert pumped  # the window/viewer pump callback ran while waiting
+
+
+def test_calibrate_neutral_restarts_when_pose_drops():
+    """Losing the open-palm pose mid-hold restarts the countdown (no premature neutral)."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    held = HandReading(np.zeros(3), quat, 1.0, present=True, recenter_pose=True)
+    gap = HandReading(np.zeros(3), quat, 0.0, present=False)  # pose lost ⇒ restart
+    # held, held (1s), gap (restart), then held*4 ⇒ a full 3 s hold from the restart.
+    readings = [held, held, gap, held, held, held, held]
+    clock = iter(np.arange(0.0, 100.0, 1.0))
+    anchor = calibrate_neutral(
+        _FakeSource(readings),
+        hold_s=3.0,
+        clock=lambda: float(next(clock)),
+        sleep=lambda _s: None,
+    )
+    assert np.allclose(anchor.hand_position, np.zeros(3))  # completed only after the restart
+
+
+def test_initial_anchor_holds_home_orientation_without_snapping():
+    """With a startup neutral, a hand already at the anchor orientation keeps the wrist at
+    home — orientation is mirrored relatively, so engaging never snaps to the hand's pose."""
+    home_quat = _observation().ee_pose[3:]  # [1, 0, 0, 0]
+    hand_quat = np.array([0.7071, 0.0, 0.7071, 0.0])  # a 90° hand rotation
+    hand_quat = hand_quat / np.linalg.norm(hand_quat)
+    pos = np.array([0.1, 0.0, 0.0])
+    reading = HandReading(pos, hand_quat, 0.5, present=True)
+    vision = VisionInput(
+        _FakeSource([reading]),
+        mode="mirror",
+        track_orientation=True,
+        initial_anchor=NeutralAnchor(pos.copy(), hand_quat.copy()),
+    )
+    cmd = vision.get_command(_observation())
+    assert np.allclose(cmd.target_quaternion, home_quat, atol=1e-6)  # no snap
