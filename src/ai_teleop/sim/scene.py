@@ -281,7 +281,7 @@ class SimEnv:
         data.qpos[self._peg_qadr + 3 : self._peg_qadr + 7] = new_peg_quaternion
         mujoco.mj_forward(model, data)
 
-    def step(self) -> None:
+    def step(self, sync_viewer: bool = False) -> None:
         """Advance physics by one timestep.
 
         Follows the standard MuJoCo split (`mj_step1` → caller writes ctrl
@@ -291,10 +291,15 @@ class SimEnv:
         reads them. Without the trailing forward pass those derived
         quantities lag by one step, which adds a 2 ms control-loop delay
         and destabilises tightly-tuned impedance gains.
+
+        `sync_viewer` pushes the new state to the passive viewer window. The
+        caller gates this to a display fps (~50 Hz) — syncing every 2 ms step
+        saturates WSLg's GUI pipe (the window freezes, then snaps back). No-op
+        when no viewer is open. See `run_episode`'s frame clock.
         """
         mujoco.mj_step(self._model, self._data)
         mujoco.mj_forward(self._model, self._data)
-        if self._viewer is not None:
+        if self._viewer is not None and sync_viewer:
             self._viewer.sync()
 
     # ------------------------------------------------------------------

@@ -161,7 +161,7 @@ def main() -> int:
                 env_v.data.ctrl[:7] = (
                     env_v.data.qfrc_bias[arm_dof] - env_v.data.qfrc_constraint[arm_dof]
                 )
-                env_v.step()
+                env_v.step(sync_viewer=True)
                 # Mujoco's default timestep is 2 ms; sleep proportionally so
                 # the viewer runs at roughly real-time rather than as fast as
                 # the CPU can chew through frames.

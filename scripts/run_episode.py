@@ -97,6 +97,14 @@ def main() -> int:
         "motion more aggressively. 1.0 = the tuned mirror default.",
     )
     p.add_argument(
+        "--max-fps",
+        type=int,
+        default=None,
+        help="Cap hand-tracking to N fps (--input vision), even if the cameras run faster "
+        "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
+        "no cap (process every new camera frame).",
+    )
+    p.add_argument(
         "--control-mode",
         choices=["mirror", "expo", "rate"],
         default="expo",
@@ -197,6 +205,7 @@ def main() -> int:
             left=_camera_source(args.left),
             right=_camera_source(args.right),
             show_window=not args.no_cam_window,
+            max_fps=args.max_fps if args.max_fps is not None else "cam",
         )
         input_strategy = VisionInput(
             tracker,

@@ -26,6 +26,7 @@ its tests) work without the ``stereo-input`` extra installed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import mujoco
 import numpy as np
@@ -49,6 +50,13 @@ _FINGER_MCPS = (5, 9, 13, 17)  # their knuckles (for the open-palm recenter test
 # from operator feel if the grip proxy reads hot or cold.
 _GRIP_RATIO_CLOSED = 1.0
 _GRIP_RATIO_OPEN = 2.4
+
+# read() is called at the 500 Hz control rate, but the cv2 preview window only needs
+# ~30 Hz and its imshow/waitKey is an expensive WSLg round-trip on the main thread.
+# Pumping it every tick starves the tracking thread (60→15 fps) and floods the GUI
+# pipe. Pump every Nth read instead (500/16 ≈ 31 Hz); the hand reading itself is
+# read every tick (cheap — it just returns the background thread's latest).
+_WINDOW_PUMP_STRIDE = 16
 
 
 @dataclass(frozen=True)
@@ -223,11 +231,13 @@ class StereoHandSource:
         left: int | str = 0,
         right: int | str = 2,
         show_window: bool = False,
+        max_fps: int | Literal["cam"] = "cam",
     ) -> None:
         from stereohand import RenderConfig, StereoCalibration, StereoHandTracker
 
         calibration = StereoCalibration.load(calibration_path)
         self._show_window = show_window
+        self._read_count = 0  # for throttling the cv2 window pump (see read())
         # recenter=True only drives the window's countdown HUD so the operator sees the
         # re-anchor gesture register; kevin runs its own gesture timer in VisionInput
         # (same thresholds), and the renderer's origin offset is a no-op for us.
@@ -235,6 +245,7 @@ class StereoHandSource:
             calibration,
             left=left,
             right=right,
+            max_fps=max_fps,
             render=show_window,
             render_config=RenderConfig(recenter=True) if show_window else None,
         )
@@ -246,10 +257,13 @@ class StereoHandSource:
         )
 
     def read(self) -> HandReading:
-        # cv2 GUI must be pumped from the main (control-loop) thread; render_step
-        # also refreshes the background reading.
+        # cv2 GUI must be pumped from the main (control-loop) thread, but only needs
+        # ~30 Hz — pump every Nth read, not every 500 Hz control tick (see the stride
+        # constant). The hand reading below is taken every tick regardless (cheap).
         if self._show_window:
-            self._tracker.render_step()
+            self._read_count += 1
+            if self._read_count % _WINDOW_PUMP_STRIDE == 0:
+                self._tracker.render_step()
         reading = self._tracker.read()
         if not reading.present:
             return _ABSENT

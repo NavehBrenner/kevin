@@ -113,7 +113,7 @@ def run_phase(
             target_quaternion=target_quat,
         )
         controller.compute(obs, cmd)
-        env.step()
+        env.step(sync_viewer=viewer_real_time)
 
         force_mag = float(np.linalg.norm(obs.wrist_ft[:3]))
         peak_force = max(peak_force, force_mag)
