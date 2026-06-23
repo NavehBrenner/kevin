@@ -10,6 +10,7 @@ this contract — see `docs/milestone-1-spec.md`.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -21,6 +22,11 @@ from ai_teleop.common.geometry import mat3_to_quat
 from ai_teleop.common.observation import Observation
 
 RenderMode = Literal["viewer", "headless"]
+
+# The passive viewer only needs ~30-60 Hz, but step() runs at the 500 Hz sim rate.
+# sync_viewer() rate-limits to this fps off a wall-clock deadline — syncing every step
+# saturates WSLg's GUI pipe (window freezes, then snaps back).
+_VIEWER_FPS = 50.0
 
 # Hardcoded for M1 — the scene XML names these explicitly. Anything reading
 # them by string lives here so a rename in the MJCF is a one-place fix.
@@ -181,6 +187,7 @@ class SimEnv:
         # mujoco.viewer is imported lazily — it pulls in GLFW which we don't
         # want loaded during headless runs.
         self._viewer = None
+        self._next_frame_time = 0.0  # wall-clock deadline for the next viewer sync
 
     # ------------------------------------------------------------------
     # Read-only access for callers (controller, smoke test, expert).
@@ -232,8 +239,7 @@ class SimEnv:
         if self._randomize:
             seed_sequence = (self._seed,) if episode_index is None else (self._seed, episode_index)
             self._randomize_start(np.random.default_rng(seed_sequence))
-        if self._viewer is not None:
-            self._viewer.sync()
+        self.sync_viewer()  # show the reset pose immediately (no-op when headless)
         return self.get_observation()
 
     def _randomize_start(self, rng: np.random.Generator) -> None:
@@ -281,7 +287,7 @@ class SimEnv:
         data.qpos[self._peg_qadr + 3 : self._peg_qadr + 7] = new_peg_quaternion
         mujoco.mj_forward(model, data)
 
-    def step(self, sync_viewer: bool = False) -> None:
+    def step(self) -> None:
         """Advance physics by one timestep.
 
         Follows the standard MuJoCo split (`mj_step1` → caller writes ctrl
@@ -292,15 +298,11 @@ class SimEnv:
         quantities lag by one step, which adds a 2 ms control-loop delay
         and destabilises tightly-tuned impedance gains.
 
-        `sync_viewer` pushes the new state to the passive viewer window. The
-        caller gates this to a display fps (~50 Hz) — syncing every 2 ms step
-        saturates WSLg's GUI pipe (the window freezes, then snaps back). No-op
-        when no viewer is open. See `run_episode`'s frame clock.
+        Pure physics — no GUI. Refresh the viewer separately via `sync_viewer()`
+        (the caller decides cadence; it self-throttles to ~50 Hz).
         """
         mujoco.mj_step(self._model, self._data)
         mujoco.mj_forward(self._model, self._data)
-        if self._viewer is not None and sync_viewer:
-            self._viewer.sync()
 
     # ------------------------------------------------------------------
     # Sensing.
@@ -377,6 +379,22 @@ class SimEnv:
             viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
             viewer.cam.fixedcamid = self._wrist_camera_id
         self._viewer = viewer
+
+    def sync_viewer(self) -> None:
+        """Push physics state to the viewer window, rate-limited to ~_VIEWER_FPS.
+
+        No-op when no viewer is open. Safe (and intended) to call every step from the
+        stepping thread — it self-throttles off a wall-clock frame deadline, so callers
+        don't track frame timing themselves and syncing never floods WSLg's GUI pipe.
+        Must run on the same thread that steps physics (MuJoCo serializes mj_step and
+        mj_copyDataVisual via the MjData stack — concurrent calls error).
+        """
+        if self._viewer is None:
+            return
+        now = time.monotonic()
+        if now >= self._next_frame_time:
+            self._viewer.sync()
+            self._next_frame_time = now + 1.0 / _VIEWER_FPS
 
     # ------------------------------------------------------------------
     # Teardown.
