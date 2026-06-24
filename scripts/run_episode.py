@@ -61,10 +61,12 @@ def main() -> int:
         help="Run on a freshly generated procedural wall instead of the static scene.",
     )
     p.add_argument(
-        "--wrist-cam",
-        action="store_true",
-        help="Open the viewer locked to the Panda's wrist camera (robot's-eye POV) "
-        "instead of the free camera; viewer keys still switch cameras live.",
+        "--cam",
+        choices=["main", "wrist"],
+        default="main",
+        help="Which camera the interactive viewer opens with: 'main' (free camera, default) "
+        "or 'wrist' (locked to the Panda's wrist camera, robot's-eye POV). Viewer keys still "
+        "switch cameras live.",
     )
     p.add_argument(
         "--input",
@@ -118,6 +120,12 @@ def main() -> int:
         "a dead-zone + soft centre (precise near rest, fast on big sweeps); 'mirror' = "
         "plain linear position; 'rate' = joystick (hand offset sets EE velocity).",
     )
+    p.add_argument(
+        "--orientation",
+        action="store_true",
+        help="Enable 6-DoF orientation mirroring (--input vision); track position only "
+        "(calmer, round-peg baseline). Orientation tracking is on by default.",
+    )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
@@ -163,7 +171,7 @@ def main() -> int:
     env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
     obs = env.reset()
     if not args.headless:
-        env.launch_viewer(wrist_cam=args.wrist_cam)
+        env.launch_viewer(wrist_cam=args.cam == "wrist")
 
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
     # careful-insertion backbone (which feels like velocity control): a bigger
@@ -223,12 +231,11 @@ def main() -> int:
             calibration=WorkspaceCalibration(),
             gain=args.gain,
             mode=args.control_mode,
-            track_orientation=True,  # the stereo payoff: trustworthy 6-DoF mirroring
+            track_orientation=args.orientation,  # 6-DoF mirroring on by default
             initial_anchor=neutral,
         )
         print(
-            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). "
-            "Lift your hand out of frame to clutch."
+            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand out of frame to clutch."
         )
     else:
         target_pose = np.concatenate([target_position, home_quat])
