@@ -25,7 +25,11 @@ import numpy as np
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from ai_teleop.common.log import add_logging_arguments, configure_from_args  # noqa: E402
+from ai_teleop.common.log import (  # noqa: E402
+    add_logging_arguments,
+    configure_from_args,
+    get_logger,
+)
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
@@ -39,28 +43,30 @@ from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
 
+log = get_logger("episode")
+
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
         "--headless", action="store_true", help="Skip the viewer; run the loop and print a summary."
     )
-    p.add_argument(
+    parser.add_argument(
         "--seed", type=int, default=0, help="Seed for the scripted human's noise and the SimEnv."
     )
-    p.add_argument(
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=DEFAULT_MAX_STEPS,
         help="Episode step budget (one step == one 2 ms sim tick). Use 0 for no limit — "
         "run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--generated-wall",
         action="store_true",
         help="Run on a freshly generated procedural wall instead of the static scene.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--cam",
         choices=["main", "wrist"],
         default="main",
@@ -68,7 +74,7 @@ def main() -> int:
         "or 'wrist' (locked to the Panda's wrist camera, robot's-eye POV). Viewer keys still "
         "switch cameras live.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--input",
         choices=["scripted", "vision"],
         default="scripted",
@@ -76,28 +82,28 @@ def main() -> int:
         "stereo hand tracking (metric 3D + 6-DoF; needs the viewer, the stereo-input extra, "
         "and --stereo-calib).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--no-cam-window",
         action="store_true",
         help="Hide the live stereo camera/3D-skeleton window (--input vision; shown by default).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--stereo-calib",
         default=None,
         help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
         "sources are --left / --right.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--left",
         default="0",
         help="Left-camera source for --input vision: device index or stream URL.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--right",
         default="2",
         help="Right-camera source for --input vision: device index or stream URL.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--max-fps",
         type=int,
         default=None,
@@ -105,17 +111,17 @@ def main() -> int:
         "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
         "no cap (process every new camera frame).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--orientation",
         action="store_true",
-        help="Enable 6-DoF orientation mirroring (--input vision); track position only "
-        "(calmer, round-peg baseline). Orientation tracking is on by default.",
+        help="Enable 6-DoF orientation mirroring (--input vision): mirror the hand's "
+        "roll/pitch/yaw too. Off by default — position-only is a calmer, round-peg baseline.",
     )
-    p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
-    p.add_argument(
+    parser.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
+    parser.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
     )
-    p.add_argument(
+    parser.add_argument(
         "--max-dpos",
         type=float,
         default=None,
@@ -123,7 +129,7 @@ def main() -> int:
         "Default 0.025 (careful insertion); --input vision defaults to 0.3 for responsive "
         "mirror-like tracking (raise it further if the arm still lags your hand).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--no-force-cap",
         action="store_true",
         help="Disable the force-cap watchdog (--input vision free-play). Normally a wrist "
@@ -131,15 +137,15 @@ def main() -> int:
         "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
         "Use this to rule the watchdog in/out while debugging.",
     )
-    add_logging_arguments(p)
-    args = p.parse_args()
+    add_logging_arguments(parser)
+    args = parser.parse_args()
     configure_from_args(args)
 
     if args.input == "vision" and args.headless:
-        print("FATAL: --input vision needs the viewer (drop --headless).", file=sys.stderr)
+        log.error("--input vision needs the viewer (drop --headless).")
         return 2
     if args.input == "vision" and not args.stereo_calib:
-        print("FATAL: --input vision requires --stereo-calib PATH.", file=sys.stderr)
+        log.error("--input vision requires --stereo-calib PATH.")
         return 2
 
     scene_path = resolve_scene_path(
@@ -148,18 +154,18 @@ def main() -> int:
         distractors=args.distractors,
     )
     if not scene_path.exists():
-        print(f"FATAL: scene file not found at {scene_path}", file=sys.stderr)
+        log.error("scene file not found at %s", scene_path)
         return 2
 
     render_mode = "headless" if args.headless else "viewer"
-    print(f"Loading scene ({render_mode}): {scene_path}")
+    log.info("Loading scene (%s): %s", render_mode, scene_path)
     env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
-    obs = env.reset()
+    observation = env.reset()
     if not args.headless:
         env.launch_viewer(wrist_cam=args.cam == "wrist")
         # Mark the target hole for the human (viewer-only; never in the policy-facing
         # wrist-cam render). Lets the operator know which hole to aim at.
-        env.highlight_target(obs.target_hole_position)
+        env.highlight_target(observation.target_hole_position)
 
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
     # careful-insertion backbone (which feels like velocity control): a bigger
@@ -183,8 +189,8 @@ def main() -> int:
     # approach fight the impedance law. Real orientation corrections are the
     # expert's job (M4). The controller's 2 cm/step command clamp turns the
     # full-target command into a smooth bounded approach.
-    target_position = obs.target_hole_position.copy()
-    home_quat = controller.home_pose[3:]
+    target_position = observation.target_hole_position.copy()
+    home_quaternion = controller.home_pose[3:]
     assist = NoAssist()
 
     input_strategy: InputStrategy
@@ -209,7 +215,7 @@ def main() -> int:
         try:
             neutral = calibrate_neutral(tracker, on_tick=env.sync_viewer)
         except KeyboardInterrupt:
-            print("\nInterrupted during centering.")
+            log.info("Interrupted during centering.")
             tracker.close()
             env.close()
             return 0
@@ -217,26 +223,28 @@ def main() -> int:
         input_strategy = VisionInput(
             tracker,
             calibration=WorkspaceCalibration(),
-            track_orientation=args.orientation,  # 6-DoF mirroring on by default
+            track_orientation=args.orientation,  # opt-in 6-DoF mirroring (off by default)
             initial_anchor=neutral,
         )
-        print(
-            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand out of frame to clutch."
+        log.info(
+            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). "
+            "Lift your hand out of frame to clutch."
         )
     else:
-        target_pose = np.concatenate([target_position, home_quat])
+        target_pose = np.concatenate([target_position, home_quaternion])
         input_strategy = ScriptedNoisyHuman(target_pose, seed=args.seed)
 
-    start_dist = float(np.linalg.norm(obs.ee_pose[:3] - target_position))
-    print(
-        f"Target hole {obs.target_hole_index} at "
-        f"{np.array2string(target_position, precision=3)} "
-        f"({start_dist * 1000:.0f} mm from home EE)"
+    start_dist = float(np.linalg.norm(observation.ee_pose[:3] - target_position))
+    log.info(
+        "Target hole %d at %s (%.0f mm from home EE)",
+        observation.target_hole_index,
+        np.array2string(target_position, precision=3),
+        start_dist * 1000,
     )
     # --max-steps 0 (or negative) => run effectively forever; range() is lazy.
     max_steps = args.max_steps if args.max_steps > 0 else sys.maxsize
     budget = "unlimited" if args.max_steps <= 0 else f"{args.max_steps} steps"
-    print(f"Running {budget} with {args.input} input + NoAssist (Ctrl-C to stop)...")
+    log.info("Running %s with %s input + NoAssist (Ctrl-C to stop)...", budget, args.input)
 
     result = None
     try:
@@ -249,17 +257,19 @@ def main() -> int:
             render=not args.headless,
         )
     except KeyboardInterrupt:
-        print("\nInterrupted.")
+        log.info("Interrupted.")
     finally:
         if tracker is not None:
             tracker.close()
 
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
-        print(
-            f"\nEpisode done: {result.n_steps} steps  "
-            f"final lock state = {result.lock_status.state.value}  "
-            f"EE-to-hole {start_dist * 1000:.0f} mm -> {final_dist * 1000:.0f} mm"
+        log.info(
+            "Episode done: %d steps  final lock state = %s  EE-to-hole %.0f mm -> %.0f mm",
+            result.n_steps,
+            result.lock_status.state.value,
+            start_dist * 1000,
+            final_dist * 1000,
         )
     env.close()
     return 0
