@@ -483,3 +483,21 @@ def test_initial_anchor_holds_home_orientation_without_snapping():
     )
     cmd = vision.get_command(_observation())
     assert np.allclose(cmd.target_quaternion, home_quat, atol=1e-6)  # no snap
+
+
+def test_calibrate_neutral_tolerates_brief_pose_flicker():
+    """A single low-confidence frame within pose_grace_s must not restart the hold —
+    mirrors stereohand's presence window (a blink shouldn't reset the countdown)."""
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    held = HandReading(np.zeros(3), quat, 1.0, present=True, recenter_pose=True)
+    flicker = HandReading(np.zeros(3), quat, 1.0, present=True)  # pose flag dropped one frame
+    readings = [held, held, flicker, held, held, held, held]
+    clock = iter(np.arange(0.0, 100.0, 0.05))  # 0.05 s/iter < pose_grace_s ⇒ blink survives
+    anchor = calibrate_neutral(
+        _FakeSource(readings),
+        hold_s=0.3,
+        pose_grace_s=0.15,
+        clock=lambda: float(next(clock)),
+        sleep=lambda _s: None,
+    )
+    assert np.allclose(anchor.hand_position, np.zeros(3))  # completed despite the flicker

@@ -25,6 +25,7 @@ its tests) work without the ``stereo-input`` extra installed.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -51,12 +52,14 @@ _FINGER_MCPS = (5, 9, 13, 17)  # their knuckles (for the open-palm recenter test
 _GRIP_RATIO_CLOSED = 1.0
 _GRIP_RATIO_OPEN = 2.4
 
-# read() is called at the 500 Hz control rate, but the cv2 preview window only needs
-# ~30 Hz and its imshow/waitKey is an expensive WSLg round-trip on the main thread.
-# Pumping it every tick starves the tracking thread (60→15 fps) and floods the GUI
-# pipe. Pump every Nth read instead (500/16 ≈ 31 Hz); the hand reading itself is
-# read every tick (cheap — it just returns the background thread's latest).
-_WINDOW_PUMP_STRIDE = 16
+# The cv2 preview only needs ~30 Hz, and its imshow/waitKey is an expensive WSLg round-trip
+# on the main thread that steals CPU/GIL from the tracking thread. Throttle by *wall-clock
+# time*, not by a read-count stride: read() is called at wildly different rates (≈200 Hz in the
+# centering loop, ≈100-160 Hz in the render-paced control loop), so a fixed stride yields ~10 fps
+# in some phases and starves tracking in others. A time gate gives a stable preview rate
+# regardless of caller cadence. The hand reading itself is taken every call (cheap — it just
+# returns the background thread's latest).
+_WINDOW_PUMP_INTERVAL_S = 1.0 / 30.0
 
 
 @dataclass(frozen=True)
@@ -237,7 +240,7 @@ class StereoHandSource:
 
         calibration = StereoCalibration.load(calibration_path)
         self._show_window = show_window
-        self._read_count = 0  # for throttling the cv2 window pump (see read())
+        self._last_pump = 0.0  # wall-clock of the last cv2 window pump (see read())
         # recenter=True only drives the renderer's open-palm countdown HUD, a handy visual
         # while the operator holds the startup-centering pose; kevin times the hold itself in
         # calibrate_neutral, and the renderer's origin offset is a no-op for us.
@@ -247,7 +250,7 @@ class StereoHandSource:
             right=right,
             max_fps=max_fps,
             render=show_window,
-            render_config=RenderConfig(recenter=True) if show_window else None,
+            render_config=RenderConfig() if show_window else None,
         )
         log.info(
             "stereo hand tracker started (calib %s, cameras %r/%r)",
@@ -257,12 +260,13 @@ class StereoHandSource:
         )
 
     def read(self) -> HandReading:
-        # cv2 GUI must be pumped from the main (control-loop) thread, but only needs
-        # ~30 Hz — pump every Nth read, not every 500 Hz control tick (see the stride
-        # constant). The hand reading below is taken every tick regardless (cheap).
+        # cv2 GUI must be pumped from the main (control-loop) thread, but only needs ~30 Hz —
+        # pump on a wall-clock interval, not every call (see the interval constant). The hand
+        # reading below is taken every call regardless (cheap — the background thread's latest).
         if self._show_window:
-            self._read_count += 1
-            if self._read_count % _WINDOW_PUMP_STRIDE == 0:
+            now = time.monotonic()
+            if now - self._last_pump >= _WINDOW_PUMP_INTERVAL_S:
+                self._last_pump = now
                 # stereohand's split renderer draws in render_step() but flushes the imshow
                 # buffer to screen only in poll(); without the poll() the window stays blank.
                 self._tracker.render_step()

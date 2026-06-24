@@ -104,6 +104,7 @@ def calibrate_neutral(
     *,
     hold_s: float = 3.0,
     move_tol: float = 0.02,
+    pose_grace_s: float = 0.3,
     poll_interval_s: float = 0.005,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
@@ -114,8 +115,13 @@ def calibrate_neutral(
     The startup centering step: run *before the sim is stepped* (wall-clock timed, not
     ``sim_time``) so no command reaches the arm until a clean neutral exists. Reads ``source``
     in a loop, requiring ``reading.recenter_pose`` with under ``move_tol`` drift from the
-    hold's start; on drift or pose loss the hold restarts. Returns the **mean** hand position
-    over the hold (a stable zero, immune to single-frame jitter) and the settled orientation.
+    hold's start; drifting too far restarts. Returns the **mean** hand position over the hold
+    (a stable zero, immune to single-frame jitter) and the settled orientation.
+
+    A lost pose (sensor drop-out *or* a flickered ``recenter_pose``) only restarts the hold
+    once it's been gone for ``pose_grace_s`` — within that window the hold is kept and the
+    countdown keeps running, mirroring stereohand's renderer presence window so a single
+    low-confidence frame doesn't make the operator start the 3 s hold over.
 
     ``on_tick`` runs every iteration — use it to pump the preview window / sync the viewer so
     both stay responsive while the operator poses. A per-second countdown is logged.
@@ -125,19 +131,27 @@ def calibrate_neutral(
     positions: list[np.ndarray] = []
     last_orientation = np.array([1.0, 0.0, 0.0, 0.0])
     last_countdown: int | None = None
+    last_good_time: float | None = None  # clock() of the last present open-palm frame
     log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
     while True:
         if on_tick is not None:
             on_tick()
         reading = source.read()
+        now = clock()
         if not (reading.present and reading.recenter_pose):
-            hold_start, anchor, last_countdown = None, None, None
-            positions.clear()
+            # Tolerate a brief drop-out / pose flicker: only a loss sustained past
+            # pose_grace_s resets an active hold; within the window keep counting.
+            lost_too_long = last_good_time is not None and now - last_good_time > pose_grace_s
+            if hold_start is not None and lost_too_long:
+                log.info("centering reset — open palm lost for >%.2fs; hold again", pose_grace_s)
+                hold_start, anchor, last_countdown = None, None, None
+                positions.clear()
             sleep(poll_interval_s)
             continue
+        last_good_time = now
         moved = anchor is not None and float(np.linalg.norm(reading.position - anchor)) > move_tol
         if hold_start is None or moved:
-            hold_start = clock()
+            hold_start = now
             anchor = reading.position.copy()
             positions = [reading.position.copy()]
             last_countdown = None
@@ -146,7 +160,7 @@ def calibrate_neutral(
 
         positions.append(reading.position.copy())
         last_orientation = reading.orientation.copy()
-        held_for = clock() - hold_start
+        held_for = now - hold_start
         remaining = math.ceil(hold_s - held_for)
         if remaining > 0 and remaining != last_countdown:  # once per whole second
             last_countdown = remaining
