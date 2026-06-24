@@ -111,8 +111,7 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | `--left SRC` | `0` | Left-camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/0`). Use URLs on WSL2 — stream both cameras from Windows with the stereohand bridge. |
 | `--right SRC` | `2` | Right-camera source for `--input vision`: device index or stream URL. |
 | `--no-cam-window` | off | Hide the live stereo camera + 3D-skeleton window (`--input vision`; shown by default). |
-| `--gain G` | `1.0` | Vision input gain (`--input vision`): higher = the arm follows hand motion more aggressively (scales position scale in `mirror`/`expo`, the drive speeds in `rate`). |
-| `--control-mode {mirror,expo,rate}` | `expo` | Vision hand→arm mapping (`--input vision`): `expo` = position control with a dead-zone + soft centre (precise near rest, fast on big sweeps); `mirror` = plain linear position; `rate` = "point to steer" — hold an **open hand** and the arm flies in the direction it points, with a gentle forward creep as you angle the hand into the camera; a **fist** drives slowly backward; a half-closed hand locks. Position-independent, low fatigue. |
+| `--gain G` | `1.0` | Vision input gain (`--input vision`): higher = the arm follows hand motion more aggressively (scales the mapped position). |
 | `--seed N` | `0` | Seed for the scripted human's noise and the `SimEnv`. |
 | `--max-steps N` | script default | Episode step budget (one step = one 2 ms sim tick). **`0` = no limit** — run until you close the viewer or Ctrl-C (free-play). |
 | `--generated-wall` | off | Run on a freshly generated procedural wall instead of the static scene. |

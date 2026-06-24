@@ -98,27 +98,12 @@ def main() -> int:
         help="Right-camera source for --input vision: device index or stream URL.",
     )
     p.add_argument(
-        "--gain",
-        type=float,
-        default=1.0,
-        help="Vision input position gain (--input vision): higher = the arm mirrors hand "
-        "motion more aggressively. 1.0 = the tuned mirror default.",
-    )
-    p.add_argument(
         "--max-fps",
         type=int,
         default=None,
         help="Cap hand-tracking to N fps (--input vision), even if the cameras run faster "
         "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
         "no cap (process every new camera frame).",
-    )
-    p.add_argument(
-        "--control-mode",
-        choices=["mirror", "expo", "rate"],
-        default="expo",
-        help="Vision mapping (--input vision): 'expo' (default) = position control with "
-        "a dead-zone + soft centre (precise near rest, fast on big sweeps); 'mirror' = "
-        "plain linear position; 'rate' = joystick (hand offset sets EE velocity).",
     )
     p.add_argument(
         "--orientation",
@@ -172,6 +157,9 @@ def main() -> int:
     obs = env.reset()
     if not args.headless:
         env.launch_viewer(wrist_cam=args.cam == "wrist")
+        # Mark the target hole for the human (viewer-only; never in the policy-facing
+        # wrist-cam render). Lets the operator know which hole to aim at.
+        env.highlight_target(obs.target_hole_position)
 
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
     # careful-insertion backbone (which feels like velocity control): a bigger
@@ -229,8 +217,6 @@ def main() -> int:
         input_strategy = VisionInput(
             tracker,
             calibration=WorkspaceCalibration(),
-            gain=args.gain,
-            mode=args.control_mode,
             track_orientation=args.orientation,  # 6-DoF mirroring on by default
             initial_anchor=neutral,
         )

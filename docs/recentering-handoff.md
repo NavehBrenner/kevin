@@ -35,11 +35,12 @@ stereohand's *generic* renderer), so a HUD means feeding kevin state into that r
 
 ## Files
 - `src/ai_teleop/input/vision_input.py` — **primary.** `VisionInput`: clutch / recenter
-  timer / lock, one-euro filter, `WorkspaceCalibration`, modes `mirror|expo|rate`.
+  timer / lock, one-euro filter, `WorkspaceCalibration`. Single mapping: plain `mirror`
+  (absolute relative-to-anchor position).
 - `src/ai_teleop/input/hand_tracker.py` — `StereoHandSource` (adapts stereohand),
   `max_fps`, cv2 window pump (`_WINDOW_PUMP_STRIDE`), `_palm_open_facing` (kevin's own
   copy of the recenter pose test).
-- `scripts/run_episode.py` — CLI flags: `--recenter`, `--control-mode`, `--gain`,
+- `scripts/run_episode.py` — CLI flags: `--gain`, `--orientation`,
   `--max-fps`, `--no-cam-window`, `--stereo-calib`, `--left/--right`.
 - `src/ai_teleop/sim/runner.py` — substep loop (+ the debug print).
 - `src/ai_teleop/sim/scene.py` — `SimEnv.sync_viewer()` (throttled, main-thread).
@@ -49,7 +50,7 @@ stereohand's *generic* renderer), so a HUD means feeding kevin state into that r
 kvn episode --input vision --no-force-cap \
   --stereo-calib ../stereohand/stereo_calib.json \
   --left "http://$WIN:8080/0" --right "http://$WIN:8080/1" \
-  --max-steps 0 --control-mode mirror      # add --recenter to exercise the gesture
+  --max-steps 0
 ```
 Needs the viewer (no `--headless`). `--max-steps 0` = unlimited (Ctrl-C to stop).
 

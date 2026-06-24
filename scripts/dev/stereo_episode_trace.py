@@ -56,7 +56,6 @@ def main() -> None:
         action="store_true",
         help="disable track_orientation to A/B test the force-cap-trip hypothesis",
     )
-    p.add_argument("--mode", choices=["mirror", "expo", "rate"], default="expo")
     p.add_argument("--gain", type=float, default=1.0)
     p.add_argument("--headless", action="store_true", help="no viewer/cam window (just the log)")
     args = p.parse_args()
@@ -75,7 +74,6 @@ def main() -> None:
     vision = VisionInput(
         tracker,
         calibration=WorkspaceCalibration(),
-        mode=args.mode,
         gain=args.gain,
         track_orientation=not args.no_orientation,
     )
@@ -102,7 +100,7 @@ def main() -> None:
             )
         return False
 
-    print(f"mode={args.mode} gain={args.gain} track_orientation={not args.no_orientation}")
+    print(f"gain={args.gain} track_orientation={not args.no_orientation}")
     try:
         run_episode(
             env,

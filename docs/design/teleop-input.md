@@ -41,7 +41,7 @@ A depth camera (RealSense / Azure Kinect) would also give metric 3D and skip cal
 
 ### What stays the same
 
-The strategy layer (`vision_input.py`) is **unchanged in shape**: same relative clutch, same one-euro filter, same `WorkspaceCalibration`, same grip mapping. Metric depth and trustworthy orientation just flow into the existing transform. The clutch matters *more* here, not less: metric mapping means the operator's reachable hand volume must clutch-tile across the larger robot workspace exactly as before. The `rate`/`expo`/`mirror` control modes also carry over — with metric input, `mirror` (direct 1:1) finally becomes genuinely usable.
+The strategy layer (`vision_input.py`) is **unchanged in shape**: same relative clutch, same one-euro filter, same `WorkspaceCalibration`, same grip mapping. Metric depth and trustworthy orientation just flow into the existing transform. The clutch matters *more* here, not less: metric mapping means the operator's reachable hand volume must clutch-tile across the larger robot workspace exactly as before. With metric input, the plain `mirror` mapping (direct 1:1, relative to the clutch anchor) is genuinely usable — so it's the only mapping kept.
 
 ### Hardware, sync, and calibration specifics
 

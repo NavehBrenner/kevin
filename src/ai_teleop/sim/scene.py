@@ -380,6 +380,34 @@ class SimEnv:
             viewer.cam.fixedcamid = self._wrist_camera_id
         self._viewer = viewer
 
+    def highlight_target(
+        self,
+        position: np.ndarray,
+        *,
+        radius: float = 0.01,
+        rgba: tuple[float, float, float, float] = (1.0, 0.85, 0.0, 0.2),
+    ) -> None:
+        """Draw a translucent marker at ``position`` in the interactive viewer only.
+
+        Added to the viewer's ``user_scn`` (its user-owned decoration scene), which
+        the passive viewer renders but the offscreen wrist-camera ``Renderer`` never
+        touches — so the human sees which hole to aim at while the images fed to the
+        policy (``render_wrist_camera``) stay unmarked. No-op without a viewer.
+        """
+        if self._viewer is None:
+            return
+        scene = self._viewer.user_scn
+        geom_index = scene.ngeom
+        mujoco.mjv_initGeom(
+            scene.geoms[geom_index],
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=np.array([radius, 0.0, 0.0]),
+            pos=np.asarray(position, dtype=np.float64),
+            mat=np.eye(3).flatten(),
+            rgba=np.array(rgba, dtype=np.float32),
+        )
+        scene.ngeom = geom_index + 1
+
     def sync_viewer(self) -> None:
         """Push physics state to the viewer window, rate-limited to ~_VIEWER_FPS.
 
