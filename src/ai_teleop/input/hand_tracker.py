@@ -1,30 +1,33 @@
-"""MediaPipe Hands sensor wrapper — webcam frames → hand-pose readings (LAB-50).
+"""Stereo hand sensor — metric 3-D landmarks → hand-pose readings (LAB-50/74).
 
-The off-the-shelf **sensor** layer per `project-scope.md`: OpenCV captures
-frames, MediaPipe Hands turns each into 21 landmarks, and we distill those into
-a small typed :class:`HandReading` (palm position, a rough orientation estimate,
-an open/close grip proxy, and a ``present`` flag). It is deliberately *pure
-sensing*: no robot, no :class:`Command`, no calibration, no clutch — all of that
-lives one layer up in :class:`ai_teleop.input.vision_input.VisionInput`.
+The off-the-shelf **sensor** layer per `project-scope.md`: two calibrated webcams
+feed the :mod:`stereohand` package, which triangulates each frame into 21 *metric*
+3-D landmarks, and we distill those into a small typed :class:`HandReading` (wrist
+position in metres, an orientation estimate, an open/close grip proxy, and a
+``present`` flag). It is deliberately *pure sensing*: no robot, no
+:class:`Command`, no calibration, no clutch — all of that lives one layer up in
+:class:`ai_teleop.input.vision_input.VisionInput`.
 
 Two halves:
 
 - :func:`reading_from_landmarks` — the deterministic landmark→reading math. No
-  camera, no MediaPipe import; this is what the unit tests exercise with
+  camera, no stereohand import; this is what the unit tests exercise with
   synthetic landmark sets.
-- :class:`MediaPipeHandTracker` — the live path. OpenCV + MediaPipe run on a
-  background thread (camera ~30 fps decoupled from the 500 Hz control loop);
-  :meth:`MediaPipeHandTracker.read` returns the latest reading non-blocking, and
-  returns ``present=False`` when no hand is in frame (never raises mid-stream).
+- :class:`StereoHandSource` — the live path. It adapts
+  :class:`stereohand.StereoHandTracker` (capture + MediaPipe-per-view +
+  triangulation on a background thread) to the non-blocking ``read() ->
+  HandReading`` seam, returning ``present=False`` when the hand is missing in
+  either view (never raises mid-stream).
 
-``cv2`` and ``mediapipe`` are imported lazily inside the live class so the pure
-function (and its tests) work without the ``vision-input`` extra installed.
+``stereohand`` is imported lazily inside the live class so the pure function (and
+its tests) work without the ``stereo-input`` extra installed.
 """
 
 from __future__ import annotations
 
-import threading
+import time
 from dataclasses import dataclass, field
+from typing import Literal
 
 import mujoco
 import numpy as np
@@ -41,6 +44,7 @@ _MIDDLE_MCP = 9
 _MIDDLE_FINGERTIP = 12
 _PINKY_MCP = 17
 _FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, pinky tips (thumb excluded)
+_FINGER_MCPS = (5, 9, 13, 17)  # their knuckles (for the open-palm recenter test)
 
 # Empirical open/close bounds for the fingertip-spread ratio (tip→wrist distance
 # over hand scale). Fist ≈ 1.0, flat open hand ≈ 2.4 — hand-tuned; recalibrate
@@ -48,41 +52,53 @@ _FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, pinky tips (thumb excluded
 _GRIP_RATIO_CLOSED = 1.0
 _GRIP_RATIO_OPEN = 2.4
 
+# The cv2 preview only needs ~30 Hz, and its imshow/waitKey is an expensive WSLg round-trip
+# on the main thread that steals CPU/GIL from the tracking thread. Throttle by *wall-clock
+# time*, not by a read-count stride: read() is called at wildly different rates (≈200 Hz in the
+# centering loop, ≈100-160 Hz in the render-paced control loop), so a fixed stride yields ~10 fps
+# in some phases and starves tracking in others. A time gate gives a stable preview rate
+# regardless of caller cadence. The hand reading itself is taken every call (cheap — it just
+# returns the background thread's latest).
+_WINDOW_PUMP_INTERVAL_S = 1.0 / 30.0
+
 
 @dataclass(frozen=True)
 class HandReading:
-    """One frame of hand sensing, in camera/image-normalized space.
+    """One frame of hand sensing, in the metric stereo-rig (left-camera) frame.
 
     Lives here (not in ``common/``) because only the input layer consumes it.
 
     Attributes
     ----------
     position:
-        Shape (3,) — (image_x, image_y, depth). ``image_x, image_y`` are the
-        wrist landmark in MediaPipe's image-normalized frame (origin top-left,
-        [0, 1]); ``depth`` is an apparent-hand-size proxy (wrist→middle-MCP
-        distance) — *larger ⇒ hand closer to camera*. The size proxy replaces
-        MediaPipe's unreliable landmark z, giving the strategy a usable
-        forward/back axis. The strategy layer maps this to robot workspace.
+        Shape (3,) — the wrist landmark's true metric xyz (metres) in the
+        rectified left-camera frame: x right, y down, z = depth (away from the
+        camera). Real triangulated depth, no proxy. The strategy layer maps this
+        to robot workspace.
     orientation:
-        Shape (4,) unit quaternion (w, x, y, z) — a rough hand-frame estimate
-        from the palm landmarks. Noisy; the strategy may ignore it.
+        Shape (4,) unit quaternion (w, x, y, z) — a hand-frame estimate fit to the
+        3-D palm landmarks. Observable from two views; the strategy may still filter it.
     open_close:
         Grip proxy in [0, 1]: 0 = closed fist, 1 = flat open hand.
     present:
         False when no hand was detected this frame (drop-out).
     point_direction:
         Shape (2,) — the in-plane direction the hand points (wrist → middle
-        fingertip), in image coords (x right, y down), scaled by hand size so its
-        *magnitude* shrinks as the hand angles into the camera (foreshortening).
-        Position-independent: it's *where the hand points*, not where it sits.
-        Drives in-plane steering in ``rate`` mode; the shrinking magnitude blends
-        in-plane motion out as the forward (into-camera) component takes over.
+        fingertip), in the camera xy-plane (x right, y down), scaled by hand size
+        so its *magnitude* shrinks as the hand angles into the camera
+        (foreshortening). Position-independent: it's *where the hand points*, not
+        where it sits. Drives in-plane steering in ``rate`` mode; the shrinking
+        magnitude blends in-plane motion out as the forward component takes over.
     forwardness:
         How much the hand points *into* the camera (≈ "forward"): ~0 when pointing
         across the image plane, larger as the fingertips angle toward the lens.
-        From the fingertips' depth (negative MediaPipe z = toward camera). Noisy;
-        the strategy dead-zones it and drives a gentle forward creep.
+        From the fingertips' depth (negative z = toward camera). The strategy
+        dead-zones it and drives a gentle forward creep.
+    recenter_pose:
+        True when this frame is an open palm held square to the camera — the pose
+        the startup centering (:func:`ai_teleop.input.calibrate_neutral`) requires the
+        operator to hold still to set the neutral anchor. The hold timing lives in the
+        calibration routine; this is just the per-frame pose test.
 
     The ``rate`` mode reads the open/close grip to pick a gesture — an open hand
     steers (+ creeps forward), a fist drives back — so it is robust where a
@@ -96,6 +112,7 @@ class HandReading:
     present: bool
     point_direction: np.ndarray = field(default_factory=lambda: np.zeros(2))
     forwardness: float = 0.0
+    recenter_pose: bool = False
 
 
 _ABSENT = HandReading(
@@ -107,22 +124,22 @@ _ABSENT = HandReading(
 
 
 def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
-    """Convert a (21, 3) MediaPipe landmark array to a :class:`HandReading`.
+    """Convert a (21, 3) metric hand landmark array to a :class:`HandReading`.
 
     Pure and camera-free — the unit-tested core. ``landmarks`` is the hand's 21
-    points as (x, y, z) rows in MediaPipe's image-normalized frame.
+    points as real metric (x, y, z) rows in the rectified left-camera frame (the
+    triangulated output of :mod:`stereohand`). ``position`` is the true wrist xyz;
+    the derived signals (grip, pointing, orientation) are scale-invariant ratios.
     """
     if landmarks.shape != (21, 3):
         raise ValueError(f"landmarks must have shape (21, 3), got {landmarks.shape}")
 
     wrist = landmarks[_WRIST]
 
-    # Apparent hand size (wrist→middle-finger MCP). Serves two purposes: it
-    # normalizes the grip ratio (distance-invariant), and it *is* the depth proxy
-    # for the forward/back axis — bigger ⇒ hand closer to the camera. We use it
-    # instead of MediaPipe's raw landmark z, which is far too noisy to teleop with.
+    # Apparent hand size (wrist→middle-finger MCP) — normalizes the grip ratio and
+    # the pointing vector so both are distance-invariant.
     hand_scale = float(np.linalg.norm(landmarks[_MIDDLE_MCP] - wrist))
-    position = np.array([wrist[0], wrist[1], hand_scale])
+    position = wrist[:3].copy()
     if hand_scale < 1e-6:
         return HandReading(position, np.array([1.0, 0.0, 0.0, 0.0]), 0.0, True)
 
@@ -139,8 +156,8 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
     # purpose: the magnitude blends in-plane steering out as forwardness rises.
     point_direction = (landmarks[_MIDDLE_FINGERTIP, :2] - wrist[:2]) / hand_scale
     # Forwardness: fingertips angled toward the camera ⇒ negative tip z ⇒ positive.
-    # The wrist is MediaPipe's z origin, so tip z is already wrist-relative.
-    forwardness = -float(np.mean(landmarks[list(_FINGERTIPS), 2]))
+    # Wrist-relative, to remove the camera-frame depth offset.
+    forwardness = -float(np.mean(landmarks[list(_FINGERTIPS), 2] - wrist[2]))
 
     return HandReading(
         position,
@@ -149,7 +166,27 @@ def reading_from_landmarks(landmarks: np.ndarray) -> HandReading:
         present=True,
         point_direction=point_direction,
         forwardness=forwardness,
+        recenter_pose=_palm_open_facing(landmarks),
     )
+
+
+def _palm_open_facing(landmarks: np.ndarray) -> bool:
+    """True when the hand is open and roughly square to the camera (the recenter pose).
+
+    Ported from stereohand's renderer: ≥3 fingers extended (tip→wrist clearly longer
+    than knuckle→wrist) and the palm-plane normal roughly aligned with the camera's
+    z-axis (the squareness test reads metric landmark depth).
+    """
+    wrist = landmarks[_WRIST]
+    extended = sum(
+        np.linalg.norm(landmarks[tip] - wrist) > 1.4 * np.linalg.norm(landmarks[mcp] - wrist)
+        for tip, mcp in zip(_FINGERTIPS, _FINGER_MCPS, strict=True)
+    )
+    if extended < 3:
+        return False
+    normal = np.cross(landmarks[_INDEX_MCP] - wrist, landmarks[_PINKY_MCP] - wrist)
+    norm = float(np.linalg.norm(normal))
+    return norm > 0 and abs(float(normal[2])) > 0.7 * norm
 
 
 def _palm_orientation(landmarks: np.ndarray) -> np.ndarray:
@@ -176,168 +213,85 @@ def _palm_orientation(landmarks: np.ndarray) -> np.ndarray:
     return quat
 
 
-class MediaPipeHandTracker:
-    """Live webcam → :class:`HandReading` via OpenCV + MediaPipe Hands.
+class StereoHandSource:
+    """Two-webcam stereo tracker → metric :class:`HandReading` (the live sensor).
 
-    Capture + inference run on a background thread so :meth:`read` is a cheap,
-    non-blocking grab of the most recent reading — the 500 Hz control loop must
-    not stall on a ~30 fps camera. ``read`` never raises; on drop-out (or before
-    the first frame) it returns a reading with ``present=False``.
+    Adapts :class:`stereohand.StereoHandTracker` (which triangulates metric
+    ``(21, 3)`` landmarks from two calibrated webcams) to the non-blocking
+    ``read() -> HandReading`` seam by running :func:`reading_from_landmarks` on the
+    triangulated landmarks — so :class:`~ai_teleop.input.vision_input.VisionInput`
+    gets real metric depth and an observable orientation (enable
+    ``track_orientation`` for true 6-DoF mirroring).
 
-    One daemon grabber thread + a lock. Fine for a single demo camera; if
-    multi-camera or recording is ever needed, swap for a proper capture queue.
+    ``stereohand`` is imported lazily (the ``stereo-input`` extra) so the pure
+    landmark math and its tests don't need it installed.
     """
 
     def __init__(
         self,
+        calibration_path: str,
         *,
-        camera: int | str = 0,
-        detection_confidence: float = 0.6,
-        tracking_confidence: float = 0.5,
-        target_fps: float = 30.0,
+        left: int | str = 0,
+        right: int | str = 2,
         show_window: bool = False,
-        mode: str = "mirror",
+        max_fps: int | Literal["cam"] = "cam",
     ) -> None:
-        # Lazy import: only the live path needs the vision-input extra. The legacy
-        # `solutions` API (pinned mediapipe==0.10.21) bundles the landmark drawing
-        # helpers the debug window uses.
-        import cv2
-        from mediapipe.python.solutions import drawing_styles, drawing_utils, hands
+        from stereohand import RenderConfig, StereoCalibration, StereoHandTracker
 
-        self._cv2 = cv2
-        self._mp_hands = hands
-        self._mp_drawing = drawing_utils
-        self._mp_styles = drawing_styles
+        calibration = StereoCalibration.load(calibration_path)
         self._show_window = show_window
-        self._mode = mode
-        # `camera` is an int device index, or a string OpenCV can open: a stream
-        # URL (e.g. an MJPEG/RTSP feed) or a device path. WSL2 has no UVC driver
-        # for a host webcam, so there it must be a stream URL — see docs/cli.md.
-        self._capture = cv2.VideoCapture(camera)
-        if not self._capture.isOpened():
-            raise RuntimeError(f"could not open camera source {camera!r}")
-        self._capture.set(cv2.CAP_PROP_FPS, target_fps)
-
-        self._hands = hands.Hands(
-            max_num_hands=1,
-            min_detection_confidence=detection_confidence,
-            min_tracking_confidence=tracking_confidence,
+        self._last_pump = 0.0  # wall-clock of the last cv2 window pump (see read())
+        # recenter=True only drives the renderer's open-palm countdown HUD, a handy visual
+        # while the operator holds the startup-centering pose; kevin times the hold itself in
+        # calibrate_neutral, and the renderer's origin offset is a no-op for us.
+        self._tracker = StereoHandTracker.open(
+            calibration,
+            left=left,
+            right=right,
+            max_fps=max_fps,
+            render=show_window,
+            render_config=RenderConfig() if show_window else None,
+        )
+        log.info(
+            "stereo hand tracker started (calib %s, cameras %r/%r)",
+            calibration_path,
+            left,
+            right,
         )
 
-        self._latest = _ABSENT
-        # Annotated display frame produced by the capture thread; rendered from
-        # read() (main thread) — see _render_window for why.
-        self._display_frame: np.ndarray | None = None
-        self._frame_id = 0
-        self._last_rendered_id = -1
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="hand-tracker", daemon=True)
-        self._thread.start()
-        log.info("MediaPipe hand tracker started (camera %r, ~%.0f fps)", camera, target_fps)
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            ok, frame = self._capture.read()
-            if not ok:
-                continue
-            rgb = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
-            results = self._hands.process(rgb)
-            hand_landmarks = getattr(results, "multi_hand_landmarks", None)
-            if not hand_landmarks:
-                reading = _ABSENT
-            else:
-                points = np.array(
-                    [[lm.x, lm.y, lm.z] for lm in hand_landmarks[0].landmark], dtype=np.float64
-                )
-                reading = reading_from_landmarks(points)
-            display = self._annotate(frame, hand_landmarks, reading) if self._show_window else None
-            with self._lock:
-                self._latest = reading
-                if display is not None:
-                    self._display_frame = display
-                    self._frame_id += 1
-
-    def _annotate(
-        self, frame: np.ndarray, hand_landmarks: object, reading: HandReading
-    ) -> np.ndarray:
-        """Draw MediaPipe landmarks + a teleop HUD onto the frame (no GUI calls)."""
-        cv2 = self._cv2
-        if hand_landmarks:
-            self._mp_drawing.draw_landmarks(
-                frame,
-                hand_landmarks[0],  # type: ignore[index]
-                self._mp_hands.HAND_CONNECTIONS,
-                self._mp_styles.get_default_hand_landmarks_style(),
-                self._mp_styles.get_default_hand_connections_style(),
-            )
-        # Mirror for a natural selfie view (after drawing, so overlays match).
-        frame = cv2.flip(frame, 1)
-
-        # High-contrast semi-transparent HUD panel, pinned to the top-left corner.
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        panel_w, panel_h = 470, 134
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (panel_w, panel_h), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-
-        green, red, white, amber = (0, 230, 0), (60, 60, 255), (255, 255, 255), (0, 200, 255)
-        if not reading.present:
-            status, colour = "NO HAND - holding (clutched)", red
-        elif self._mode == "rate":
-            if reading.open_close > 0.6:
-                status, colour = "DRIVING - steer (open hand)", green
-            elif reading.open_close < 0.25:
-                status, colour = "DRIVING - back (fist)", green
-            else:
-                status, colour = "LOCKED - open hand or fist to drive", amber
-        else:
-            status, colour = f"TRACKING   hand {reading.open_close * 100:3.0f}% open", green
-        cv2.putText(frame, status, (12, 26), font, 0.62, colour, 2)
-
-        if self._mode == "rate":
-            lines = [
-                "Open hand: steer where it points (at camera = fwd)",
-                "Make a fist: back up        Half-close: lock",
-            ]
-        else:
-            lines = [
-                "Move hand: drive arm     Lift out of frame: clutch",
-                "Toward camera: forward   Away from camera: back",
-                "Open hand: release       Make a fist: grip",
-            ]
-        for i, line in enumerate(lines):
-            cv2.putText(frame, line, (12, 58 + i * 24), font, 0.48, white, 1)
-        return frame
-
     def read(self) -> HandReading:
-        """Latest hand reading (non-blocking). ``present=False`` on drop-out.
+        # cv2 GUI must be pumped from the main (control-loop) thread, but only needs ~30 Hz —
+        # pump on a wall-clock interval, not every call (see the interval constant). The hand
+        # reading below is taken every call regardless (cheap — the background thread's latest).
+        if self._show_window:
+            now = time.monotonic()
+            if now - self._last_pump >= _WINDOW_PUMP_INTERVAL_S:
+                self._last_pump = now
+                # stereohand's split renderer draws in render_step() but flushes the imshow
+                # buffer to screen only in poll(); without the poll() the window stays blank.
+                self._tracker.render_step()
+                self._tracker.poll()
+        reading = self._tracker.read()
+        if not reading.present:
+            return _ABSENT
+        return reading_from_landmarks(reading.landmarks)
 
-        Also pumps the debug window when enabled: OpenCV HighGUI only paints from
-        the thread that owns the event loop, and read() is called from the main
-        (control-loop) thread, so the actual imshow/waitKey happen here, not on
-        the capture thread (which would render a blank window under WSLg/Qt).
+    def set_renderer_origin(self, origin: np.ndarray) -> None:
+        """Center the preview's 3-D skeleton view on ``origin`` (metric left-camera frame).
+
+        No-op when the preview window is off (there's no renderer to update). Used to pin the
+        renderer's origin to the operator-set neutral from startup centering.
         """
-        with self._lock:
-            reading = self._latest
-            frame = self._display_frame
-            frame_id = self._frame_id
-        if self._show_window and frame is not None and frame_id != self._last_rendered_id:
-            self._cv2.imshow("ai_teleop - hand tracking", frame)
-            self._cv2.waitKey(1)  # required for HighGUI to actually render
-            self._last_rendered_id = frame_id
-        return reading
+        if self._show_window:
+            self._tracker.set_renderer_origin(
+                (float(origin[0]), float(origin[1]), float(origin[2]))
+            )
 
     def close(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1.0)
-        self._capture.release()
-        self._hands.close()
-        if self._show_window:
-            self._cv2.destroyAllWindows()
-        log.info("MediaPipe hand tracker stopped")
+        self._tracker.close()
+        log.info("stereo hand tracker stopped")
 
-    def __enter__(self) -> MediaPipeHandTracker:
+    def __enter__(self) -> StereoHandSource:
         return self
 
     def __exit__(self, *exc: object) -> None:

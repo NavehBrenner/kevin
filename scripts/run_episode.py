@@ -16,6 +16,7 @@ Run from the `kevin/` directory:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -24,10 +25,16 @@ import numpy as np
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from ai_teleop.common.log import add_logging_arguments, configure_from_args  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
-from ai_teleop.input import ScriptedNoisyHuman, VisionInput  # noqa: E402
+from ai_teleop.input import (  # noqa: E402
+    ScriptedNoisyHuman,
+    VisionInput,
+    WorkspaceCalibration,
+    calibrate_neutral,
+)
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
@@ -54,43 +61,55 @@ def main() -> int:
         help="Run on a freshly generated procedural wall instead of the static scene.",
     )
     p.add_argument(
-        "--wrist-cam",
-        action="store_true",
-        help="Open the viewer locked to the Panda's wrist camera (robot's-eye POV) "
-        "instead of the free camera; viewer keys still switch cameras live.",
+        "--cam",
+        choices=["main", "wrist"],
+        default="main",
+        help="Which camera the interactive viewer opens with: 'main' (free camera, default) "
+        "or 'wrist' (locked to the Panda's wrist camera, robot's-eye POV). Viewer keys still "
+        "switch cameras live.",
     )
     p.add_argument(
         "--input",
         choices=["scripted", "vision"],
         default="scripted",
-        help="Base command source: 'scripted' noisy human (default) or 'vision' webcam hand "
-        "tracking (MediaPipe; needs the viewer + the vision-input extra).",
-    )
-    p.add_argument(
-        "--camera",
-        default="0",
-        help="Camera source for --input vision: a device index (e.g. 0), or a stream URL "
-        "(e.g. http://<host>:<port>/video) — use a URL on WSL2, which has no webcam device.",
+        help="Base command source: 'scripted' noisy human (default) or 'vision' two-webcam "
+        "stereo hand tracking (metric 3D + 6-DoF; needs the viewer, the stereo-input extra, "
+        "and --stereo-calib).",
     )
     p.add_argument(
         "--no-cam-window",
         action="store_true",
-        help="Hide the live camera/landmark debug window (--input vision; shown by default).",
+        help="Hide the live stereo camera/3D-skeleton window (--input vision; shown by default).",
     )
     p.add_argument(
-        "--gain",
-        type=float,
-        default=1.0,
-        help="Vision input position gain (--input vision): higher = the arm mirrors hand "
-        "motion more aggressively. 1.0 = the tuned mirror default.",
+        "--stereo-calib",
+        default=None,
+        help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
+        "sources are --left / --right.",
     )
     p.add_argument(
-        "--control-mode",
-        choices=["mirror", "expo", "rate"],
-        default="expo",
-        help="Vision mapping (--input vision): 'expo' (default) = position control with "
-        "a dead-zone + soft centre (precise near rest, fast on big sweeps); 'mirror' = "
-        "plain linear position; 'rate' = joystick (hand offset sets EE velocity).",
+        "--left",
+        default="0",
+        help="Left-camera source for --input vision: device index or stream URL.",
+    )
+    p.add_argument(
+        "--right",
+        default="2",
+        help="Right-camera source for --input vision: device index or stream URL.",
+    )
+    p.add_argument(
+        "--max-fps",
+        type=int,
+        default=None,
+        help="Cap hand-tracking to N fps (--input vision), even if the cameras run faster "
+        "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
+        "no cap (process every new camera frame).",
+    )
+    p.add_argument(
+        "--orientation",
+        action="store_true",
+        help="Enable 6-DoF orientation mirroring (--input vision); track position only "
+        "(calmer, round-peg baseline). Orientation tracking is on by default.",
     )
     p.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     p.add_argument(
@@ -101,13 +120,26 @@ def main() -> int:
         type=float,
         default=None,
         help="Controller command clamp in m/step (approach-speed / strictness knob). "
-        "Default 0.025 (careful insertion); --input vision defaults to 0.08 for responsive "
-        "mirror-like tracking.",
+        "Default 0.025 (careful insertion); --input vision defaults to 0.3 for responsive "
+        "mirror-like tracking (raise it further if the arm still lags your hand).",
     )
+    p.add_argument(
+        "--no-force-cap",
+        action="store_true",
+        help="Disable the force-cap watchdog (--input vision free-play). Normally a wrist "
+        "force above ~30 N latches the arm into a HOLD lock that nothing in the vision path "
+        "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
+        "Use this to rule the watchdog in/out while debugging.",
+    )
+    add_logging_arguments(p)
     args = p.parse_args()
+    configure_from_args(args)
 
     if args.input == "vision" and args.headless:
         print("FATAL: --input vision needs the viewer (drop --headless).", file=sys.stderr)
+        return 2
+    if args.input == "vision" and not args.stereo_calib:
+        print("FATAL: --input vision requires --stereo-calib PATH.", file=sys.stderr)
         return 2
 
     scene_path = resolve_scene_path(
@@ -124,15 +156,23 @@ def main() -> int:
     env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
     obs = env.reset()
     if not args.headless:
-        env.launch_viewer(wrist_cam=args.wrist_cam)
+        env.launch_viewer(wrist_cam=args.cam == "wrist")
+        # Mark the target hole for the human (viewer-only; never in the policy-facing
+        # wrist-cam render). Lets the operator know which hole to aim at.
+        env.highlight_target(obs.target_hole_position)
 
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
     # careful-insertion backbone (which feels like velocity control): a bigger
     # command clamp lets the impedance spring toward the hand, and lower joint
     # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
     if args.input == "vision":
-        max_dpos = args.max_dpos if args.max_dpos is not None else 0.08
-        controller = Controller(env, max_dpos_per_step=max_dpos, joint_damping=1.5)
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.3
+        controller = Controller(
+            env,
+            max_dpos_per_step=max_dpos,
+            joint_damping=1.5,
+            force_cap_n=math.inf if args.no_force_cap else 30.0,
+        )
     else:
         max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
         controller = Controller(env, max_dpos_per_step=max_dpos)
@@ -150,15 +190,39 @@ def main() -> int:
     input_strategy: InputStrategy
     tracker = None
     if args.input == "vision":
-        from ai_teleop.input.hand_tracker import MediaPipeHandTracker
+        from ai_teleop.input.hand_tracker import StereoHandSource
 
         # A bare integer is a device index; anything else is a stream URL / path.
-        camera: int | str = int(args.camera) if args.camera.isdigit() else args.camera
-        tracker = MediaPipeHandTracker(
-            camera=camera, show_window=not args.no_cam_window, mode=args.control_mode
+        def _camera_source(value: str) -> int | str:
+            return int(value) if value.isdigit() else value
+
+        tracker = StereoHandSource(
+            args.stereo_calib,
+            left=_camera_source(args.left),
+            right=_camera_source(args.right),
+            show_window=not args.no_cam_window,
+            max_fps=args.max_fps if args.max_fps is not None else "cam",
         )
-        input_strategy = VisionInput(tracker, gain=args.gain, mode=args.control_mode)
-        print("Driving the arm via webcam hand tracking. Lift your hand out of frame to clutch.")
+        # Startup centering: hold an open palm still to set neutral *before* the sim runs, so
+        # the arm holds home (no command piped) until a clean anchor — position and
+        # orientation — exists. Ctrl-C here exits without touching the arm.
+        try:
+            neutral = calibrate_neutral(tracker, on_tick=env.sync_viewer)
+        except KeyboardInterrupt:
+            print("\nInterrupted during centering.")
+            tracker.close()
+            env.close()
+            return 0
+        tracker.set_renderer_origin(neutral.hand_position)  # center the 3D view on neutral
+        input_strategy = VisionInput(
+            tracker,
+            calibration=WorkspaceCalibration(),
+            track_orientation=args.orientation,  # 6-DoF mirroring on by default
+            initial_anchor=neutral,
+        )
+        print(
+            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand out of frame to clutch."
+        )
     else:
         target_pose = np.concatenate([target_position, home_quat])
         input_strategy = ScriptedNoisyHuman(target_pose, seed=args.seed)

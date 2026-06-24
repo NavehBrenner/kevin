@@ -31,7 +31,10 @@ from enum import Enum
 import mujoco
 import numpy as np
 
+from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
+
+log = get_logger("lock")
 
 
 class LockState(Enum):
@@ -166,6 +169,15 @@ class LockController:
     def _transition_to_hold(
         self, sim_time: float, reason: str, *, current_pose: np.ndarray | None = None
     ) -> None:
+        # Transitions are rare (not per-tick), so logging here is safe and is the
+        # only window into a force-cap trip — once HOLD, nothing in the vision path
+        # releases it, so the arm appears to "stop responding".
+        log.warning(
+            "lock %s -> HOLD at t=%.3f (%s) — arm latched until released",
+            self._state.value,
+            sim_time,
+            reason,
+        )
         self._state = LockState.HOLD
         self._reason = reason
         self._t_transition = sim_time

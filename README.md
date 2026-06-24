@@ -21,11 +21,14 @@ Requires [uv](https://github.com/astral-sh/uv) (Python 3.12). **After cloning, r
 the one-time setup** from this directory:
 
 ```bash
-./scripts/setup.sh
+./scripts/setup.sh          # everything needed to run the project
+./scripts/setup.sh --dev    # the above plus dev tooling (pytest/ruff/mypy) + docs
 ```
 
-That creates the `.venv`, installs the package + dev tooling, enables the git
-hooks, and puts a `kvn` launcher on your PATH. Then:
+That creates the `.venv`, installs the package + extras, enables the git hooks,
+and puts a `kvn` launcher on your PATH. The default installs the full **runtime**
+stack (policy train/eval, stereo webcam teleop via `stereo-input`, recording, scene
+generation); `-D`/`--dev` adds the dev tooling and docs deliverables. Then:
 
 ```bash
 kvn                       # list every command
@@ -49,31 +52,35 @@ at runtime with `kvn episode --input {scripted,vision}` (default `scripted`):
 
 - **scripted** — a deterministic, seedable "noisy human". No hardware; used for
   data generation and repeatable KPI benchmarking. This is the default.
-- **vision** — live webcam hand tracking via [MediaPipe Hands](https://developers.google.com/mediapipe).
-  Move your hand to drive the arm; lift it out of frame to clutch/re-center; make
-  a fist to squeeze, open your hand to release. Needs the `vision-input` extra and
-  the viewer (no `--headless`).
+- **vision** — live **two-webcam stereo** hand tracking via the standalone
+  [stereohand](https://github.com/NavehBrenner/stereohand) package: metric 3D hand
+  pose + 6-DoF mirroring. Move your hand to drive the arm; lift it out of frame (or
+  hold an open palm still for 3 s) to re-anchor; make a fist to squeeze, open your
+  hand to release. Needs the `stereo-input` extra, a one-time stereo calibration,
+  and the viewer (no `--headless`).
 - **keyboard** — developer fallback, *deferred* (not yet implemented).
 
-### Webcam (vision) setup
+### Stereo (vision) setup
 
-Install the extra (adds `opencv-python` + `mediapipe`):
-
-```bash
-uv pip install -e ".[dev,vision-input]"
-```
-
-**Native Linux / macOS** with a local webcam — just run it (device index `0`):
+Install the extra (pulls `stereohand`, which brings its own OpenCV + MediaPipe):
 
 ```bash
-kvn episode --input vision           # add --camera N to pick another device
+uv pip install -e ".[dev,stereo-input]"
 ```
 
-**WSL2** — WSL's kernel has no webcam (UVC) driver, so there's no `/dev/video0`. Stream the
-camera from Windows and pass its URL to `--camera` instead of a device index, e.g.
-`kvn episode --input vision --camera "http://<windows-host>:8080/0"`. The Windows-side
-camera bridge (`stream_webcams.py`) and a full step-by-step WSL walkthrough live in the
-standalone [stereohand](https://github.com/NavehBrenner/stereohand) project.
+You need two rigidly co-mounted webcams and a one-time ChArUco stereo calibration
+(`stereo_calib.json`) — see the [stereohand](https://github.com/NavehBrenner/stereohand)
+README for the calibration walkthrough. Then:
+
+```bash
+kvn episode --input vision --stereo-calib stereo_calib.json --left 0 --right 2
+```
+
+**WSL2** — WSL's kernel has no webcam (UVC) driver, so there's no `/dev/video*`. Stream
+both cameras from Windows and pass their URLs to `--left` / `--right`, e.g.
+`--left "http://<windows-host>:8080/0" --right "http://<windows-host>:8080/1"`. The
+Windows-side camera bridge (`stream_webcams.py`) and a full step-by-step WSL walkthrough
+live in the stereohand project.
 
 ## License
 

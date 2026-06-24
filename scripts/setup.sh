@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # K.V.N project setup — run once after cloning.
 #
-#   ./scripts/setup.sh
+#   ./scripts/setup.sh          # everything needed to RUN the project
+#   ./scripts/setup.sh --dev    # the above PLUS dev tooling + docs deliverables
 #
-# Creates the .venv, installs the package + dev tooling, enables the git hooks,
-# and drops a `kvn` launcher on your PATH so you can run the CLI as plain `kvn`
-# (no `uv run`) from any directory. Idempotent: safe to re-run (e.g. after the
-# repo moves, to repoint the launcher).
+# Creates the .venv, installs the package + extras, enables the git hooks, and
+# drops a `kvn` launcher on your PATH so you can run the CLI as plain `kvn` (no
+# `uv run`) from any directory. Idempotent: safe to re-run (e.g. after the repo
+# moves, to repoint the launcher).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,8 +19,32 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-# Which extras to install. Override with EXTRAS, e.g. EXTRAS="dev,ml,vision-input".
-EXTRAS="${EXTRAS:-dev}"
+DEV=0
+for arg in "$@"; do
+  case "$arg" in
+    -D|--dev) DEV=1 ;;
+    -h|--help)
+      sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) echo "FATAL: unknown argument '$arg' (use -D/--dev or -h/--help)" >&2; exit 2 ;;
+  esac
+done
+
+# Extras, in two tiers:
+#   run  — everything needed to actually run the project: policy train/eval (ml),
+#          stereo two-webcam teleop (stereo-input, pulls stereohand), episode
+#          recording (viz), procedural scene generation (scenegen), rich logging (cli).
+#   dev  — also dev tooling (pytest/ruff/mypy/poe) and the D1 docs deliverables.
+RUN_EXTRAS="ml,stereo-input,viz,scenegen,cli"
+DEV_EXTRAS="dev,docs"
+if [[ "$DEV" == "1" ]]; then
+  DEFAULT_EXTRAS="$RUN_EXTRAS,$DEV_EXTRAS"
+else
+  DEFAULT_EXTRAS="$RUN_EXTRAS"
+fi
+# EXTRAS env var overrides the tiers entirely (and takes precedence over --dev).
+EXTRAS="${EXTRAS:-$DEFAULT_EXTRAS}"
 
 echo "==> Creating virtualenv (.venv) and installing .[$EXTRAS] ..."
 uv venv

@@ -19,3 +19,17 @@ def mat3_to_quat(mat_flat: np.ndarray) -> np.ndarray:
     quat = np.zeros(4)
     mujoco.mju_mat2Quat(quat, np.ascontiguousarray(mat_flat).reshape(9))
     return quat
+
+
+def quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Hamilton product ``a ∘ b`` of two (w,x,y,z) quaternions (rotate by b then a)."""
+    result = np.zeros(4)
+    mujoco.mju_mulQuat(result, a, b)
+    return result
+
+
+def quat_conjugate(q: np.ndarray) -> np.ndarray:
+    """Conjugate (inverse, for a unit quat) of a (w,x,y,z) quaternion."""
+    result = np.zeros(4)
+    mujoco.mju_negQuat(result, q)
+    return result

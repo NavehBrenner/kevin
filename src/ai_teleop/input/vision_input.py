@@ -1,6 +1,6 @@
 """VisionInput — hand-pose readings → base EE Command (LAB-51).
 
-The headline M8 teleop logic: turn the MediaPipe sensor's :class:`HandReading`
+The headline M8 teleop logic: turn the stereo sensor's :class:`HandReading`
 stream (`hand_tracker.py`) into a base :class:`Command` behind the existing
 :class:`~ai_teleop.domain.interfaces.InputStrategy` seam, so it drops into the
 runner with no upstream/downstream change.
@@ -18,12 +18,13 @@ Four pieces, all the deferred "still open" calibration work from
 - **One-euro filter** on the mapped position to kill webcam tremor (a low-pass
   whose cutoff rises with speed: smooth when still, responsive when moving).
 - **Grip.** The open/close scalar maps to ``Command.delta_grip_force``.
-- **Orientation.** Off by default (``track_orientation=False``): the peg is
-  round so roll is irrelevant, and the MediaPipe orientation estimate is the
-  jitteriest signal — tracking it tends to fight the controller. When enabled,
-  the held orientation follows the (filtered) hand orientation.
+- **Orientation.** Stereo makes the hand orientation observable, so 6-DoF
+  mirroring is usable (``track_orientation=True`` — what the stereo CLI path
+  enables). The class default stays ``False`` (round peg ⇒ roll irrelevant, and a
+  calmer translation-only baseline); when on, the held orientation follows the
+  (filtered) hand orientation.
 
-Live webcam use is manual; the deterministic math here (mapping transform,
+Live two-camera use is manual; the deterministic math here (mapping transform,
 one-euro response, clutch/drop-out state machine) is unit-tested with synthetic
 readings.
 """
@@ -31,52 +32,113 @@ readings.
 from __future__ import annotations
 
 import math
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Literal, Protocol
+from typing import Protocol
 
 import numpy as np
 
 from ai_teleop.common.command import Command
+from ai_teleop.common.geometry import quat_conjugate, quat_mul
+from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
 
 from .hand_tracker import HandReading
 
-ControlMode = Literal["mirror", "expo", "rate"]
-"""How a hand displacement drives the EE:
-
-- ``mirror`` — absolute position: ``EE = anchor + scale·(hand − hand_anchor)``.
-  Direct, but one linear gain can't be both "cross the workspace" and "nudge
-  2 mm", and hand tremor maps straight in.
-- ``expo`` — same position control, but the camera delta passes through a
-  dead-zone (kills resting drift) + a cubic expo curve (tiny near rest ⇒
-  precision, near-linear at full sweep ⇒ reach). The intuitive default.
-- ``rate`` — "point to steer": an open hand sets the in-plane EE *velocity* from
-  the direction it points, plus a gentle forward creep scaled by how much it
-  angles into the camera; a fist drives slowly backward; a half-closed hand
-  locks. Position-independent and low-fatigue; unlimited range (no camera-FoV
-  ceiling). See :class:`~ai_teleop.input.hand_tracker.HandReading`.
-"""
-
-# rate-mode tuning — hand-tuned calibration knobs; adjust from operator feedback.
-_RATE_FWD_DEADZONE = 0.01  # forwardness ignored below this (keeps flat pointing from creeping)
-_RATE_OPEN_THRESHOLD = 0.6  # open_close above this ⇒ open hand ⇒ steer (+ forward)
-_RATE_FIST_THRESHOLD = 0.1  # open_close below this ⇒ fist ⇒ drive back; between the two ⇒ lock
-
-
-def _deadzone(value: np.ndarray, width: float) -> np.ndarray:
-    """Per-axis dead-zone: zero inside ±width, shifted-linear outside (no step)."""
-    return np.sign(value) * np.maximum(np.abs(value) - width, 0.0)
-
-
-def _expo(value: np.ndarray, amount: float) -> np.ndarray:
-    """Cubic expo blend in [0,1]: 0 = linear, 1 = pure cubic (soft centre)."""
-    return (1.0 - amount) * value + amount * value**3
+log = get_logger("vision_input")
 
 
 class _HandSource(Protocol):
     """Anything that yields the latest hand reading — the live tracker or a fake."""
 
     def read(self) -> HandReading: ...
+
+
+@dataclass(frozen=True)
+class NeutralAnchor:
+    """Operator-defined neutral captured at startup (see :func:`calibrate_neutral`).
+
+    The hand pose that maps to the arm's home EE: feeding it to ``VisionInput`` as
+    ``initial_anchor`` means the arm sits still at home until the operator moves their
+    hand *relative* to this pose — no startup jump from anchoring on a bad first frame.
+    """
+
+    hand_position: np.ndarray
+    hand_orientation: np.ndarray
+
+
+def calibrate_neutral(
+    source: _HandSource,
+    *,
+    hold_s: float = 3.0,
+    move_tol: float = 0.02,
+    pose_grace_s: float = 0.3,
+    poll_interval_s: float = 0.005,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    on_tick: Callable[[], None] | None = None,
+) -> NeutralAnchor:
+    """Block until an open palm is held still for ``hold_s``; return the averaged neutral.
+
+    The startup centering step: run *before the sim is stepped* (wall-clock timed, not
+    ``sim_time``) so no command reaches the arm until a clean neutral exists. Reads ``source``
+    in a loop, requiring ``reading.recenter_pose`` with under ``move_tol`` drift from the
+    hold's start; drifting too far restarts. Returns the **mean** hand position over the hold
+    (a stable zero, immune to single-frame jitter) and the settled orientation.
+
+    A lost pose (sensor drop-out *or* a flickered ``recenter_pose``) only restarts the hold
+    once it's been gone for ``pose_grace_s`` — within that window the hold is kept and the
+    countdown keeps running, mirroring stereohand's renderer presence window so a single
+    low-confidence frame doesn't make the operator start the 3 s hold over.
+
+    ``on_tick`` runs every iteration — use it to pump the preview window / sync the viewer so
+    both stay responsive while the operator poses. A per-second countdown is logged.
+    """
+    hold_start: float | None = None
+    anchor: np.ndarray | None = None
+    positions: list[np.ndarray] = []
+    last_orientation = np.array([1.0, 0.0, 0.0, 0.0])
+    last_countdown: int | None = None
+    last_good_time: float | None = None  # clock() of the last present open-palm frame
+    log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
+    while True:
+        if on_tick is not None:
+            on_tick()
+        reading = source.read()
+        now = clock()
+        if not (reading.present and reading.recenter_pose):
+            # Tolerate a brief drop-out / pose flicker: only a loss sustained past
+            # pose_grace_s resets an active hold; within the window keep counting.
+            lost_too_long = last_good_time is not None and now - last_good_time > pose_grace_s
+            if hold_start is not None and lost_too_long:
+                log.info("centering reset — open palm lost for >%.2fs; hold again", pose_grace_s)
+                hold_start, anchor, last_countdown = None, None, None
+                positions.clear()
+            sleep(poll_interval_s)
+            continue
+        last_good_time = now
+        moved = anchor is not None and float(np.linalg.norm(reading.position - anchor)) > move_tol
+        if hold_start is None or moved:
+            hold_start = now
+            anchor = reading.position.copy()
+            positions = [reading.position.copy()]
+            last_countdown = None
+            sleep(poll_interval_s)
+            continue
+
+        positions.append(reading.position.copy())
+        last_orientation = reading.orientation.copy()
+        held_for = now - hold_start
+        remaining = math.ceil(hold_s - held_for)
+        if remaining > 0 and remaining != last_countdown:  # once per whole second
+            last_countdown = remaining
+            log.info("centering in %ds — hold still", remaining)
+        if held_for >= hold_s:
+            neutral_position = np.mean(positions, axis=0)
+            log.info("centering complete — neutral set")
+            return NeutralAnchor(neutral_position, last_orientation)
+        sleep(poll_interval_s)
 
 
 class _OneEuroVector:
@@ -132,37 +194,40 @@ class _OneEuroVector:
 
 @dataclass(frozen=True)
 class WorkspaceCalibration:
-    """Camera-space → robot-workspace mapping for the *relative* hand delta.
+    """Metric camera-rig → robot-workspace mapping for the *relative* hand delta.
 
     Only scale and axis layout — the relative clutch handles the origin. Maps a
-    camera-space displacement ``(dx, dy, dz)`` (image-normalized) to a world EE
-    displacement in metres.
+    camera-frame displacement ``(dx, dy, dz)`` in metres (the stereo-triangulated
+    wrist delta per :class:`HandReading`) to a world EE displacement in metres.
 
-    The camera-space axes are (image_x, image_y, depth) per :class:`HandReading`,
-    where depth is the apparent-hand-size proxy (larger ⇒ closer to camera).
+    The camera-frame axes are (x-right, y-down, z-depth) of the rectified left
+    camera, where z grows *away* from the camera.
 
     Attributes
     ----------
     scale:
-        Metres of EE travel per unit of camera displacement, per *world* axis
-        (x, y, z). Sized so the hand *mirrors* the arm — a partial hand sweep
-        spans the workspace rather than slowly nudging it. The forward/back axis
-        is driven by the hand-size proxy, whose usable swing is smaller, so
-        world-x gets a bigger gain. Scaled live by ``VisionInput(gain=...)``.
+        Metres of EE travel per metre of hand displacement, per *world* axis
+        (x, y, z). A near-1:1 metric mirror gain — a comfortable hand sweep spans a
+        good chunk of the workspace; the clutch tiles the rest. Scaled live by
+        ``VisionInput(gain=...)``.
     axis_map:
-        For each world axis, which camera axis (0=image_x, 1=image_y, 2=depth)
-        drives it. Default maps depth→world-x, image_x→world-y, image_y→world-z —
-        i.e. moving the hand toward/away from the camera pushes the EE forward/
-        back, left/right pans it sideways, up/down raises it.
+        For each world axis, which camera axis (0=x-right, 1=y-down, 2=z-depth)
+        drives it. Default maps depth→world-x, x→world-y, y→world-z — i.e. moving
+        the hand toward/away from the camera pushes the EE forward/back, left/right
+        pans it sideways, up/down raises it.
     axis_sign:
-        ±1 per world axis to flip direction (image y grows downward, etc.).
-        Chosen so natural hand motion reads as intuitive EE motion; flip an entry
-        if an axis feels inverted.
+        ±1 per world axis to flip direction. The forward axis is negative because
+        metric depth grows *away* from the camera (so hand-toward-camera ⇒ forward),
+        and image y grows downward.
+
+    ponytail: ``scale`` and the signs are rig-dependent tuning knobs — flip a sign
+    if an axis feels inverted; raise ``scale`` to tile the workspace with fewer
+    clutches.
     """
 
-    scale: np.ndarray = field(default_factory=lambda: np.array([3.0, 1.2, 1.2]))
+    scale: np.ndarray = field(default_factory=lambda: np.array([1.5, 1.5, 1.5]))
     axis_map: tuple[int, int, int] = (2, 0, 1)
-    axis_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, -1.0]))
+    axis_sign: np.ndarray = field(default_factory=lambda: np.array([-1.0, 1.0, -1.0]))
 
     def map_delta(self, camera_delta: np.ndarray) -> np.ndarray:
         """Map a camera-space displacement to a world-frame EE displacement (m)."""
@@ -177,49 +242,32 @@ class VisionInput:
     ----------
     hand_source:
         Anything with ``read() -> HandReading`` — typically a
-        :class:`~ai_teleop.input.hand_tracker.MediaPipeHandTracker`; tests pass a
+        :class:`~ai_teleop.input.hand_tracker.StereoHandSource`; tests pass a
         fake. Read once per :meth:`get_command` (once per control tick).
     calibration:
-        Camera→workspace mapping. Defaults to :class:`WorkspaceCalibration`.
+        Metric camera-rig→workspace mapping. Defaults to :class:`WorkspaceCalibration`.
     grip_force:
         Newton magnitude the open/close scalar maps onto: a flat open hand
         commands ``-grip_force`` (release), a fist ``+grip_force`` (squeeze),
         additive on the baseline grip (see :class:`Command`).
-    gain:
-        Scalar multiplier on the calibration's per-axis scale — the live "how
-        much the arm mirrors the hand" knob. >1 amplifies hand motion, <1 damps.
-        In ``rate`` mode it scales the velocities (``rate_speed``/``pitch_gain``).
-    mode:
-        Control mapping — see :data:`ControlMode`. Default ``expo``.
-    deadzone:
-        In ``expo`` mode, the camera-space half-width zeroed around the anchor so
-        a still hand commands nothing. In ``rate`` mode, the pitch dead-zone.
-    expo:
-        Cubic expo amount in [0,1] for ``expo`` mode (0 = linear, 1 = soft).
-    rate_speed:
-        In-plane EE speed (m/s) while the two-finger drive gesture is held
-        (``rate`` mode). Scaled by ``gain``.
-    forward_gain:
-        Forward EE speed (m/s) per unit of forwardness (``rate`` mode) — the
-        gentle creep as you angle the fingers into the camera. Kept small so it
-        stays minor next to the in-plane motion. Scaled by ``gain``.
-    back_speed:
-        Backward EE speed (m/s) while a fist is held (``rate`` mode). Scaled by
-        ``gain``.
-    leash:
-        Max distance (m, per axis) the velocity target may lead the actual EE in
-        ``rate`` mode. Bounds run-away when the arm can't keep up and sets the
-        effective top speed (bigger ⇒ larger impedance error ⇒ faster). On lock
-        the target snaps back to the arm, so there's no catch-up drift.
-    lock_delay:
-        Seconds the drive gesture may drop out before the arm locks (``rate``
-        mode) — a debounce so brief tracking glitches don't freeze you.
+    dropout_grace_s:
+        Seconds the sensor may report ``present=False`` before the clutch actually
+        releases. A debounce for the clutch: stereo
+        triangulation drops out whenever the hand is briefly low-confidence in
+        *either* view, and without this every single-frame miss would re-anchor and
+        kill sustained motion. Within the grace window the last command is held and
+        the anchor is kept, so motion resumes seamlessly; only a sustained loss
+        releases the clutch (so deliberate lift-out-to-reposition still works).
     track_orientation:
         When True, the held orientation follows the filtered hand orientation;
         default False holds the start orientation (round peg ⇒ roll irrelevant).
     min_cutoff, beta:
         One-euro filter parameters for the mapped position. Tuned responsive
         (low lag) so the arm tracks the hand rather than lagging behind it.
+    initial_anchor:
+        Operator-set neutral from the startup centering (:func:`calibrate_neutral`).
+        When given, the first engage anchors here instead of the live first frame, so
+        the arm holds home until the hand moves *relative* to this pose — no startup jump.
     """
 
     def __init__(
@@ -229,45 +277,28 @@ class VisionInput:
         calibration: WorkspaceCalibration | None = None,
         gain: float = 1.0,
         grip_force: float = 5.0,
-        mode: ControlMode = "expo",
-        deadzone: float = 0.03,
-        expo: float = 0.6,
-        rate_speed: float = 4.0,
-        forward_gain: float = 6.0,
-        back_speed: float = 0.3,
-        leash: float = 0.2,
-        lock_delay: float = 0.2,
+        dropout_grace_s: float = 0.2,
         track_orientation: bool = False,
         min_cutoff: float = 2.0,
         beta: float = 1.5,
+        initial_anchor: NeutralAnchor | None = None,
     ) -> None:
         self._source = hand_source
         base = calibration or WorkspaceCalibration()
-        # rate mode is direction-driven, not offset-driven: `gain` scales the
-        # velocities (below), not the position scale, so leave the calibration be.
-        self._calibration = (
-            replace(base, scale=base.scale * gain) if gain != 1.0 and mode != "rate" else base
-        )
+        self._calibration = replace(base, scale=base.scale * gain) if gain != 1.0 else base
         self._grip_force = grip_force
-        self._mode = mode
-        self._deadzone = deadzone
-        self._expo = expo
-        rate_scale = gain if mode == "rate" else 1.0
-        self._rate_speed = rate_speed * rate_scale
-        self._forward_gain = forward_gain * rate_scale
-        self._back_speed = back_speed * rate_scale
-        self._leash = leash
-        self._lock_delay = lock_delay
+        self._dropout_grace_s = dropout_grace_s
         self._track_orientation = track_orientation
         self._position_filter = _OneEuroVector(min_cutoff=min_cutoff, beta=beta)
 
+        self._initial_anchor = initial_anchor  # operator-set neutral; consumed on first engage
         self._engaged = False
+        self._last_present_time: float | None = None  # sim_time of the last present reading
         self._held: Command | None = None  # last commanded pose (held on disengage)
         self._hand_anchor: np.ndarray | None = None  # camera-space pose at engage
         self._ee_anchor: np.ndarray | None = None  # world EE position at engage
-        self._prev_time: float | None = None  # for rate-mode integration
-        self._driving = False  # rate-mode drive/lock state (with lock_delay debounce)
-        self._last_drive_time = 0.0  # last tick a drive gesture (point or fist) was seen
+        self._hand_orientation_anchor: np.ndarray | None = None  # hand quat at engage
+        self._ee_orientation_anchor: np.ndarray | None = None  # EE quat at engage
 
     def get_command(self, observation: Observation) -> Command:
         # Seed the held pose from the current EE pose on the first tick, so a
@@ -279,105 +310,80 @@ class VisionInput:
 
         reading = self._source.read()
 
-        # Drop-out (or disengaged): freeze the arm exactly where it physically is
-        # right now — command the current EE pose (keeping the last grip). Holds
-        # static, never drifts toward home, and re-acquiring re-anchors from here.
+        # Drop-out handling, debounced. Stereo triangulation blinks out whenever the
+        # hand is briefly low-confidence in either view; without a grace window every
+        # single-frame miss would disengage and re-anchor, killing sustained motion.
         if not reading.present:
+            within_grace = (
+                self._engaged
+                and self._last_present_time is not None
+                and observation.sim_time - self._last_present_time <= self._dropout_grace_s
+            )
+            if within_grace:
+                # Brief blip: hold the last command, keep the anchor, stay engaged so
+                # motion resumes from the same reference when the hand reappears.
+                return self._held
+            # Sustained loss: actually release the clutch. Freeze at the arm's real
+            # pose (never drifts home); re-acquiring will re-anchor from here.
+            was_engaged = self._engaged
             self._engaged = False
             self._held = Command(
                 observation.ee_pose[:3].copy(),
                 observation.ee_pose[3:].copy(),
                 self._held.delta_grip_force,
             )
+            if was_engaged:  # transition-only: not every absent tick
+                log.info("clutch released — hand left frame; holding EE pose")
             return self._held
 
-        # Fresh engage (drop-out → present, or first detection): re-anchor so the
-        # current hand position maps to wherever the EE currently is — no jump.
+        self._last_present_time = observation.sim_time
+
+        # Fresh engage (sustained drop-out → present, or first detection): re-anchor
+        # so the current hand position maps to wherever the EE currently is — no jump.
         if not self._engaged:
             self._engaged = True
-            self._hand_anchor = reading.position.copy()
+            if self._initial_anchor is not None:
+                # Operator-set neutral from the startup centering: anchor here (not the live
+                # first frame, which may catch the hand still entering the frame), so the arm
+                # holds home until the hand moves *relative* to this pose.
+                self._hand_anchor = self._initial_anchor.hand_position.copy()
+                self._hand_orientation_anchor = self._initial_anchor.hand_orientation.copy()
+                self._initial_anchor = None  # consume once; clutch re-engages use live frames
+            else:
+                self._hand_anchor = reading.position.copy()
+                self._hand_orientation_anchor = reading.orientation.copy()
             self._ee_anchor = self._held.target_position.copy()
-            self._prev_time = observation.sim_time
+            self._ee_orientation_anchor = self._held.target_quaternion.copy()
             self._position_filter.reset()
+            log.info("clutch engaged — anchored to current hand/EE pose")
 
         assert self._hand_anchor is not None and self._ee_anchor is not None
-        assert self._prev_time is not None
 
-        if self._mode == "rate":
-            return self._rate_command(reading, observation)
-
+        # Plain mirror: absolute position, EE = anchor + scale·(hand − hand_anchor).
         camera_delta = reading.position - self._hand_anchor
-        if self._mode == "expo":
-            shaped = _expo(_deadzone(camera_delta, self._deadzone), self._expo)
-            raw_target = self._ee_anchor + self._calibration.map_delta(shaped)
-        else:  # mirror
-            raw_target = self._ee_anchor + self._calibration.map_delta(camera_delta)
+        raw_target = self._ee_anchor + self._calibration.map_delta(camera_delta)
 
         target_position = self._position_filter(raw_target, observation.sim_time)
-        target_quaternion = (
-            reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
-        )
+        target_quaternion = self._oriented(reading)
         # Fist → squeeze, open hand → release (open=1 ⇒ release, fist=0 ⇒ squeeze).
         delta_grip_force = (2.0 * reading.open_close - 1.0) * self._grip_force
 
         self._held = Command(target_position, target_quaternion, delta_grip_force)
         return self._held
 
-    def _rate_command(self, reading: HandReading, observation: Observation) -> Command:
-        """`rate` "point to steer": an open hand → in-plane velocity (where it
-        points) + gentle forward creep (angle into camera); a fist → slow
-        backward; a half-closed hand → lock. Open vs fist comes from open_close,
-        which is foreshortening-robust, so pointing into the camera stays "open"."""
-        assert self._held is not None and self._prev_time is not None
-        dt = float(np.clip(observation.sim_time - self._prev_time, 0.0, 0.1))
-        self._prev_time = observation.sim_time
-        ee_position = observation.ee_pose[:3]
+    def _oriented(self, reading: HandReading) -> np.ndarray:
+        """The held EE quaternion for this tick.
 
-        # Open hand steers (+ creeps forward); a fist drives backward; in between
-        # locks. Either drive gesture is "driving".
-        is_open = reading.open_close > _RATE_OPEN_THRESHOLD
-        is_fist = reading.open_close < _RATE_FIST_THRESHOLD
-
-        # Drive/lock with a debounce: engage instantly on a drive gesture, but only
-        # lock once it's been gone for `lock_delay` (brief glitches don't freeze).
-        if is_open or is_fist:
-            self._driving = True
-            self._last_drive_time = observation.sim_time
-        elif observation.sim_time - self._last_drive_time > self._lock_delay:
-            self._driving = False
-
-        # grip is parked for now (see project notes) — rate mode holds it steady.
-        if not self._driving:
-            # Locked: freeze at the arm's actual pose (no catch-up drift).
-            self._held = Command(
-                ee_position.copy(), observation.ee_pose[3:].copy(), self._held.delta_grip_force
-            )
-            return self._held
-
-        sign = self._calibration.axis_sign
-        world_velocity = np.zeros(3)
-        if is_open:
-            # point_direction magnitude shrinks as the hand angles into the camera,
-            # so in-plane motion fades out exactly as the forward component grows.
-            point = reading.point_direction
-            world_velocity[1] = sign[1] * self._rate_speed * float(point[0])  # L/R ← image-x
-            world_velocity[2] = sign[2] * self._rate_speed * float(point[1])  # U/D ← image-y
-            forward = max(reading.forwardness - _RATE_FWD_DEADZONE, 0.0)  # one-sided, gentle
-            world_velocity[0] = (
-                sign[0] * self._forward_gain * forward
-            )  # forward ← angle into camera
-        elif is_fist:
-            world_velocity[0] = -sign[0] * self._back_speed  # backward ← fist
-        # else (grace window): velocity 0, just pause
-
-        raw_target = self._held.target_position + world_velocity * dt
-        # Leash the target to the arm so it can't run far ahead (anti-runaway; also
-        # sets the effective top speed via the steady-state impedance error).
-        raw_target = ee_position + np.clip(raw_target - ee_position, -self._leash, self._leash)
-        target_position = self._position_filter(raw_target, observation.sim_time)
-
-        target_quaternion = (
-            reading.orientation.copy() if self._track_orientation else self._held.target_quaternion
-        )
-        self._held = Command(target_position, target_quaternion, self._held.delta_grip_force)
-        return self._held
+        When not tracking orientation, hold the start orientation. When tracking, mirror the
+        hand *relatively*: rotate the anchored EE orientation by the hand's rotation since the
+        anchor. At neutral (hand at the anchor pose) this is exactly the anchored EE
+        orientation, so engaging never snaps the wrist to the hand's absolute orientation.
+        """
+        assert self._held is not None
+        if not self._track_orientation:
+            return self._held.target_quaternion
+        assert self._hand_orientation_anchor is not None
+        assert self._ee_orientation_anchor is not None
+        hand_delta = quat_mul(reading.orientation, quat_conjugate(self._hand_orientation_anchor))
+        target = quat_mul(hand_delta, self._ee_orientation_anchor)
+        return target / np.linalg.norm(target)

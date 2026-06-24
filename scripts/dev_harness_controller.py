@@ -114,6 +114,7 @@ def run_phase(
         )
         controller.compute(obs, cmd)
         env.step()
+        env.sync_viewer()
 
         force_mag = float(np.linalg.norm(obs.wrist_ft[:3]))
         peak_force = max(peak_force, force_mag)
