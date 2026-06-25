@@ -104,6 +104,12 @@ ignore = ["E501"] # line length is handled by formatter
 [tool.ruff.lint.isort]
 known-first-party = ["ai_teleop"]
 
+[tool.ruff.format]
+# Preview style (hugs sole bracketed args, etc). Matches the editor's
+# format-on-save (`ruff.format.preview` in the workspace .vscode/settings.json)
+# so save and `poe fmt`/CI agree instead of reverting each other.
+preview = true
+
 [tool.mypy]
 python_version = "3.12"
 files = ["src"]
@@ -124,6 +130,7 @@ addopts = "-ra"
 # `;` not `&&` so formatting still runs if check leaves an unfixable lint;
 # the `lint` task and CI are the real gate.
 fmt = { shell = "ruff check --fix src tests scripts; ruff format src tests scripts" }
+fmt-check = "ruff format --check src tests scripts"  # non-mutating, for CI
 lint = "ruff check --fix src tests scripts"
 typecheck = "python -m mypy"
 test = "python -m pytest -q"

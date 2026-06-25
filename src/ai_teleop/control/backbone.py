@@ -67,16 +67,14 @@ _DEFAULT_STIFFNESS_TCP = np.array([400.0, 400.0, 500.0, 3.0, 3.0, 3.0])
 # Too-stiff orientation coupling fights the position dynamics and drives a
 # slow limit cycle (observed during tuning: pos err grew to >50 mm at K_rot=25
 # even with critically-damped D_rot; dropping K_rot to 3 collapsed it to <1 mm).
-_DEFAULT_DAMPING_TCP = np.array(
-    [
-        2 * np.sqrt(4.0 * 400.0),  # x  ≈ 80
-        2 * np.sqrt(4.0 * 400.0),  # y  ≈ 80
-        2 * np.sqrt(4.0 * 500.0),  # z  ≈ 89
-        4.0,  # rx — slightly overdamped vs nominal
-        4.0,  # ry
-        4.0,  # rz
-    ]
-)
+_DEFAULT_DAMPING_TCP = np.array([
+    2 * np.sqrt(4.0 * 400.0),  # x  ≈ 80
+    2 * np.sqrt(4.0 * 400.0),  # y  ≈ 80
+    2 * np.sqrt(4.0 * 500.0),  # z  ≈ 89
+    4.0,  # rx — slightly overdamped vs nominal
+    4.0,  # ry
+    4.0,  # rz
+])
 
 _DEFAULT_POSTURE_GAIN = 1.0
 _DEFAULT_DLS_DAMPING = 0.05

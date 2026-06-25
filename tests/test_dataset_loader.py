@@ -80,13 +80,11 @@ def tiny_dataset(tmp_path_factory: pytest.TempPathFactory) -> Path:
             recorder.add(**_random_row(rng, step))
         path = episode_npz_path(runs, index)
         recorder.save(path, metadata={"episode_index": index})
-        episodes.append(
-            {
-                "episode_index": index,
-                "file": f"runs/{path.parent.name}/{path.name}",
-                "n_steps": length,
-            }
-        )
+        episodes.append({
+            "episode_index": index,
+            "file": f"runs/{path.parent.name}/{path.name}",
+            "n_steps": length,
+        })
     (root / "metadata.json").write_text(json.dumps({"schema_version": "2.0", "episodes": episodes}))
     return root
 

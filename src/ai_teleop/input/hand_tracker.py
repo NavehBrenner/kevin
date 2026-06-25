@@ -283,9 +283,11 @@ class StereoHandSource:
         renderer's origin to the operator-set neutral from startup centering.
         """
         if self._show_window:
-            self._tracker.set_renderer_origin(
-                (float(origin[0]), float(origin[1]), float(origin[2]))
-            )
+            self._tracker.set_renderer_origin((
+                float(origin[0]),
+                float(origin[1]),
+                float(origin[2]),
+            ))
 
     def close(self) -> None:
         self._tracker.close()

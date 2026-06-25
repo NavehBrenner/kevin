@@ -187,19 +187,18 @@ class LearnedResidual:
         """
         assert self._ft_bias is not None  # set by get_delta before this is called
 
-        command_vector = np.concatenate(
-            [command.target_position, quat_to_6d(command.target_quaternion)]
-        )  # (9,)
+        command_vector = np.concatenate([
+            command.target_position,
+            quat_to_6d(command.target_quaternion),
+        ])  # (9,)
         force_torque_vector = observation.wrist_ft - self._ft_bias  # (6,) bias-subtracted
-        proprioception_vector = np.concatenate(
-            [
-                observation.ee_pose[:3],
-                quat_to_6d(observation.ee_pose[3:7]),
-                observation.joint_positions,
-                observation.joint_velocities,
-                [observation.gripper_width],
-            ]
-        )  # (24,)
+        proprioception_vector = np.concatenate([
+            observation.ee_pose[:3],
+            quat_to_6d(observation.ee_pose[3:7]),
+            observation.joint_positions,
+            observation.joint_velocities,
+            [observation.gripper_width],
+        ])  # (24,)
         return command_vector, force_torque_vector, proprioception_vector
 
     def _normalized_step_tensor(self, stream: str, vector: np.ndarray) -> Tensor:

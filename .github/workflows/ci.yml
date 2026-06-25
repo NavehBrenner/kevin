@@ -26,6 +26,9 @@ jobs:
       - name: Lint (ruff)
         run: uv run poe lint
 
+      - name: Format check (ruff)
+        run: uv run poe fmt-check
+
       - name: Type check (mypy)
         run: uv run poe typecheck
 

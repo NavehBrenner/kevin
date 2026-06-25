@@ -191,9 +191,9 @@ def test_drift_is_temporally_correlated():
     obs = _make_observation()
 
     n_refreshes = 400
-    samples = np.array(
-        [actor.get_command(obs).target_position[0] for _ in range(n_refreshes * hold_steps)]
-    )[::hold_steps]
+    samples = np.array([
+        actor.get_command(obs).target_position[0] for _ in range(n_refreshes * hold_steps)
+    ])[::hold_steps]
     deviations = samples - samples.mean()
     lag1 = float(np.corrcoef(deviations[:-1], deviations[1:])[0, 1])
     assert lag1 > 0.3, f"drift lag-1 autocorrelation too low ({lag1:.3f}) — looks like white noise"

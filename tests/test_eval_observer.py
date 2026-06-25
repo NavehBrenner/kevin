@@ -43,9 +43,10 @@ def _observation(
     return Observation(
         joint_positions=np.zeros(7),
         joint_velocities=np.zeros(7),
-        ee_pose=np.concatenate(
-            [peg_position if ee_position is None else np.asarray(ee_position, float), IDENTITY_QUAT]
-        ),
+        ee_pose=np.concatenate([
+            peg_position if ee_position is None else np.asarray(ee_position, float),
+            IDENTITY_QUAT,
+        ]),
         wrist_ft=np.zeros(6) if wrist_ft is None else np.asarray(wrist_ft, dtype=float),
         gripper_width=0.08,
         peg_pose=np.concatenate([peg_position, IDENTITY_QUAT]),
@@ -263,9 +264,10 @@ def test_observer_runs_as_step_callback_through_run_episode():
     try:
         controller = Controller(environment)
         start = environment.reset()
-        target = np.concatenate(
-            [start.hole_poses[start.target_hole_index][:3], controller.home_pose[3:]]
-        )
+        target = np.concatenate([
+            start.hole_poses[start.target_hole_index][:3],
+            controller.home_pose[3:],
+        ])
         human = ScriptedNoisyHuman(target, seed=0)
         observer = TrialObserver(seed=0, config_label="human_only")
         run_episode(
