@@ -122,26 +122,26 @@ def run_phase(
 
         status = controller.status
         if status.state != prev_state:
-            lock_state_changes.append(
-                (status.last_transition_sim_time, status.state.value, status.last_transition_reason)
-            )
+            lock_state_changes.append((
+                status.last_transition_sim_time,
+                status.state.value,
+                status.last_transition_reason,
+            ))
             prev_state = status.state
 
         if csv_writer is not None:
-            csv_writer.writerow(
-                [
-                    f"{t:.4f}",
-                    label,
-                    status.state.value,
-                    f"{obs.ee_pose[0]:.5f}",
-                    f"{obs.ee_pose[1]:.5f}",
-                    f"{obs.ee_pose[2]:.5f}",
-                    f"{obs.wrist_ft[0]:.4f}",
-                    f"{obs.wrist_ft[1]:.4f}",
-                    f"{obs.wrist_ft[2]:.4f}",
-                    f"{force_mag:.4f}",
-                ]
-            )
+            csv_writer.writerow([
+                f"{t:.4f}",
+                label,
+                status.state.value,
+                f"{obs.ee_pose[0]:.5f}",
+                f"{obs.ee_pose[1]:.5f}",
+                f"{obs.ee_pose[2]:.5f}",
+                f"{obs.wrist_ft[0]:.4f}",
+                f"{obs.wrist_ft[1]:.4f}",
+                f"{obs.wrist_ft[2]:.4f}",
+                f"{force_mag:.4f}",
+            ])
 
         if viewer_real_time:
             # MuJoCo's default 2 ms timestep is way faster than wall time; sleep
@@ -196,20 +196,18 @@ def main() -> int:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         csv_file = open(CSV_PATH, "w", newline="")  # noqa: SIM115 (streamed across the loop, closed below)
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(
-            [
-                "sim_time",
-                "phase",
-                "lock_state",
-                "ee_x",
-                "ee_y",
-                "ee_z",
-                "Fx",
-                "Fy",
-                "Fz",
-                "F_mag",
-            ]
-        )
+        csv_writer.writerow([
+            "sim_time",
+            "phase",
+            "lock_state",
+            "ee_x",
+            "ee_y",
+            "ee_z",
+            "Fx",
+            "Fy",
+            "Fz",
+            "F_mag",
+        ])
 
     summaries: list[dict] = []
 

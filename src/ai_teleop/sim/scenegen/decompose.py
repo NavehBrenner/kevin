@@ -79,18 +79,16 @@ def _ring_wedges(
     wedges: list[trimesh.Trimesh] = []
     for j in range(facets):
         k = (j + 1) % facets
-        corners = np.array(
-            [
-                [bore_x[0], *inner[j]],
-                [bore_x[0], *inner[k]],
-                [bore_x[1], *inner[j]],
-                [bore_x[1], *inner[k]],
-                [rim_x[0], *outer[j]],
-                [rim_x[0], *outer[k]],
-                [rim_x[1], *outer[j]],
-                [rim_x[1], *outer[k]],
-            ]
-        )
+        corners = np.array([
+            [bore_x[0], *inner[j]],
+            [bore_x[0], *inner[k]],
+            [bore_x[1], *inner[j]],
+            [bore_x[1], *inner[k]],
+            [rim_x[0], *outer[j]],
+            [rim_x[0], *outer[k]],
+            [rim_x[1], *outer[j]],
+            [rim_x[1], *outer[k]],
+        ])
         # Drop duplicate rows (collapsed faces) before hulling.
         corners = np.unique(corners, axis=0)
         if len(corners) < 4:

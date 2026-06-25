@@ -325,12 +325,10 @@ class SimEnv:
             hole_poses[i, 0:3] = data.site_xpos[site_id]
             hole_poses[i, 3:7] = mat3_to_quat(data.site_xmat[site_id])
 
-        wrist_ft = np.concatenate(
-            [
-                data.sensordata[self._force_sensor_adr : self._force_sensor_adr + 3],
-                data.sensordata[self._torque_sensor_adr : self._torque_sensor_adr + 3],
-            ]
-        ).copy()
+        wrist_ft = np.concatenate([
+            data.sensordata[self._force_sensor_adr : self._force_sensor_adr + 3],
+            data.sensordata[self._torque_sensor_adr : self._torque_sensor_adr + 3],
+        ]).copy()
 
         return Observation(
             joint_positions=joint_positions,
