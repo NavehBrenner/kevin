@@ -147,8 +147,8 @@ def main() -> int:
         "--max-steps",
         type=int,
         default=None,
-        help="Episode step budget (one step == one 2 ms sim tick). Default: the replayed "
-        f"episode's own length when --input is a path, else {DEFAULT_MAX_STEPS}. Use 0 for no "
+        help="Episode step budget (one step == one 2 ms sim tick). Default: the episode's "
+        f"generation budget when --input is a path, else {DEFAULT_MAX_STEPS}. Use 0 for no "
         "limit — run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
     )
     parser.add_argument(
@@ -169,8 +169,9 @@ def main() -> int:
         default="scripted",
         metavar="MODE_OR_PATH",
         help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
-        "stereo hand tracking (needs the viewer + --stereo-calib), or a path to an episode "
-        "folder / episode.npz to replay recorded commands.",
+        "stereo hand tracking (needs the viewer + --stereo-calib), or a path to a generated "
+        "episode (folder / episode.npz) to reproduce it — scene + operator are rebuilt from "
+        "its seeds, so it reruns faithfully under any --policy.",
     )
     parser.add_argument(
         "--policy",
