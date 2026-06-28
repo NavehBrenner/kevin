@@ -16,7 +16,9 @@ Run from the `kevin/` directory:
 from __future__ import annotations
 
 import argparse
+import logging
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -423,8 +425,13 @@ def main() -> int:
             start_dist * 1000,
             final_dist * 1000,
         )
-    env.close()
-    return 0
+    # ponytail: tearing down the MuJoCo viewer / offscreen renderer GL context
+    # under WSLg blocks ~10s after the run is already done. Everything durable
+    # (the .npz, the logs) is flushed above, so hard-exit instead of waiting on
+    # a clean teardown the OS reclaims anyway. main() is only the __main__
+    # entrypoint, never imported. Drop to env.close()+return if that changes.
+    logging.shutdown()
+    os._exit(0)
 
 
 if __name__ == "__main__":
