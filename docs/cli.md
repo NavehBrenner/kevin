@@ -101,11 +101,13 @@ uv run kvn smoke                # load, step, save wrist-cam PNG, then open view
 uv run kvn smoke --no-viewer    # headless (CI)
 ```
 
-#### `kvn episode` — one end-to-end no-assist episode
+#### `kvn episode` — one end-to-end episode
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--headless` | off | Skip the viewer; run the loop and print a one-line summary. |
+| `--policy {noassist,expert,tf,vision}` | `noassist` | Assist layer on the base command: `noassist` (human-only), `expert` analytical privileged-info supervisor, `tf` trained F/T residual (needs `--checkpoint`), or `vision` Phase-2 vision-conditioned residual (**not implemented yet**). Fix `--seed` to replay the same episode under each policy and compare. |
+| `--checkpoint PATH` | — | Trained residual `checkpoint.pt` for `--policy tf` (e.g. `runs/train/<run>/checkpoint.pt`). |
 | `--input {scripted,vision}` | `scripted` | Base command source: scripted noisy human, or **two-webcam stereo** hand tracking (metric 3D + 6-DoF via the [stereohand](https://github.com/NavehBrenner/stereohand) package; needs the viewer, the `stereo-input` extra, and `--stereo-calib`). |
 | `--stereo-calib PATH` | — | **Required** for `--input vision`: a stereohand `stereo_calib.json` (one-time ChArUco calibration). Camera sources are `--left` / `--right`. |
 | `--left SRC` | `0` | Left-camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/0`). Use URLs on WSL2 — stream both cameras from Windows with the stereohand bridge. |
@@ -125,6 +127,8 @@ uv run kvn episode                                  # interactive viewer
 uv run kvn episode --headless --seed 7 --max-steps 1500
 uv run kvn episode --headless --generated-wall --wall-seed 3 --distractors 4
 uv run kvn episode --input vision --max-steps 0     # webcam free-play, no step limit
+uv run kvn episode --seed 7 --policy expert         # same episode, expert assist
+uv run kvn episode --seed 7 --policy tf --checkpoint runs/train/<run>/checkpoint.pt
 ```
 
 #### `kvn harness` — M2 controller dev harness
@@ -161,10 +165,15 @@ fingerprint. On-disk schema: [`docs/data-schema.md`](data-schema.md).
 | `--expert-d-far M` | script default | Distance (m) at which the expert starts engaging. |
 | `--max-approach-speed M` | script default | Operator command sweep cap in m/s (realism knob). |
 | `--force` | off | Regenerate even if a cached episode with a matching fingerprint exists. |
+| `--from-metadata PATH` | — | Reproduce the dataset described by a `metadata.json` (rebuilds `runs/` from the committed config; ignores generation flags). `--out` overrides where it lands, else its parent dir. |
 
 ```bash
 uv run kvn gen --episodes 200 --out data/runs/dev
 uv run kvn gen --episodes 5 --out /tmp/smoke --max-steps 800
+
+# Forcefully regenerate dataset_0 from its committed seeds (clean delete + rebuild):
+rm -rf data/dataset_0/runs && \
+  uv run kvn gen --from-metadata data/dataset_0/metadata.json --force
 ```
 
 ### Dev-gate commands

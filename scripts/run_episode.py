@@ -11,6 +11,12 @@ Run from the `kevin/` directory:
     uv run python scripts/run_episode.py                 # interactive viewer
     uv run python scripts/run_episode.py --headless      # CI / batch
     uv run python scripts/run_episode.py --headless --seed 7 --max-steps 1500
+
+The same episode (fixed --seed) can be replayed under different assist policies via
+--policy {noassist,expert,tf,vision} to compare them head-to-head:
+
+    uv run python scripts/run_episode.py --seed 7 --policy expert
+    uv run python scripts/run_episode.py --seed 7 --policy tf --checkpoint runs/train/<run>/checkpoint.pt
 """
 
 from __future__ import annotations
@@ -43,7 +49,7 @@ from ai_teleop.data.generate import (  # noqa: E402
 )
 from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
-from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
+from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
     ScriptedNoisyHuman,
     VisionInput,
@@ -99,6 +105,30 @@ def _resolve_record_path(out: str) -> Path:
     return _DEFAULT_RECORD_RUNS / f"episode_{index:05d}" / "episode.npz"
 
 
+def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
+    """Resolve --policy to the AssistProvider under test (the correction layer).
+
+    Same scene + operator command stream, different assist — so the same episode
+    can be replayed under each policy. Heavy imports (Expert is pure; the trained
+    residual pulls in torch) are deferred to the chosen branch.
+    """
+    if policy == "noassist":
+        return NoAssist()
+    if policy == "expert":
+        from ai_teleop.expert import Expert
+
+        return Expert()
+    if policy == "tf":
+        if not checkpoint:
+            raise SystemExit("--policy tf requires --checkpoint PATH (a trained residual .pt).")
+        from ai_teleop.policy import LearnedResidual  # lazy: pulls in torch
+
+        return LearnedResidual.from_checkpoint(checkpoint)
+    # ponytail: vision (Phase-2 vision-conditioned residual) isn't trained yet; fail
+    # loud rather than silently fall back. Add the branch when the checkpoint exists.
+    raise SystemExit(f"--policy {policy} is not implemented yet.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -135,6 +165,20 @@ def main() -> int:
         help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
         "stereo hand tracking (needs the viewer + --stereo-calib), or a path to an episode "
         "folder / episode.npz to replay recorded commands.",
+    )
+    parser.add_argument(
+        "--policy",
+        choices=["noassist", "expert", "tf", "vision"],
+        default="noassist",
+        help="Assist policy layered on the base command: 'noassist' (human-only, default), "
+        "'expert' analytical privileged-info supervisor, 'tf' trained F/T residual (needs "
+        "--checkpoint), or 'vision' Phase-2 vision-conditioned residual (not implemented yet). "
+        "Same scene + operator stream across policies, so you can compare the same episode.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Trained residual checkpoint.pt for --policy tf (e.g. runs/train/<run>/checkpoint.pt).",
     )
     parser.add_argument(
         "--no-cam-window",
@@ -280,7 +324,7 @@ def main() -> int:
     # full-target command into a smooth bounded approach.
     target_position = observation.target_hole_position.copy()
     home_quaternion = controller.home_pose[3:]
-    assist = NoAssist()
+    assist = _build_assist(args.policy, args.checkpoint)
 
     input_strategy: InputStrategy
     tracker = None
@@ -343,7 +387,9 @@ def main() -> int:
         requested_steps = args.max_steps
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
     budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
-    log.info("Running %s with %s input + NoAssist (Ctrl-C to stop)...", budget, args.input)
+    log.info(
+        "Running %s with %s input + %s policy (Ctrl-C to stop)...", budget, args.input, args.policy
+    )
 
     recorder: EpisodeRecorder | None = None
     terminal_reason = TerminalReason.TIMEOUT
