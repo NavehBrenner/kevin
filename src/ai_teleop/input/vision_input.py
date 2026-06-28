@@ -32,6 +32,7 @@ readings.
 from __future__ import annotations
 
 import math
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -47,6 +48,9 @@ from ai_teleop.common.observation import Observation
 from .hand_tracker import HandReading
 
 log = get_logger("vision_input")
+
+# Braille spinner frames for the live centering line (TTY only).
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 class _HandSource(Protocol):
@@ -101,7 +105,28 @@ def calibrate_neutral(
     last_orientation = np.array([1.0, 0.0, 0.0, 0.0])
     last_countdown: int | None = None
     last_good_time: float | None = None  # clock() of the last present open-palm frame
-    log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
+
+    # On a real terminal, draw one self-overwriting status line with a live
+    # spinner so the operator sees it's working; otherwise fall back to the
+    # per-state log lines (clean redirected output, and what the tests read).
+    live = sys.stderr.isatty()
+    last_render = ""
+
+    def show(now: float, text: str, *, done: bool = False) -> None:
+        # The poll loop runs at ~200 Hz; the spinner frame only changes at 10 Hz.
+        # Redraw only when the rendered line actually changes, or rewriting the
+        # same content 200×/s flickers the terminal.
+        nonlocal last_render
+        frame = "✓" if done else _SPINNER_FRAMES[int(now * 10) % len(_SPINNER_FRAMES)]
+        payload = f"\r{frame} {text}\x1b[K" + ("\n" if done else "")
+        if payload == last_render:
+            return
+        last_render = payload
+        sys.stderr.write(payload)
+        sys.stderr.flush()
+
+    if not live:
+        log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
     while True:
         if on_tick is not None:
             on_tick()
@@ -112,9 +137,18 @@ def calibrate_neutral(
             # pose_grace_s resets an active hold; within the window keep counting.
             lost_too_long = last_good_time is not None and now - last_good_time > pose_grace_s
             if hold_start is not None and lost_too_long:
-                log.info("centering reset — open palm lost for >%.2fs; hold again", pose_grace_s)
+                if not live:
+                    log.info(
+                        "centering reset — open palm lost for >%.2fs; hold again", pose_grace_s
+                    )
                 hold_start, anchor, last_countdown = None, None, None
                 positions.clear()
+            # Only flip the line to "waiting" when no hold is active. During a
+            # tolerated blip (hold still alive within the grace window) keep the
+            # countdown on screen, or a single false-negative MediaPipe frame
+            # flickers the text between "centering in Ns" and "waiting".
+            if live and hold_start is None:
+                show(now, "waiting for an open palm — hold still")
             sleep(poll_interval_s)
             continue
         last_good_time = now
@@ -124,6 +158,8 @@ def calibrate_neutral(
             anchor = reading.position.copy()
             positions = [reading.position.copy()]
             last_countdown = None
+            if live:
+                show(now, "open palm detected — keep holding still")
             sleep(poll_interval_s)
             continue
 
@@ -131,12 +167,18 @@ def calibrate_neutral(
         last_orientation = reading.orientation.copy()
         held_for = now - hold_start
         remaining = math.ceil(hold_s - held_for)
-        if remaining > 0 and remaining != last_countdown:  # once per whole second
-            last_countdown = remaining
-            log.info("centering in %ds — hold still", remaining)
+        if remaining > 0:
+            if live:
+                show(now, f"centering in {remaining}s — hold still")
+            elif remaining != last_countdown:  # once per whole second
+                last_countdown = remaining
+                log.info("centering in %ds — hold still", remaining)
         if held_for >= hold_s:
             neutral_position = np.mean(positions, axis=0)
-            log.info("centering complete — neutral set")
+            if live:
+                show(now, "centering complete — neutral set", done=True)
+            else:
+                log.info("centering complete — neutral set")
             return NeutralAnchor(neutral_position, last_orientation)
         sleep(poll_interval_s)
 
