@@ -26,7 +26,6 @@ from dataclasses import dataclass
 from ai_teleop.common.observation import Observation
 from ai_teleop.control import LockStatus
 from ai_teleop.control.backbone import Controller
-from ai_teleop.control.lock import LockState
 from ai_teleop.domain import apply_delta
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy
 from ai_teleop.sim.scene import SimEnv
@@ -61,7 +60,6 @@ def run_episode(
     render: bool = False,
     reset_episode_index: int | None = None,
     step_callback=None,
-    stop_on_hold_lock: bool = False,
 ) -> EpisodeResult:
     """Run one episode of the composed M3 loop; return the terminal state.
 
@@ -92,12 +90,10 @@ def run_episode(
             the assist acted on; this is the M4 data-generation logging hook
             (the loop stays logging-free itself). Returning a truthy value ends
             the episode early — how the driver signals a terminal condition.
-        stop_on_hold_lock: when True, end the episode as soon as the controller's
-            force-cap watchdog latches the HOLD lock. Once HOLD-latched the arm is
-            frozen (nothing in this loop releases it), so every further step is a
-            dead, identical frame — terminating avoids padding the trajectory with
-            them. Off by default so interactive free-play (a wall bump shouldn't
-            close the viewer) is unaffected; the data-gen and replay paths opt in.
+            Termination *policy* (seating success, force-cap / HOLD-lock abort)
+            lives in one place, `data.generate.episode_terminal_reason`, which
+            both the data-gen logger and the `kvn episode` CLI wrap in their
+            callbacks — so the loop itself stays free of any outcome rules.
     """
     observation = environment.reset(reset_episode_index)
     sim_steps = 0
@@ -141,8 +137,6 @@ def run_episode(
             if ahead > 0:
                 time.sleep(ahead)
         if stop:
-            break
-        if stop_on_hold_lock and controller.status.state is LockState.HOLD:
             break
 
     return EpisodeResult(

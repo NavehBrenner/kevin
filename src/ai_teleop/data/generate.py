@@ -119,8 +119,7 @@ class _SeatingMetrics:
 
     The geometry (penetration / lateral error / distance) comes from the shared
     ``common.seating`` definition so generation and the M6 eval harness cannot
-    drift on what "seated" means; the force magnitude and the threshold policy
-    (:meth:`terminal_reason`) are data-generation's own concern.
+    drift on what "seated" means.
     """
 
     def __init__(self, observation: Observation) -> None:
@@ -131,15 +130,32 @@ class _SeatingMetrics:
         self.penetration = geometry.penetration
         self.force_magnitude = float(np.linalg.norm(observation.wrist_ft[:3]))
 
-    def terminal_reason(
-        self, *, success_depth: float, lateral_tolerance: float, force_cap: float
-    ) -> TerminalReason | None:
-        """Why this step ends the episode, or ``None`` to keep going."""
-        if self.penetration >= success_depth and self.lateral_error < lateral_tolerance:
-            return TerminalReason.SUCCESS
-        if self.force_magnitude > force_cap:
-            return TerminalReason.FORCE_ABORT
-        return None
+
+def episode_terminal_reason(
+    *,
+    penetration: float,
+    lateral_error: float,
+    force_magnitude: float,
+    locked: bool,
+    success_depth: float,
+    lateral_tolerance: float,
+    force_cap: float,
+) -> TerminalReason | None:
+    """The single episode-outcome policy — why a step ends the episode, or ``None``.
+
+    Shared by data generation *and* the ``kvn episode`` run CLI so the two can't
+    drift on when an episode is "over" (the structural cause of replays not
+    matching their generated episode). SUCCESS once seated; FORCE_ABORT if the
+    controller's force-cap watchdog has latched HOLD (``locked`` — the arm is
+    frozen, so further steps are dead frames) or the raw wrist force exceeds
+    ``force_cap``; else ``None`` to keep going. Takes primitives (not the private
+    ``_SeatingMetrics``) so any caller can use it without that coupling.
+    """
+    if penetration >= success_depth and lateral_error < lateral_tolerance:
+        return TerminalReason.SUCCESS
+    if locked or force_magnitude > force_cap:
+        return TerminalReason.FORCE_ABORT
+    return None
 
 
 def _save_frame(imgs_dir: Path, step: int, frame: np.ndarray) -> None:
@@ -166,6 +182,7 @@ class _EpisodeLogger:
     def __init__(
         self,
         ft_bias: np.ndarray,
+        controller: Controller,
         *,
         success_depth: float,
         lateral_tolerance: float,
@@ -177,6 +194,7 @@ class _EpisodeLogger:
         self.recorder = EpisodeRecorder()
         self.terminal_reason = TerminalReason.TIMEOUT
         self._ft_bias = ft_bias
+        self._controller = controller
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
@@ -193,7 +211,11 @@ class _EpisodeLogger:
         command,
     ) -> bool:
         metrics = _SeatingMetrics(observation)
-        reason = metrics.terminal_reason(
+        reason = episode_terminal_reason(
+            penetration=metrics.penetration,
+            lateral_error=metrics.lateral_error,
+            force_magnitude=metrics.force_magnitude,
+            locked=self._controller.status.state is LockState.HOLD,
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
             force_cap=self._force_cap,
@@ -240,8 +262,16 @@ class _TerminationProbe:
     cheap scoring pass over the same scene and operator stream.
     """
 
-    def __init__(self, *, success_depth: float, lateral_tolerance: float, force_cap: float) -> None:
+    def __init__(
+        self,
+        controller: Controller,
+        *,
+        success_depth: float,
+        lateral_tolerance: float,
+        force_cap: float,
+    ) -> None:
         self.terminal_reason = TerminalReason.TIMEOUT
+        self._controller = controller
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
@@ -249,7 +279,12 @@ class _TerminationProbe:
     def __call__(
         self, step: int, observation: Observation, base_command, delta: Delta, command
     ) -> bool:
-        reason = _SeatingMetrics(observation).terminal_reason(
+        metrics = _SeatingMetrics(observation)
+        reason = episode_terminal_reason(
+            penetration=metrics.penetration,
+            lateral_error=metrics.lateral_error,
+            force_magnitude=metrics.force_magnitude,
+            locked=self._controller.status.state is LockState.HOLD,
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
             force_cap=self._force_cap,
@@ -269,17 +304,23 @@ def _human_seed(seed: int, episode_index: int) -> int:
     return int(np.random.SeedSequence([seed, episode_index]).generate_state(1)[0])
 
 
-def _make_human(
+def make_episode_operator(
     target_position: np.ndarray,
     home_quaternion: np.ndarray,
     *,
     seed: int,
     episode_index: int,
-    max_approach_speed: float,
+    max_approach_speed: float = DEFAULT_MAX_APPROACH_SPEED,
 ) -> ScriptedNoisyHuman:
-    """Build the per-episode operator. ``(seed, episode_index)`` fully determines
-    its command stream, so a fresh instance reproduces the same operator — what
-    the paired expert/baseline runs rely on."""
+    """Build the per-episode scripted operator — the single constructor shared by
+    data generation *and* the ``kvn episode`` replay path.
+
+    ``(seed, episode_index)`` fully determines its command stream, so a fresh
+    instance reproduces the same operator byte-for-byte. This is what lets a replay
+    *reconstruct the operator live* (rather than feed back the recorded commands,
+    which stop at the recorded run's terminal step) and so run under any ``--policy``
+    for the full budget — exactly as generation's paired expert/baseline runs do.
+    """
     return ScriptedNoisyHuman(
         np.concatenate([target_position, home_quaternion]),
         max_approach_speed=max_approach_speed,
@@ -302,9 +343,12 @@ def _baseline_terminal_reason(
     only — no trajectory is recorded. Returns how the human-only run terminated."""
     controller.reset()  # clear any lock the expert run left latched
     probe = _TerminationProbe(
-        success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
+        controller,
+        success_depth=success_depth,
+        lateral_tolerance=lateral_tolerance,
+        force_cap=force_cap,
     )
-    result = run_episode(
+    run_episode(
         environment,
         controller,
         human,
@@ -312,13 +356,7 @@ def _baseline_terminal_reason(
         max_steps=max_steps,
         reset_episode_index=episode_index,
         step_callback=probe,
-        stop_on_hold_lock=True,
     )
-    if (
-        probe.terminal_reason is TerminalReason.TIMEOUT
-        and result.lock_status.state is LockState.HOLD
-    ):
-        return TerminalReason.FORCE_ABORT
     return probe.terminal_reason
 
 
@@ -405,7 +443,7 @@ def generate_dataset(
         imgs_dir = episode_imgs_dir(runs_dir, episode_index)
         imgs_dir.mkdir(parents=True, exist_ok=True)
 
-        human = _make_human(
+        human = make_episode_operator(
             target_position,
             home_quaternion,
             seed=seed,
@@ -414,12 +452,13 @@ def generate_dataset(
         )
         logger = _EpisodeLogger(
             ft_bias,
+            controller,
             **thresholds,
             render_fn=environment.render_wrist_camera if render_images else None,
             imgs_dir=imgs_dir,
             render_every=render_every,
         )
-        result = run_episode(
+        run_episode(
             environment,
             controller,
             human,
@@ -427,15 +466,7 @@ def generate_dataset(
             max_steps=max_steps,
             reset_episode_index=episode_index,
             step_callback=logger,
-            stop_on_hold_lock=True,
         )
-        # A HOLD-latched lock froze the arm: that's a force-cap failure, not a
-        # timeout — relabel (the logger only sees the higher episode force_cap).
-        if (
-            logger.terminal_reason is TerminalReason.TIMEOUT
-            and result.lock_status.state is LockState.HOLD
-        ):
-            logger.terminal_reason = TerminalReason.FORCE_ABORT
 
         baseline_reason: TerminalReason | None = None
         if baseline:
@@ -443,7 +474,7 @@ def generate_dataset(
                 environment,
                 controller,
                 # fresh operator with the same seed ⇒ identical command stream
-                _make_human(
+                make_episode_operator(
                     target_position,
                     home_quaternion,
                     seed=seed,
@@ -467,6 +498,8 @@ def generate_dataset(
             "scene_seed": [seed, episode_index],
             "human_seed": _human_seed(seed, episode_index),
             "fingerprint": fingerprint,
+            "max_steps": max_steps,  # generation step budget — the faithful replay cap
+            "max_approach_speed": max_approach_speed,  # to reconstruct the operator on replay
             "max_dpos": max_dpos,
             "expert_d_far": expert_d_far,
             "target_hole_index": target_hole_index,

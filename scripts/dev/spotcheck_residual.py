@@ -14,7 +14,7 @@ Run from the ``kevin/`` directory (point it at a run folder's ``checkpoint.pt``)
         --episodes 20 --seed 99
 
 Reuses the M4 generator's matched-operator + seating definitions
-(``_make_human`` / ``_SeatingMetrics``) so "seated" means exactly what data-gen
+(``make_episode_operator`` / ``_SeatingMetrics``) so "seated" means exactly what data-gen
 scored it as.
 """
 
@@ -37,8 +37,8 @@ from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_MAX_STEPS,
     DEFAULT_SUCCESS_DEPTH,
     SCENE_PATH,
-    _make_human,
     _SeatingMetrics,
+    make_episode_operator,
 )
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.policy import LearnedResidual  # noqa: E402
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         policy_pen, policy_lat, policy_ok = _seated_after(
             environment,
             controller,
-            _make_human(
+            make_episode_operator(
                 target_position, home_quaternion, seed=args.seed, episode_index=episode_index
             ),
             policy,
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         human_pen, human_lat, human_ok = _seated_after(
             environment,
             controller,
-            _make_human(
+            make_episode_operator(
                 target_position, home_quaternion, seed=args.seed, episode_index=episode_index
             ),
             no_assist,

@@ -43,14 +43,20 @@ from ai_teleop.common.log import (  # noqa: E402
 )
 from ai_teleop.common.seating import SeatingGeometry  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
+from ai_teleop.control.lock import LockState  # noqa: E402
 from ai_teleop.data.generate import (  # noqa: E402
+    DEFAULT_FORCE_CAP,
     DEFAULT_LATERAL_TOLERANCE,
+    DEFAULT_MAX_DPOS,
     DEFAULT_SUCCESS_DEPTH,
+    episode_terminal_reason,
+    make_episode_operator,
 )
 from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
+    DEFAULT_MAX_APPROACH_SPEED,
     ScriptedNoisyHuman,
     VisionInput,
     WorkspaceCalibration,
@@ -258,10 +264,10 @@ def main() -> int:
             return 2
         replay_columns, replay_meta = load_episode(episode_npz)
         log.info(
-            "Replaying %d steps from %s (source=%s)",
-            len(replay_columns["step"]),
+            "Reproducing %s (source=%s, %d recorded steps)",
             episode_npz,
             replay_meta.get("source", "unknown"),
+            len(replay_columns["step"]),
         )
 
     if args.input == "vision" and args.headless:
@@ -280,16 +286,21 @@ def main() -> int:
         log.error("scene file not found at %s", scene_path)
         return 2
 
-    # For replay, use the episode's original seed so the scene matches.
-    scene_seed = (
-        int(replay_meta["seed"])
-        if replay_columns is not None and "seed" in replay_meta
-        else args.seed
-    )
     render_mode = "headless" if args.headless else "viewer"
     log.info("Loading scene (%s): %s", render_mode, scene_path)
-    env = SimEnv(str(scene_path), render_mode=render_mode, seed=scene_seed)
-    observation = env.reset()
+    # For replay, rebuild the *exact generation scene* from the episode metadata:
+    # generation built SimEnv(seed=master_seed, randomize=True).reset(episode_index)
+    # (coverage-randomized target hole + joint start). Without matching that, the
+    # replay lands on the default home scene with the wrong target hole, so the
+    # recorded commands aim into a wall — the episode no longer matches its data.
+    reset_index: int | None
+    if replay_columns is not None and "scene_seed" in replay_meta:
+        scene_seed, reset_index = (int(v) for v in replay_meta["scene_seed"])
+        randomize = True
+    else:
+        scene_seed, reset_index, randomize = args.seed, None, False
+    env = SimEnv(str(scene_path), render_mode=render_mode, seed=scene_seed, randomize=randomize)
+    observation = env.reset(reset_index)
     if not args.headless:
         env.launch_viewer(wrist_cam=args.cam == "wrist")
         # Mark the target hole for the human (viewer-only; never in the policy-facing
@@ -309,8 +320,17 @@ def main() -> int:
             force_cap_n=math.inf if args.no_force_cap else 30.0,
         )
     elif replay_columns is not None:
-        # Replay: don't re-clamp commands that were already clamped when recorded.
-        max_dpos = args.max_dpos if args.max_dpos is not None else math.inf
+        # Replay faithfully: use the SAME command clamp generation recorded with.
+        # The recorded cmd_* is the raw operator *base* command (the clamp is
+        # applied to base+delta inside the controller, exactly as in generation),
+        # so re-clamping at the recorded max_dpos reproduces the run — not math.inf.
+        recorded_max_dpos = replay_meta.get("max_dpos")
+        if args.max_dpos is not None:
+            max_dpos = args.max_dpos
+        elif recorded_max_dpos is not None:
+            max_dpos = float(recorded_max_dpos)
+        else:
+            max_dpos = DEFAULT_MAX_DPOS
         controller = Controller(env, max_dpos_per_step=max_dpos)
     else:
         max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
@@ -328,7 +348,27 @@ def main() -> int:
 
     input_strategy: InputStrategy
     tracker = None
-    if replay_columns is not None:
+    if (
+        replay_columns is not None
+        and replay_meta.get("source") == "scripted"
+        and reset_index is not None
+    ):
+        # Scripted episode: reconstruct the operator from its seed (deterministic,
+        # byte-identical to the recorded stream) and run it LIVE for the full budget.
+        # Replaying the recorded commands instead would freeze at the recorded run's
+        # terminal step — fine same-policy, but a longer cross-policy run (e.g.
+        # noassist over an expert-recorded success) would stall there and never match.
+        input_strategy = make_episode_operator(
+            target_position,
+            home_quaternion,
+            seed=scene_seed,
+            episode_index=reset_index,
+            max_approach_speed=float(
+                replay_meta.get("max_approach_speed") or DEFAULT_MAX_APPROACH_SPEED
+            ),
+        )
+    elif replay_columns is not None:
+        # Recorded-human episode (no scripted seed): replay the recorded commands.
         input_strategy = _ReplayInput(replay_columns)
     elif args.input == "vision":
         from ai_teleop.input.hand_tracker import StereoHandSource
@@ -375,16 +415,17 @@ def main() -> int:
         np.array2string(target_position, precision=3),
         start_dist * 1000,
     )
-    # Resolve the step budget. Unset (None) defaults to the replayed episode's own
-    # length so a recorded run plays in full (not truncated to the generic default);
-    # for live input it falls back to DEFAULT_MAX_STEPS. Explicit 0/negative => run
-    # effectively forever; range() is lazy.
-    if args.max_steps is None:
-        requested_steps = (
-            len(replay_columns["step"]) if replay_columns is not None else DEFAULT_MAX_STEPS
-        )
-    else:
+    # Resolve the step budget. Unset (None) defaults, for a replay, to the *generation*
+    # budget the episode was produced under (so a cross-policy replay — e.g. noassist
+    # over an expert-recorded episode — runs to the same cap, not the recorded outcome
+    # length, which would truncate it). Live input falls back to DEFAULT_MAX_STEPS.
+    # Explicit 0/negative => run effectively forever; range() is lazy.
+    if args.max_steps is not None:
         requested_steps = args.max_steps
+    elif replay_columns is not None:
+        requested_steps = int(replay_meta.get("max_steps") or len(replay_columns["step"]))
+    else:
+        requested_steps = DEFAULT_MAX_STEPS
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
     budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
     log.info(
@@ -396,6 +437,18 @@ def main() -> int:
     record_path: Path | None = None
     step_callback = None
 
+    def _reason(obs, geometry: SeatingGeometry) -> TerminalReason | None:
+        """Shared episode-outcome policy — identical to data generation."""
+        return episode_terminal_reason(
+            penetration=geometry.penetration,
+            lateral_error=geometry.lateral_error,
+            force_magnitude=float(np.linalg.norm(obs.wrist_ft[:3])),
+            locked=controller.status.state is LockState.HOLD,
+            success_depth=DEFAULT_SUCCESS_DEPTH,
+            lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
+            force_cap=DEFAULT_FORCE_CAP,
+        )
+
     if args.record is not None:
         record_path = _resolve_record_path(args.record)
         ft_bias = observation.wrist_ft.copy()
@@ -404,10 +457,7 @@ def main() -> int:
         def step_callback(step: int, obs, base_command, delta, command) -> bool:
             nonlocal terminal_reason
             geometry = SeatingGeometry.from_observation(obs)
-            inserted = (
-                geometry.penetration >= DEFAULT_SUCCESS_DEPTH
-                and geometry.lateral_error < DEFAULT_LATERAL_TOLERANCE
-            )
+            reason = _reason(obs, geometry)
             recorder.add(  # type: ignore[union-attr]
                 step=step,
                 sim_time=obs.sim_time,
@@ -425,21 +475,25 @@ def main() -> int:
                 peg_pose=obs.peg_pose,
                 target_hole_pose=geometry.target_hole_pose,
                 distance=geometry.distance,
-                step_success=inserted,
+                step_success=reason is TerminalReason.SUCCESS,
             )
-            if inserted:
-                terminal_reason = TerminalReason.SUCCESS
-                return True
-            # Force-cap watchdog has latched the arm into HOLD; nothing in the
-            # vision path releases it, so end the recording here instead of
-            # capturing frozen ticks. force_cap_n is math.inf under
-            # --no-force-cap, so this never fires when the watchdog is off.
-            if float(np.linalg.norm(obs.wrist_ft[:3])) > controller.force_cap_n:
-                terminal_reason = TerminalReason.FORCE_ABORT
+            if reason is not None:
+                terminal_reason = reason
                 return True
             return False
 
         log.info("Recording to: %s", record_path)
+    elif args.input != "vision":
+        # Scripted / replay (no recording): terminate exactly like data generation
+        # (seating, force-cap, or HOLD lock). Vision free-play has no callback — it
+        # runs until the viewer closes, so an incidental wall bump won't end it.
+        def step_callback(step: int, obs, base_command, delta, command) -> bool:
+            nonlocal terminal_reason
+            reason = _reason(obs, SeatingGeometry.from_observation(obs))
+            if reason is not None:
+                terminal_reason = reason
+                return True
+            return False
 
     result = None
     try:
@@ -451,9 +505,9 @@ def main() -> int:
             max_steps=max_steps,
             render=not args.headless,
             step_callback=step_callback,
-            # End once the force-cap watchdog latches HOLD (the arm is frozen).
-            # Not for vision free-play, where a wall bump shouldn't close the viewer.
-            stop_on_hold_lock=args.input != "vision",
+            # run_episode resets internally; pass the SAME index so it lands on the
+            # generation scene (not reset(None)) — else the pre-reset above is discarded.
+            reset_episode_index=reset_index,
         )
     except KeyboardInterrupt:
         log.info("Interrupted.")
@@ -478,9 +532,10 @@ def main() -> int:
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
         log.info(
-            "Episode done: %d steps (%.2f s)  final lock state = %s  EE-to-hole %.0f mm -> %.0f mm",
+            "Episode done: %d steps (%.2f s) · %s · lock=%s · EE-to-hole %.0f mm -> %.0f mm",
             result.n_steps,
             result.final_observation.sim_time,
+            terminal_reason.value,
             result.lock_status.state.value,
             start_dist * 1000,
             final_dist * 1000,

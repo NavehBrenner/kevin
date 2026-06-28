@@ -85,6 +85,8 @@ class _EpisodeMetadataBase(TypedDict):
     scene_seed: list[int]  # [master_seed, episode_index]
     human_seed: int
     fingerprint: str
+    max_steps: int  # generation step budget (the faithful replay cap)
+    max_approach_speed: float  # operator sweep cap — reconstructs the operator on replay
     max_dpos: float
     expert_d_far: float
     target_hole_index: int
