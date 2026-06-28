@@ -22,15 +22,24 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_teleop.data.schema import EpisodeColumns, EpisodeMetadata
+
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from ai_teleop.common import Command  # noqa: E402
 from ai_teleop.common.log import (  # noqa: E402
     add_logging_arguments,
     configure_from_args,
     get_logger,
 )
+from ai_teleop.common.seating import SeatingGeometry  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
+from ai_teleop.data.generate import (  # noqa: E402
+    DEFAULT_LATERAL_TOLERANCE,
+    DEFAULT_SUCCESS_DEPTH,
+)
+from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
@@ -44,6 +53,48 @@ from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
 
 log = get_logger("episode")
+
+_DEFAULT_RECORD_RUNS = Path("data/recorded/runs")
+
+
+def _resolve_episode_npz(path: str) -> Path:
+    """Resolve an episode folder or .npz path to the canonical episode.npz."""
+    p = Path(path)
+    return p / "episode.npz" if p.is_dir() else p
+
+
+class _ReplayInput:
+    """Feed recorded cmd_* columns back as Commands, one per tick."""
+
+    def __init__(self, columns: dict) -> None:
+        self._positions = columns["cmd_position"]
+        self._quaternions = columns["cmd_quaternion"]
+        self._grips = columns["cmd_grip"]
+        self._i = 0
+
+    def get_command(self, observation: object) -> Command:
+        i = min(self._i, len(self._positions) - 1)
+        self._i += 1
+        return Command(
+            self._positions[i].copy(), self._quaternions[i].copy(), float(self._grips[i])
+        )
+
+
+def _resolve_record_path(out: str) -> Path:
+    """Return the episode.npz path for --record; auto-number when out is empty."""
+    if out:
+        return Path(out) / "episode.npz"
+    existing = (
+        [
+            int(p.name.split("_")[1])
+            for p in _DEFAULT_RECORD_RUNS.iterdir()
+            if p.is_dir() and p.name.startswith("episode_")
+        ]
+        if _DEFAULT_RECORD_RUNS.exists()
+        else []
+    )
+    index = max(existing) + 1 if existing else 0
+    return _DEFAULT_RECORD_RUNS / f"episode_{index:05d}" / "episode.npz"
 
 
 def main() -> int:
@@ -76,11 +127,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--input",
-        choices=["scripted", "vision"],
         default="scripted",
-        help="Base command source: 'scripted' noisy human (default) or 'vision' two-webcam "
-        "stereo hand tracking (metric 3D + 6-DoF; needs the viewer, the stereo-input extra, "
-        "and --stereo-calib).",
+        metavar="MODE_OR_PATH",
+        help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
+        "stereo hand tracking (needs the viewer + --stereo-calib), or a path to an episode "
+        "folder / episode.npz to replay recorded commands.",
     )
     parser.add_argument(
         "--no-cam-window",
@@ -137,9 +188,34 @@ def main() -> int:
         "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
         "Use this to rule the watchdog in/out while debugging.",
     )
+    parser.add_argument(
+        "--record",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="OUT",
+        help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ "
+        "if OUT is omitted). Stops automatically on a successful insertion.",
+    )
     add_logging_arguments(parser)
     args = parser.parse_args()
     configure_from_args(args)
+
+    # Detect whether --input is a keyword or an episode path.
+    replay_columns: EpisodeColumns | None = None
+    replay_meta: EpisodeMetadata = {}
+    if args.input not in ("scripted", "vision"):
+        episode_npz = _resolve_episode_npz(args.input)
+        if not episode_npz.exists():
+            log.error("--input %r: not 'scripted', 'vision', or a valid episode path.", args.input)
+            return 2
+        replay_columns, replay_meta = load_episode(episode_npz)
+        log.info(
+            "Replaying %d steps from %s (source=%s)",
+            len(replay_columns["step"]),
+            episode_npz,
+            replay_meta.get("source", "unknown"),
+        )
 
     if args.input == "vision" and args.headless:
         log.error("--input vision needs the viewer (drop --headless).")
@@ -157,9 +233,15 @@ def main() -> int:
         log.error("scene file not found at %s", scene_path)
         return 2
 
+    # For replay, use the episode's original seed so the scene matches.
+    scene_seed = (
+        int(replay_meta["seed"])
+        if replay_columns is not None and "seed" in replay_meta
+        else args.seed
+    )
     render_mode = "headless" if args.headless else "viewer"
     log.info("Loading scene (%s): %s", render_mode, scene_path)
-    env = SimEnv(str(scene_path), render_mode=render_mode, seed=args.seed)
+    env = SimEnv(str(scene_path), render_mode=render_mode, seed=scene_seed)
     observation = env.reset()
     if not args.headless:
         env.launch_viewer(wrist_cam=args.cam == "wrist")
@@ -179,6 +261,10 @@ def main() -> int:
             joint_damping=1.5,
             force_cap_n=math.inf if args.no_force_cap else 30.0,
         )
+    elif replay_columns is not None:
+        # Replay: don't re-clamp commands that were already clamped when recorded.
+        max_dpos = args.max_dpos if args.max_dpos is not None else math.inf
+        controller = Controller(env, max_dpos_per_step=max_dpos)
     else:
         max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
         controller = Controller(env, max_dpos_per_step=max_dpos)
@@ -195,7 +281,9 @@ def main() -> int:
 
     input_strategy: InputStrategy
     tracker = None
-    if args.input == "vision":
+    if replay_columns is not None:
+        input_strategy = _ReplayInput(replay_columns)
+    elif args.input == "vision":
         from ai_teleop.input.hand_tracker import StereoHandSource
 
         # A bare integer is a device index; anything else is a stream URL / path.
@@ -227,8 +315,7 @@ def main() -> int:
             initial_anchor=neutral,
         )
         log.info(
-            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). "
-            "Lift your hand out of frame to clutch."
+            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand out of frame to clutch."
         )
     else:
         target_pose = np.concatenate([target_position, home_quaternion])
@@ -246,6 +333,49 @@ def main() -> int:
     budget = "unlimited" if args.max_steps <= 0 else f"{args.max_steps} steps"
     log.info("Running %s with %s input + NoAssist (Ctrl-C to stop)...", budget, args.input)
 
+    recorder: EpisodeRecorder | None = None
+    terminal_reason = TerminalReason.TIMEOUT
+    record_path: Path | None = None
+    step_callback = None
+
+    if args.record is not None:
+        record_path = _resolve_record_path(args.record)
+        ft_bias = observation.wrist_ft.copy()
+        recorder = EpisodeRecorder()
+
+        def step_callback(step: int, obs, base_command, delta, command) -> bool:
+            nonlocal terminal_reason
+            geometry = SeatingGeometry.from_observation(obs)
+            inserted = (
+                geometry.penetration >= DEFAULT_SUCCESS_DEPTH
+                and geometry.lateral_error < DEFAULT_LATERAL_TOLERANCE
+            )
+            recorder.add(  # type: ignore[union-attr]
+                step=step,
+                sim_time=obs.sim_time,
+                wrist_ft=obs.wrist_ft - ft_bias,
+                joint_positions=obs.joint_positions,
+                joint_velocities=obs.joint_velocities,
+                ee_pose=obs.ee_pose,
+                gripper_width=obs.gripper_width,
+                cmd_position=base_command.target_position,
+                cmd_quaternion=base_command.target_quaternion,
+                cmd_grip=base_command.delta_grip_force,
+                delta_position=delta.delta_position,
+                delta_orientation=delta.delta_orientation,
+                delta_grip=delta.delta_grip_force,
+                peg_pose=obs.peg_pose,
+                target_hole_pose=geometry.target_hole_pose,
+                distance=geometry.distance,
+                step_success=inserted,
+            )
+            if inserted:
+                terminal_reason = TerminalReason.SUCCESS
+                return True
+            return False
+
+        log.info("Recording to: %s", record_path)
+
     result = None
     try:
         result = run_episode(
@@ -255,12 +385,27 @@ def main() -> int:
             assist,
             max_steps=max_steps,
             render=not args.headless,
+            step_callback=step_callback,
         )
     except KeyboardInterrupt:
         log.info("Interrupted.")
     finally:
         if tracker is not None:
             tracker.close()
+
+    if recorder is not None and len(recorder) > 0:
+        assert record_path is not None
+        recorder.save(
+            record_path,
+            metadata={
+                "source": args.input,
+                "seed": args.seed,
+                "target_hole_index": int(observation.target_hole_index),
+                "terminal_reason": terminal_reason.value,
+                "episode_success": terminal_reason is TerminalReason.SUCCESS,
+            },
+        )
+        log.info("Saved %d steps → %s  [%s]", len(recorder), record_path, terminal_reason.value)
 
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
