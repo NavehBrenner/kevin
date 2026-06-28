@@ -61,7 +61,7 @@ from ai_teleop.data.trajectory import (
 )
 from ai_teleop.domain import Delta, NoAssist
 from ai_teleop.expert import Expert
-from ai_teleop.input import ScriptedNoisyHuman
+from ai_teleop.input import DEFAULT_MAX_APPROACH_SPEED, ScriptedNoisyHuman
 from ai_teleop.sim.runner import run_episode
 from ai_teleop.sim.scene import SimEnv
 from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
@@ -79,7 +79,13 @@ DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
 
 
 def _episode_fingerprint(
-    *, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, scene_path: str
+    *,
+    seed: int,
+    max_steps: int,
+    max_dpos: float,
+    expert_d_far: float,
+    max_approach_speed: float,
+    scene_path: str,
 ) -> str:
     """Stable hash of every input that determines an episode's trajectory.
 
@@ -88,7 +94,10 @@ def _episode_fingerprint(
     """
     import hashlib
 
-    payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{Path(scene_path).name}"
+    payload = (
+        f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}"
+        f"|{max_approach_speed:.6f}|{Path(scene_path).name}"
+    )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -260,13 +269,19 @@ def _human_seed(seed: int, episode_index: int) -> int:
 
 
 def _make_human(
-    target_position: np.ndarray, home_quaternion: np.ndarray, *, seed: int, episode_index: int
+    target_position: np.ndarray,
+    home_quaternion: np.ndarray,
+    *,
+    seed: int,
+    episode_index: int,
+    max_approach_speed: float,
 ) -> ScriptedNoisyHuman:
     """Build the per-episode operator. ``(seed, episode_index)`` fully determines
     its command stream, so a fresh instance reproduces the same operator — what
     the paired expert/baseline runs rely on."""
     return ScriptedNoisyHuman(
         np.concatenate([target_position, home_quaternion]),
+        max_approach_speed=max_approach_speed,
         seed=_human_seed(seed, episode_index),
     )
 
@@ -311,6 +326,7 @@ def generate_dataset(
     force_cap: float = DEFAULT_FORCE_CAP,
     max_dpos: float = DEFAULT_MAX_DPOS,
     expert_d_far: float = DEFAULT_EXPERT_D_FAR,
+    max_approach_speed: float = DEFAULT_MAX_APPROACH_SPEED,
     scene_path: str | Path = SCENE_PATH,
     cache: bool = True,
     baseline: bool = True,
@@ -352,6 +368,7 @@ def generate_dataset(
         max_steps=max_steps,
         max_dpos=max_dpos,
         expert_d_far=expert_d_far,
+        max_approach_speed=max_approach_speed,
         scene_path=str(scene_path),
     )
 
@@ -382,7 +399,11 @@ def generate_dataset(
         imgs_dir.mkdir(parents=True, exist_ok=True)
 
         human = _make_human(
-            target_position, home_quaternion, seed=seed, episode_index=episode_index
+            target_position,
+            home_quaternion,
+            seed=seed,
+            episode_index=episode_index,
+            max_approach_speed=max_approach_speed,
         )
         logger = _EpisodeLogger(
             ft_bias,
@@ -408,7 +429,11 @@ def generate_dataset(
                 controller,
                 # fresh operator with the same seed ⇒ identical command stream
                 _make_human(
-                    target_position, home_quaternion, seed=seed, episode_index=episode_index
+                    target_position,
+                    home_quaternion,
+                    seed=seed,
+                    episode_index=episode_index,
+                    max_approach_speed=max_approach_speed,
                 ),
                 episode_index,
                 max_steps=max_steps,
@@ -416,6 +441,7 @@ def generate_dataset(
             )
 
         episode_metadata: dict[str, object] = {
+            "source": "scripted",  # ScriptedNoisyHuman operator (see EpisodeMetadata.source)
             "master_seed": seed,
             "episode_index": episode_index,
             # The two derived seeds this episode was generated with. Both root in
@@ -456,6 +482,7 @@ def generate_dataset(
         "max_steps": max_steps,
         "max_dpos": max_dpos,
         "expert_d_far": expert_d_far,
+        "max_approach_speed": max_approach_speed,
         "success_depth": success_depth,
         "lateral_tolerance": lateral_tolerance,
         "force_cap": force_cap,
@@ -603,6 +630,7 @@ def regenerate_from_metadata(
         force_cap=config["force_cap"],
         max_dpos=config["max_dpos"],
         expert_d_far=config["expert_d_far"],
+        max_approach_speed=config.get("max_approach_speed", DEFAULT_MAX_APPROACH_SPEED),
         scene_path=scene_path,
         cache=not force,
         baseline="baseline_no_assist" in metadata,
@@ -615,6 +643,7 @@ def regenerate_from_metadata(
         max_steps=config["max_steps"],
         max_dpos=config["max_dpos"],
         expert_d_far=config["expert_d_far"],
+        max_approach_speed=config.get("max_approach_speed", DEFAULT_MAX_APPROACH_SPEED),
         scene_path=str(scene_path),
     )
     if expected is not None and actual != expected:

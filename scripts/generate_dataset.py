@@ -29,6 +29,7 @@ from ai_teleop.common.log import (  # noqa: E402
 )
 from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_EXPERT_D_FAR,
+    DEFAULT_MAX_APPROACH_SPEED,
     DEFAULT_MAX_DPOS,
     DEFAULT_MAX_STEPS,
     SCENE_PATH,
@@ -66,6 +67,12 @@ def main() -> int:
         type=float,
         default=DEFAULT_EXPERT_D_FAR,
         help="Distance (m) at which the expert starts engaging.",
+    )
+    parser.add_argument(
+        "--max-approach-speed",
+        type=float,
+        default=DEFAULT_MAX_APPROACH_SPEED,
+        help="Operator command sweep cap in m/s (realism knob; LAB-78/77 fit target).",
     )
     parser.add_argument(
         "--force",
@@ -122,6 +129,7 @@ def main() -> int:
         max_steps=args.max_steps,
         max_dpos=args.max_dpos,
         expert_d_far=args.expert_d_far,
+        max_approach_speed=args.max_approach_speed,
         cache=not args.force,
         baseline=not args.no_baseline,
         render_images=args.render_images,

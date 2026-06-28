@@ -94,9 +94,9 @@ def test_different_seeds_produce_different_commands():
 # ---------------------------------------------------------------------------
 
 
-def test_bias_is_constant_within_episode():
-    # With drift and tremor disabled, every command must equal goal = target +
-    # bias exactly, across the whole episode (bias never resamples per step).
+def test_command_converges_to_biased_goal():
+    # With drift and tremor disabled the command sweeps in from the arm's start
+    # pose and settles on goal = target + bias (the constant per-episode offset).
     target_pose = _make_target_pose()
     actor = ScriptedNoisyHuman(
         target_pose,
@@ -106,11 +106,15 @@ def test_bias_is_constant_within_episode():
         seed=3,
     )
     obs = _make_observation()
+    bias_before = actor.position_bias.copy()
     expected_position = target_pose[:3] + actor.position_bias
 
-    commands = np.array([actor.get_command(obs).target_position for _ in range(500)])
-    for command_position in commands:
-        np.testing.assert_allclose(command_position, expected_position, atol=1e-12)
+    commands = np.array([actor.get_command(obs).target_position for _ in range(2000)])
+    # Starts at the arm, not the goal...
+    assert not np.allclose(commands[0], expected_position, atol=1e-3)
+    # ...and converges there (bias never resampled mid-episode).
+    np.testing.assert_allclose(commands[-1], expected_position, atol=1e-4)
+    np.testing.assert_array_equal(actor.position_bias, bias_before)
 
 
 def test_bias_varies_across_seeds():
@@ -121,8 +125,9 @@ def test_bias_varies_across_seeds():
     assert not np.allclose(actor_a.orientation_bias, actor_b.orientation_bias)
 
 
-def test_zero_noise_command_equals_target():
-    # No bias, no drift, no tremor ⇒ the command is exactly the target forever.
+def test_zero_noise_command_converges_to_target():
+    # No bias, no drift, no tremor ⇒ the command sweeps to the target and the
+    # orientation is the target's (no orientation drift) from the first tick.
     target_pose = _make_target_pose()
     actor = ScriptedNoisyHuman(
         target_pose,
@@ -134,37 +139,10 @@ def test_zero_noise_command_equals_target():
         seed=0,
     )
     obs = _make_observation()
-    for _ in range(50):
+    for _ in range(2000):
         cmd = actor.get_command(obs)
-        np.testing.assert_allclose(cmd.target_position, target_pose[:3], atol=1e-12)
         np.testing.assert_allclose(cmd.target_quaternion, target_pose[3:], atol=1e-9)
-
-
-# ---------------------------------------------------------------------------
-# Refresh-and-hold: low-frequency command, not per-step jitter
-# ---------------------------------------------------------------------------
-
-
-def test_command_is_held_between_refreshes():
-    # control_hz / refresh_hz = 500 / 10 = 50 ⇒ the command is constant for 50
-    # ticks, then changes (drift on, tremor off).
-    target_pose = _make_target_pose()
-    actor = ScriptedNoisyHuman(
-        target_pose,
-        drift_position_std=0.01,
-        tremor_std=0.0,
-        refresh_hz=10.0,
-        control_hz=500.0,
-        seed=5,
-    )
-    obs = _make_observation()
-    commands = np.array([actor.get_command(obs).target_position for _ in range(60)])
-
-    # First 50 ticks identical (one hold window)...
-    for command_position in commands[:50]:
-        np.testing.assert_array_equal(command_position, commands[0])
-    # ...then the next refresh moves it.
-    assert not np.array_equal(commands[50], commands[0])
+    np.testing.assert_allclose(cmd.target_position, target_pose[:3], atol=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -173,27 +151,27 @@ def test_command_is_held_between_refreshes():
 
 
 def test_drift_is_temporally_correlated():
-    # Sample the held target once per refresh window; the per-refresh series
-    # should be strongly autocorrelated at lag 1 (OU), unlike white noise (~0).
+    # The per-tick OU drift makes the command smooth: sampled (post-arrival, on a
+    # coarse stride) it stays strongly autocorrelated at lag 1, unlike white noise.
     target_pose = _make_target_pose()
-    refresh_hz, control_hz = 10.0, 500.0
-    hold_steps = round(control_hz / refresh_hz)
+    stride = 50  # 0.1 s at 500 Hz
     actor = ScriptedNoisyHuman(
         target_pose,
         position_bias_std=0.0,
         drift_position_std=0.01,
         drift_tau=0.5,
         tremor_std=0.0,
-        refresh_hz=refresh_hz,
-        control_hz=control_hz,
+        control_hz=500.0,
         seed=1,
     )
     obs = _make_observation()
 
-    n_refreshes = 400
+    for _ in range(1000):  # burn-in: let the command sweep in and reach the goal
+        actor.get_command(obs)
+    n_samples = 400
     samples = np.array([
-        actor.get_command(obs).target_position[0] for _ in range(n_refreshes * hold_steps)
-    ])[::hold_steps]
+        actor.get_command(obs).target_position[0] for _ in range(n_samples * stride)
+    ])[::stride]
     deviations = samples - samples.mean()
     lag1 = float(np.corrcoef(deviations[:-1], deviations[1:])[0, 1])
     assert lag1 > 0.3, f"drift lag-1 autocorrelation too low ({lag1:.3f}) — looks like white noise"

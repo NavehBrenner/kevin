@@ -110,9 +110,10 @@ def main() -> int:
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=DEFAULT_MAX_STEPS,
-        help="Episode step budget (one step == one 2 ms sim tick). Use 0 for no limit — "
-        "run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
+        default=None,
+        help="Episode step budget (one step == one 2 ms sim tick). Default: the replayed "
+        f"episode's own length when --input is a path, else {DEFAULT_MAX_STEPS}. Use 0 for no "
+        "limit — run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
     )
     parser.add_argument(
         "--generated-wall",
@@ -330,9 +331,18 @@ def main() -> int:
         np.array2string(target_position, precision=3),
         start_dist * 1000,
     )
-    # --max-steps 0 (or negative) => run effectively forever; range() is lazy.
-    max_steps = args.max_steps if args.max_steps > 0 else sys.maxsize
-    budget = "unlimited" if args.max_steps <= 0 else f"{args.max_steps} steps"
+    # Resolve the step budget. Unset (None) defaults to the replayed episode's own
+    # length so a recorded run plays in full (not truncated to the generic default);
+    # for live input it falls back to DEFAULT_MAX_STEPS. Explicit 0/negative => run
+    # effectively forever; range() is lazy.
+    if args.max_steps is None:
+        requested_steps = (
+            len(replay_columns["step"]) if replay_columns is not None else DEFAULT_MAX_STEPS
+        )
+    else:
+        requested_steps = args.max_steps
+    max_steps = requested_steps if requested_steps > 0 else sys.maxsize
+    budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
     log.info("Running %s with %s input + NoAssist (Ctrl-C to stop)...", budget, args.input)
 
     recorder: EpisodeRecorder | None = None

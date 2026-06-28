@@ -21,7 +21,7 @@ targets 3.10.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 
@@ -66,6 +66,9 @@ class DatasetConfig(TypedDict):
     max_steps: int
     max_dpos: float
     expert_d_far: float
+    # NotRequired: datasets generated before LAB-78 omit it; readers fall back to
+    # the operator's DEFAULT_MAX_APPROACH_SPEED.
+    max_approach_speed: NotRequired[float]
     success_depth: float
     lateral_tolerance: float
     force_cap: float
@@ -95,6 +98,10 @@ class _EpisodeMetadataBase(TypedDict):
 class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     """Per-episode metadata; the ``baseline_*`` keys appear iff a baseline ran."""
 
+    # Command source that produced the trajectory: "scripted" for a generated BC
+    # episode, else the `kvn episode --input` mode for a recorded one. Optional:
+    # episodes written before it was stamped omit it (readers fall back).
+    source: str
     baseline_terminal_reason: str | None
     baseline_success: bool | None
 

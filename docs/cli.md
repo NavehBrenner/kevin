@@ -159,6 +159,7 @@ fingerprint. On-disk schema: [`docs/data-schema.md`](data-schema.md).
 | `--max-steps N` | script default | Per-episode step cap. |
 | `--max-dpos M` | script default | Controller command clamp in m/step. |
 | `--expert-d-far M` | script default | Distance (m) at which the expert starts engaging. |
+| `--max-approach-speed M` | script default | Operator command sweep cap in m/s (realism knob). |
 | `--force` | off | Regenerate even if a cached episode with a matching fingerprint exists. |
 
 ```bash
