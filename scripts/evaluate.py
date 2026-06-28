@@ -11,8 +11,8 @@ Two subcommands::
     uv run python scripts/evaluate.py pair --seeds 20 --out-dir runs/eval \\
         --residual-checkpoint runs/train/<run>/checkpoint.pt
 
-    # human-only difficulty sweep over the command-clamp knob → success rate per setting
-    uv run python scripts/evaluate.py sweep --seeds 20 --max-dpos 0.02,0.025,0.03
+    # human-only difficulty sweep over the operator-error knob → success rate per setting
+    uv run python scripts/evaluate.py sweep --seeds 20 --error-scale 0.1,0.2,0.3,0.5,1.0
 
 Without ``--residual-checkpoint`` the ablation runs human-only only — useful for
 calibration, where no policy is needed.
@@ -36,10 +36,10 @@ from ai_teleop.common.log import (  # noqa: E402
 from ai_teleop.eval.ablation import (  # noqa: E402
     DEFAULT_MAX_DPOS,
     HUMAN_ONLY,
+    INSERTION_MAX_STEPS,
     Config,
     run_paired,
 )
-from ai_teleop.sim.runner import DEFAULT_MAX_STEPS  # noqa: E402
 
 log = get_logger("evaluate")
 
@@ -94,9 +94,13 @@ def _run_pair(args: argparse.Namespace) -> int:
 
 
 def _run_sweep(args: argparse.Namespace) -> int:
-    clamp_values = [float(v) for v in args.max_dpos.split(",")]
-    log.info("human-only sweep over max_dpos=%s, %d seeds each", clamp_values, args.seeds)
-    for max_dpos in clamp_values:
+    scale_values = [float(v) for v in args.error_scale.split(",")]
+    log.info(
+        "human-only sweep over operator_error_scale=%s, %d seeds each",
+        scale_values,
+        args.seeds,
+    )
+    for error_scale in scale_values:
         successes = 0
         for episode_index in range(args.seeds):
             results = run_paired(
@@ -104,13 +108,13 @@ def _run_sweep(args: argparse.Namespace) -> int:
                 [HUMAN_ONLY],
                 master_seed=args.master_seed,
                 max_steps=args.max_steps,
-                max_dpos=max_dpos,
+                operator_error_scale=error_scale,
             )
             successes += int(results["human_only"].success)
         rate = successes / args.seeds
         log.info(
-            "max_dpos %.3f m │ human-only success %3d/%d (%.0f%%)",
-            max_dpos,
+            "error_scale %.3f │ human-only success %3d/%d (%.0f%%)",
+            error_scale,
             successes,
             args.seeds,
             100 * rate,
@@ -126,7 +130,10 @@ def main() -> int:
     common.add_argument("--seeds", type=int, default=20, help="Number of paired seeds (episodes).")
     common.add_argument("--master-seed", type=int, default=0, help="Master seed for the SimEnv.")
     common.add_argument(
-        "--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Per-episode step budget."
+        "--max-steps",
+        type=int,
+        default=INSERTION_MAX_STEPS,
+        help="Per-episode step budget (default matches the data-gen corpus; insertion needs ~12 s).",
     )
     add_logging_arguments(common)
 
@@ -147,9 +154,9 @@ def main() -> int:
 
     sweep = sub.add_parser("sweep", parents=[common], help="Human-only difficulty sweep.")
     sweep.add_argument(
-        "--max-dpos",
-        default="0.02,0.025,0.03",
-        help="Comma-separated command-clamp values to sweep (m/step).",
+        "--error-scale",
+        default="0.1,0.2,0.3,0.5,1.0",
+        help="Comma-separated operator-error scales to sweep (1.0 == training σ's).",
     )
     sweep.set_defaults(func=_run_sweep)
 

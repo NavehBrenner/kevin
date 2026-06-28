@@ -35,7 +35,11 @@ from ai_teleop.domain.interfaces import AssistProvider
 from ai_teleop.eval.observer import TrialObserver
 from ai_teleop.eval.schema import TrialKPIs
 from ai_teleop.eval.trace import TRACE_NPZ_NAME, EvalTraceRecorder
-from ai_teleop.input.scripted_noisy_human import ScriptedNoisyHuman
+from ai_teleop.input.scripted_noisy_human import (
+    DEFAULT_DRIFT_POSITION_STD,
+    DEFAULT_POSITION_BIAS_STD,
+    ScriptedNoisyHuman,
+)
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode
 from ai_teleop.sim.scene import SimEnv
 from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
@@ -43,6 +47,19 @@ from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
 # Controller command clamp (m/step). Matches the run_episode / data-gen default;
 # it is a difficulty knob the calibration sweep may vary.
 DEFAULT_MAX_DPOS = 0.025
+
+# Per-episode step budget for an insertion trial (~12 s of sim @ 500 Hz). The M5
+# corpus was generated at this budget (see data/dataset_*/metadata.json → config.max_steps
+# = 6000); insertion needs ~12 s, so the runner's generic 2000-step default times out
+# 100+ mm short and every config reads 0%. Eval must use the same task budget as data-gen.
+INSERTION_MAX_STEPS = 6000
+
+# Difficulty knob for the LAB-53 pin: a multiplier on the scripted operator's lateral
+# error (per-episode bias + OU drift) relative to the M5 training distribution.
+# 1.0 == the σ's the corpus was generated at (where contact lands on the flat wall, far
+# outside the ~chamfer-width capture band); < 1.0 shrinks the error toward that band so
+# the F/T residual has a lever and human-only sits below ceiling with headroom.
+DEFAULT_OPERATOR_ERROR_SCALE = 1.0
 
 
 @dataclass(frozen=True)
@@ -75,13 +92,16 @@ def run_trial(
     scene_path: str | Path = STATIC_TASK_SCENE,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
+    operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
     trace_path: str | Path | None = None,
     **observer_kwargs: Any,
 ) -> TrialKPIs:
     """Run one trial of ``config`` and return its KPI record.
 
-    When ``trace_path`` is given, the realized-state trace is written there so the
-    KPIs can later be recomputed offline via :func:`replay_kpis`.
+    ``operator_error_scale`` multiplies the scripted operator's lateral-error σ's
+    (bias + drift) off their training defaults — the difficulty knob the LAB-53 pin
+    sweeps. When ``trace_path`` is given, the realized-state trace is written there so
+    the KPIs can later be recomputed offline via :func:`replay_kpis`.
     """
     environment = SimEnv(str(scene_path), render_mode="headless", seed=master_seed, randomize=True)
     try:
@@ -90,7 +110,12 @@ def run_trial(
         target_position = observation.target_hole_position.copy()
         home_quaternion = controller.home_pose[3:]
         target_pose = np.concatenate([target_position, home_quaternion])
-        human = ScriptedNoisyHuman(target_pose, seed=_human_seed(master_seed, episode_index))
+        human = ScriptedNoisyHuman(
+            target_pose,
+            position_bias_std=DEFAULT_POSITION_BIAS_STD * operator_error_scale,
+            drift_position_std=DEFAULT_DRIFT_POSITION_STD * operator_error_scale,
+            seed=_human_seed(master_seed, episode_index),
+        )
         assist = config.assist_factory()
 
         observer = TrialObserver(seed=episode_index, config_label=config.label, **observer_kwargs)
@@ -134,6 +159,7 @@ def run_paired(
     scene_path: str | Path = STATIC_TASK_SCENE,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
+    operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
     **observer_kwargs: Any,
 ) -> dict[str, TrialKPIs]:
     """Run one paired trial — the same ``episode_index`` under each config.
@@ -155,6 +181,7 @@ def run_paired(
             scene_path=scene_path,
             max_steps=max_steps,
             max_dpos=max_dpos,
+            operator_error_scale=operator_error_scale,
             trace_path=trace_path,
             **observer_kwargs,
         )

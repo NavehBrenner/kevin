@@ -65,6 +65,28 @@ def test_paired_run_same_seed_identical_operator_stream(tmp_path):
     assert not np.allclose(human_cols["ee_pose"][:n], nudge_cols["ee_pose"][:n])
 
 
+def test_operator_error_scale_changes_the_command_stream(tmp_path):
+    """The LAB-53 difficulty knob is wired: at the same seed, scale=0 (no bias/drift)
+    yields a different — and closer-to-target — operator stream than the trained σ's."""
+    run_trial(
+        2,
+        HUMAN_ONLY,
+        max_steps=MAX_STEPS,
+        operator_error_scale=0.0,
+        trace_path=tmp_path / "off.npz",
+    )
+    run_trial(
+        2, HUMAN_ONLY, max_steps=MAX_STEPS, operator_error_scale=1.0, trace_path=tmp_path / "on.npz"
+    )
+    off_cols, _ = load_eval_trace(tmp_path / "off.npz")
+    on_cols, _ = load_eval_trace(tmp_path / "on.npz")
+
+    target = off_cols["target_hole_pose"][0, :3]
+    off_err = np.linalg.norm(off_cols["base_cmd_position"] - target, axis=1).mean()
+    on_err = np.linalg.norm(on_cols["base_cmd_position"] - target, axis=1).mean()
+    assert off_err < on_err  # scaling the σ's down moves the operator toward the hole
+
+
 def test_saved_trace_replays_to_same_kpis(tmp_path):
     """Offline replay of a real episode's trace reproduces the live KPIs."""
     trace_path = tmp_path / "trace.npz"

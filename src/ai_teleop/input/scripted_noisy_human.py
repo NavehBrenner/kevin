@@ -45,6 +45,14 @@ import numpy as np
 from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 
+# Default per-episode lateral-error magnitudes (m). Named so the eval harness can
+# scale operator difficulty relative to the distribution the M5 corpus was generated
+# at (scale 1.0 == these values). Bias is the constant per-episode offset; drift is
+# the stationary OU wander on top of it — together they set the lateral error at
+# contact, which the difficulty pin (LAB-53) trades against the chamfer capture radius.
+DEFAULT_POSITION_BIAS_STD: float = 0.01
+DEFAULT_DRIFT_POSITION_STD: float = 0.005
+
 
 def _axis_angle_to_quat(axis_angle: np.ndarray) -> np.ndarray:
     """Convert a (3,) axis-angle vector to a (w,x,y,z) unit quaternion."""
@@ -92,9 +100,9 @@ class ScriptedNoisyHuman:
         self,
         target_pose: np.ndarray,
         *,
-        position_bias_std: float = 0.01,
+        position_bias_std: float = DEFAULT_POSITION_BIAS_STD,
         orientation_bias_std: float = float(np.deg2rad(3.0)),
-        drift_position_std: float = 0.005,
+        drift_position_std: float = DEFAULT_DRIFT_POSITION_STD,
         drift_orientation_std: float = float(np.deg2rad(1.0)),
         drift_tau: float = 0.3,
         tremor_std: float = 0.0,
