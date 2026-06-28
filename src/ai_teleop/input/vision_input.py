@@ -143,7 +143,11 @@ def calibrate_neutral(
                     )
                 hold_start, anchor, last_countdown = None, None, None
                 positions.clear()
-            if live:
+            # Only flip the line to "waiting" when no hold is active. During a
+            # tolerated blip (hold still alive within the grace window) keep the
+            # countdown on screen, or a single false-negative MediaPipe frame
+            # flickers the text between "centering in Ns" and "waiting".
+            if live and hold_start is None:
                 show(now, "waiting for an open palm — hold still")
             sleep(poll_interval_s)
             continue
