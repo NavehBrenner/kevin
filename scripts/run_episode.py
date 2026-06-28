@@ -405,6 +405,9 @@ def main() -> int:
             max_steps=max_steps,
             render=not args.headless,
             step_callback=step_callback,
+            # End once the force-cap watchdog latches HOLD (the arm is frozen).
+            # Not for vision free-play, where a wall bump shouldn't close the viewer.
+            stop_on_hold_lock=args.input != "vision",
         )
     except KeyboardInterrupt:
         log.info("Interrupted.")
@@ -429,8 +432,9 @@ def main() -> int:
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
         log.info(
-            "Episode done: %d steps  final lock state = %s  EE-to-hole %.0f mm -> %.0f mm",
+            "Episode done: %d steps (%.2f s)  final lock state = %s  EE-to-hole %.0f mm -> %.0f mm",
             result.n_steps,
+            result.final_observation.sim_time,
             result.lock_status.state.value,
             start_dist * 1000,
             final_dist * 1000,

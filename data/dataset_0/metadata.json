@@ -2,7 +2,7 @@
   "schema_version": "2.0",
   "master_seed": 0,
   "n_episodes": 20,
-  "generated_at": "2026-06-28T17:54:30+00:00",
+  "generated_at": "2026-06-28T18:47:27+00:00",
   "fingerprint": "a4b45832fe4ed334",
   "config": {
     "max_steps": 6000,
@@ -79,7 +79,7 @@
       "human_seed": 2613022947,
       "terminal_reason": "success",
       "success": true,
-      "baseline_terminal_reason": "timeout",
+      "baseline_terminal_reason": "force_abort",
       "baseline_success": false
     },
     {
@@ -244,7 +244,7 @@
       "human_seed": 121999420,
       "terminal_reason": "success",
       "success": true,
-      "baseline_terminal_reason": "timeout",
+      "baseline_terminal_reason": "force_abort",
       "baseline_success": false
     },
     {
@@ -325,7 +325,8 @@
   ],
   "baseline_no_assist": {
     "counts": {
-      "timeout": 18,
+      "timeout": 16,
+      "force_abort": 2,
       "success": 2
     },
     "success_rate": 0.1

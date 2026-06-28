@@ -50,6 +50,7 @@ from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
 from ai_teleop.common.seating import SeatingGeometry
 from ai_teleop.control import Controller
+from ai_teleop.control.lock import LockState
 from ai_teleop.data.schema import DatasetConfig, ResBCDatasetMetadata
 from ai_teleop.data.trajectory import (
     SCHEMA_VERSION,
@@ -62,7 +63,7 @@ from ai_teleop.data.trajectory import (
 from ai_teleop.domain import Delta, NoAssist
 from ai_teleop.expert import Expert
 from ai_teleop.input import DEFAULT_MAX_APPROACH_SPEED, ScriptedNoisyHuman
-from ai_teleop.sim.runner import run_episode
+from ai_teleop.sim.runner import SIM_DT, run_episode
 from ai_teleop.sim.scene import SimEnv
 from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
 
@@ -303,7 +304,7 @@ def _baseline_terminal_reason(
     probe = _TerminationProbe(
         success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
     )
-    run_episode(
+    result = run_episode(
         environment,
         controller,
         human,
@@ -311,7 +312,13 @@ def _baseline_terminal_reason(
         max_steps=max_steps,
         reset_episode_index=episode_index,
         step_callback=probe,
+        stop_on_hold_lock=True,
     )
+    if (
+        probe.terminal_reason is TerminalReason.TIMEOUT
+        and result.lock_status.state is LockState.HOLD
+    ):
+        return TerminalReason.FORCE_ABORT
     return probe.terminal_reason
 
 
@@ -412,7 +419,7 @@ def generate_dataset(
             imgs_dir=imgs_dir,
             render_every=render_every,
         )
-        run_episode(
+        result = run_episode(
             environment,
             controller,
             human,
@@ -420,7 +427,15 @@ def generate_dataset(
             max_steps=max_steps,
             reset_episode_index=episode_index,
             step_callback=logger,
+            stop_on_hold_lock=True,
         )
+        # A HOLD-latched lock froze the arm: that's a force-cap failure, not a
+        # timeout — relabel (the logger only sees the higher episode force_cap).
+        if (
+            logger.terminal_reason is TerminalReason.TIMEOUT
+            and result.lock_status.state is LockState.HOLD
+        ):
+            logger.terminal_reason = TerminalReason.FORCE_ABORT
 
         baseline_reason: TerminalReason | None = None
         if baseline:
@@ -470,10 +485,12 @@ def generate_dataset(
         summaries.append(_episode_summary(path, episode_metadata, n_steps=len(logger.recorder)))
         if progress:
             tail = f" · baseline {baseline_reason.value}" if baseline_reason is not None else ""
+            n_steps = len(logger.recorder)
             log.info(
-                "episode %5d │ generated · %5d steps · %s%s",
+                "episode %5d │ generated · %5d steps (%.1f s) · %s%s",
                 episode_index,
-                len(logger.recorder),
+                n_steps,
+                n_steps * SIM_DT,
                 logger.terminal_reason.value,
                 tail,
             )
