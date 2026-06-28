@@ -125,58 +125,71 @@ def calibrate_neutral(
         sys.stderr.write(payload)
         sys.stderr.flush()
 
-    if not live:
+    if live:
+        # Hide the cursor: its blink snapping back to col 0 on each \r redraw is
+        # the real flicker. Restored in the finally (so Ctrl-C can't leave the
+        # terminal cursorless).
+        sys.stderr.write("\x1b[?25l")
+        sys.stderr.flush()
+    else:
         log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
-    while True:
-        if on_tick is not None:
-            on_tick()
-        reading = source.read()
-        now = clock()
-        if not (reading.present and reading.recenter_pose):
-            # Tolerate a brief drop-out / pose flicker: only a loss sustained past
-            # pose_grace_s resets an active hold; within the window keep counting.
-            lost_too_long = last_good_time is not None and now - last_good_time > pose_grace_s
-            if hold_start is not None and lost_too_long:
-                if not live:
-                    log.info(
-                        "centering reset — open palm lost for >%.2fs; hold again", pose_grace_s
-                    )
-                hold_start, anchor, last_countdown = None, None, None
-                positions.clear()
-            if live:
-                show(now, "waiting for an open palm — hold still")
-            sleep(poll_interval_s)
-            continue
-        last_good_time = now
-        moved = anchor is not None and float(np.linalg.norm(reading.position - anchor)) > move_tol
-        if hold_start is None or moved:
-            hold_start = now
-            anchor = reading.position.copy()
-            positions = [reading.position.copy()]
-            last_countdown = None
-            if live:
-                show(now, "open palm detected — keep holding still")
-            sleep(poll_interval_s)
-            continue
+    try:
+        while True:
+            if on_tick is not None:
+                on_tick()
+            reading = source.read()
+            now = clock()
+            if not (reading.present and reading.recenter_pose):
+                # Tolerate a brief drop-out / pose flicker: only a loss sustained past
+                # pose_grace_s resets an active hold; within the window keep counting.
+                lost_too_long = last_good_time is not None and now - last_good_time > pose_grace_s
+                if hold_start is not None and lost_too_long:
+                    if not live:
+                        log.info(
+                            "centering reset — open palm lost for >%.2fs; hold again", pose_grace_s
+                        )
+                    hold_start, anchor, last_countdown = None, None, None
+                    positions.clear()
+                if live:
+                    show(now, "waiting for an open palm — hold still")
+                sleep(poll_interval_s)
+                continue
+            last_good_time = now
+            moved = (
+                anchor is not None and float(np.linalg.norm(reading.position - anchor)) > move_tol
+            )
+            if hold_start is None or moved:
+                hold_start = now
+                anchor = reading.position.copy()
+                positions = [reading.position.copy()]
+                last_countdown = None
+                if live:
+                    show(now, "open palm detected — keep holding still")
+                sleep(poll_interval_s)
+                continue
 
-        positions.append(reading.position.copy())
-        last_orientation = reading.orientation.copy()
-        held_for = now - hold_start
-        remaining = math.ceil(hold_s - held_for)
-        if remaining > 0:
-            if live:
-                show(now, f"centering in {remaining}s — hold still")
-            elif remaining != last_countdown:  # once per whole second
-                last_countdown = remaining
-                log.info("centering in %ds — hold still", remaining)
-        if held_for >= hold_s:
-            neutral_position = np.mean(positions, axis=0)
-            if live:
-                show(now, "centering complete — neutral set", done=True)
-            else:
-                log.info("centering complete — neutral set")
-            return NeutralAnchor(neutral_position, last_orientation)
-        sleep(poll_interval_s)
+            positions.append(reading.position.copy())
+            last_orientation = reading.orientation.copy()
+            held_for = now - hold_start
+            remaining = math.ceil(hold_s - held_for)
+            if remaining > 0:
+                if live:
+                    show(now, f"centering in {remaining}s — hold still")
+                elif remaining != last_countdown:  # once per whole second
+                    last_countdown = remaining
+                    log.info("centering in %ds — hold still", remaining)
+            if held_for >= hold_s:
+                neutral_position = np.mean(positions, axis=0)
+                if live:
+                    show(now, "centering complete — neutral set", done=True)
+                else:
+                    log.info("centering complete — neutral set")
+                return NeutralAnchor(neutral_position, last_orientation)
+            sleep(poll_interval_s)
+    finally:
+        if live:
+            sys.stderr.write("\x1b[?25h")  # restore cursor (also on Ctrl-C / error)
+            sys.stderr.flush()
 
 
 class _OneEuroVector:
