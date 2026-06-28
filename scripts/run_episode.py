@@ -372,6 +372,13 @@ def main() -> int:
             if inserted:
                 terminal_reason = TerminalReason.SUCCESS
                 return True
+            # Force-cap watchdog has latched the arm into HOLD; nothing in the
+            # vision path releases it, so end the recording here instead of
+            # capturing frozen ticks. force_cap_n is math.inf under
+            # --no-force-cap, so this never fires when the watchdog is off.
+            if float(np.linalg.norm(obs.wrist_ft[:3])) > controller.force_cap_n:
+                terminal_reason = TerminalReason.FORCE_ABORT
+                return True
             return False
 
         log.info("Recording to: %s", record_path)
