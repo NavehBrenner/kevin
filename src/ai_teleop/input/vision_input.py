@@ -110,10 +110,19 @@ def calibrate_neutral(
     # spinner so the operator sees it's working; otherwise fall back to the
     # per-state log lines (clean redirected output, and what the tests read).
     live = sys.stderr.isatty()
+    last_render = ""
 
     def show(now: float, text: str, *, done: bool = False) -> None:
+        # The poll loop runs at ~200 Hz; the spinner frame only changes at 10 Hz.
+        # Redraw only when the rendered line actually changes, or rewriting the
+        # same content 200×/s flickers the terminal.
+        nonlocal last_render
         frame = "✓" if done else _SPINNER_FRAMES[int(now * 10) % len(_SPINNER_FRAMES)]
-        sys.stderr.write(f"\r{frame} {text}\x1b[K" + ("\n" if done else ""))
+        payload = f"\r{frame} {text}\x1b[K" + ("\n" if done else "")
+        if payload == last_render:
+            return
+        last_render = payload
+        sys.stderr.write(payload)
         sys.stderr.flush()
 
     if not live:
