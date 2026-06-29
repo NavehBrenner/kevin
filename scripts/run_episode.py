@@ -8,15 +8,16 @@ NoAssist) and reports a one-line summary.
 
 Run from the `kevin/` directory:
 
-    uv run python scripts/run_episode.py                 # interactive viewer
-    uv run python scripts/run_episode.py --headless      # CI / batch
-    uv run python scripts/run_episode.py --headless --seed 7 --max-steps 1500
+    uv run python scripts/run_episode.py                      # interactive viewer
+    uv run python scripts/run_episode.py --headless           # CI / batch
+    uv run python scripts/run_episode.py --headless --script-seed 7 --max-steps 1500
 
-The same episode (fixed --seed) can be replayed under different assist policies via
---policy {noassist,expert,tf,vision} to compare them head-to-head:
+A recorded episode (`--input <path>`) is reproduced by rebuilding its scene +
+controller from the stored spec and replaying its commands verbatim; `--policy`
+layers a live assist on top to ask "what if a different policy had run this":
 
-    uv run python scripts/run_episode.py --seed 7 --policy expert
-    uv run python scripts/run_episode.py --seed 7 --policy tf --checkpoint runs/train/<run>/checkpoint.pt
+    uv run python scripts/run_episode.py --input data/dataset_0/runs/episode_00008
+    uv run python scripts/run_episode.py --input data/dataset_0/runs/episode_00008 --policy expert
 """
 
 from __future__ import annotations
@@ -50,13 +51,11 @@ from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_MAX_DPOS,
     DEFAULT_SUCCESS_DEPTH,
     episode_terminal_reason,
-    make_episode_operator,
 )
 from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
-    DEFAULT_MAX_APPROACH_SPEED,
     ScriptedNoisyHuman,
     VisionInput,
     WorkspaceCalibration,
@@ -80,7 +79,7 @@ def _resolve_episode_npz(path: str) -> Path:
 class _ReplayInput:
     """Feed recorded cmd_* columns back as Commands, one per tick."""
 
-    def __init__(self, columns: dict) -> None:
+    def __init__(self, columns: EpisodeColumns) -> None:
         self._positions = columns["cmd_position"]
         self._quaternions = columns["cmd_quaternion"]
         self._grips = columns["cmd_grip"]
@@ -92,6 +91,44 @@ class _ReplayInput:
         return Command(
             self._positions[i].copy(), self._quaternions[i].copy(), float(self._grips[i])
         )
+
+
+def _rebuild_for_replay(meta: EpisodeMetadata, render_mode):
+    """Rebuild the exact scene + controller a recorded episode ran in, from its metadata.
+
+    Replay reproduces the recording, so the scene (static vs generated wall, seed,
+    coverage-randomization + reset index) and the controller (clamp, joint damping,
+    force cap) must match what was recorded — otherwise the replayed commands drive a
+    different physical episode (the bug: missing spec → wrong scene/clamp). Falls back
+    to sensible defaults for older episodes that predate the full-spec metadata.
+
+    Returns ``(env, observation, controller, reset_index, scene_path)``.
+    """
+    scene_path = resolve_scene_path(
+        generated=bool(meta.get("generated_wall", False)),
+        wall_seed=meta.get("wall_seed"),
+        distractors=meta.get("distractors"),
+    )
+    seed = int(meta.get("seed", meta.get("master_seed", 0)))
+    # Generated datasets predate the explicit randomize/reset_index keys but carry
+    # scene_seed=[master_seed, episode_index] and were always built randomize=True.
+    randomize = bool(meta.get("randomize", "scene_seed" in meta))
+    reset_index = meta.get("reset_index")
+    if reset_index is None and "scene_seed" in meta:
+        reset_index = int(meta["scene_seed"][1])
+    env = SimEnv(str(scene_path), render_mode=render_mode, seed=seed, randomize=randomize)
+    observation = env.reset(reset_index)
+
+    controller_kwargs: dict[str, float] = {
+        "max_dpos_per_step": float(meta.get("max_dpos", DEFAULT_MAX_DPOS))
+    }
+    if "joint_damping" in meta:
+        controller_kwargs["joint_damping"] = float(meta["joint_damping"])
+    if "force_cap" in meta:  # stored None means the watchdog was off (--no-force-cap)
+        force_cap = meta["force_cap"]
+        controller_kwargs["force_cap_n"] = math.inf if force_cap is None else float(force_cap)
+    controller = Controller(env, **controller_kwargs)
+    return env, observation, controller, reset_index, scene_path
 
 
 def _resolve_record_path(out: str) -> Path:
@@ -135,124 +172,140 @@ def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
     raise SystemExit(f"--policy {policy} is not implemented yet.")
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Build the grouped CLI and parse ``argv`` (defaults to ``sys.argv``)."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+
+    run = parser.add_argument_group("run")
+    run.add_argument(
         "--headless", action="store_true", help="Skip the viewer; run the loop and print a summary."
     )
-    parser.add_argument(
-        "--seed", type=int, default=0, help="Seed for the scripted human's noise and the SimEnv."
-    )
-    parser.add_argument(
+    run.add_argument(
         "--max-steps",
         type=int,
         default=None,
-        help="Episode step budget (one step == one 2 ms sim tick). Default: the episode's "
-        f"generation budget when --input is a path, else {DEFAULT_MAX_STEPS}. Use 0 for no "
-        "limit — run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
+        help="Episode step budget (one step == one 2 ms sim tick). Default: the recorded length "
+        f"when --input is an episode path, else {DEFAULT_MAX_STEPS}. Use 0 for no limit — run "
+        "until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
     )
-    parser.add_argument(
-        "--generated-wall",
-        action="store_true",
-        help="Run on a freshly generated procedural wall instead of the static scene.",
-    )
-    parser.add_argument(
+    run.add_argument(
         "--cam",
         choices=["main", "wrist"],
         default="main",
-        help="Which camera the interactive viewer opens with: 'main' (free camera, default) "
-        "or 'wrist' (locked to the Panda's wrist camera, robot's-eye POV). Viewer keys still "
-        "switch cameras live.",
+        help="Viewer's opening camera: 'main' (free camera, default) or 'wrist' (Panda's "
+        "wrist camera, robot's-eye POV). Viewer keys still switch cameras live.",
     )
-    parser.add_argument(
+
+    source = parser.add_argument_group("input + policy")
+    source.add_argument(
         "--input",
         default="scripted",
         metavar="MODE_OR_PATH",
-        help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
-        "stereo hand tracking (needs the viewer + --stereo-calib), or a path to a generated "
-        "episode (folder / episode.npz) to reproduce it — scene + operator are rebuilt from "
-        "its seeds, so it reruns faithfully under any --policy.",
+        help="Command source: 'scripted' noisy human (default), 'vision' two-webcam stereo hand "
+        "tracking (needs the viewer + --stereo-calib), or a path to a recorded episode "
+        "(folder / episode.npz) to reproduce it — the scene + controller are rebuilt from the "
+        "episode's stored spec and the recorded commands are replayed verbatim (works for any "
+        "source, including recorded human / vision).",
     )
-    parser.add_argument(
+    source.add_argument(
         "--policy",
         choices=["noassist", "expert", "tf", "vision"],
         default="noassist",
-        help="Assist policy layered on the base command: 'noassist' (human-only, default), "
-        "'expert' analytical privileged-info supervisor, 'tf' trained F/T residual (needs "
-        "--checkpoint), or 'vision' Phase-2 vision-conditioned residual (not implemented yet). "
-        "Same scene + operator stream across policies, so you can compare the same episode.",
+        help="Assist layered on the (live or replayed) base command: 'noassist' (human-only, "
+        "default), 'expert' analytical privileged supervisor, 'tf' trained F/T residual (needs "
+        "--checkpoint), 'vision' Phase-2 residual (not implemented). On replay this is a "
+        "what-if (e.g. 'would the expert have saved this recorded human?').",
     )
-    parser.add_argument(
+    source.add_argument(
         "--checkpoint",
         default=None,
         help="Trained residual checkpoint.pt for --policy tf (e.g. runs/train/<run>/checkpoint.pt).",
     )
-    parser.add_argument(
-        "--no-cam-window",
-        action="store_true",
-        help="Hide the live stereo camera/3D-skeleton window (--input vision; shown by default).",
-    )
-    parser.add_argument(
-        "--stereo-calib",
-        default=None,
-        help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
-        "sources are --left / --right.",
-    )
-    parser.add_argument(
-        "--left",
-        default="0",
-        help="Left-camera source for --input vision: device index or stream URL.",
-    )
-    parser.add_argument(
-        "--right",
-        default="2",
-        help="Right-camera source for --input vision: device index or stream URL.",
-    )
-    parser.add_argument(
-        "--max-fps",
+    source.add_argument(
+        "--script-seed",
+        dest="script_seed",
         type=int,
-        default=None,
-        help="Cap hand-tracking to N fps (--input vision), even if the cameras run faster "
-        "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
-        "no cap (process every new camera frame).",
+        default=0,
+        help="Seed for the live scripted operator + SimEnv (--input scripted). Ignored on replay "
+        "(the scene seed comes from the episode).",
     )
-    parser.add_argument(
-        "--orientation",
+
+    scene = parser.add_argument_group("scene")
+    scene.add_argument(
+        "--generated-wall",
         action="store_true",
-        help="Enable 6-DoF orientation mirroring (--input vision): mirror the hand's "
-        "roll/pitch/yaw too. Off by default — position-only is a calmer, round-peg baseline.",
+        help="Run on a freshly generated procedural wall instead of the static scene.",
     )
-    parser.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
-    parser.add_argument(
+    scene.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
+    scene.add_argument(
         "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
     )
-    parser.add_argument(
+
+    control = parser.add_argument_group("controller")
+    control.add_argument(
         "--max-dpos",
         type=float,
         default=None,
-        help="Controller command clamp in m/step (approach-speed / strictness knob). "
-        "Default 0.025 (careful insertion); --input vision defaults to 0.3 for responsive "
-        "mirror-like tracking (raise it further if the arm still lags your hand).",
+        help="Controller command clamp in m/step (approach-speed / strictness knob). Default "
+        "0.025 (careful insertion); --input vision defaults to 0.3 for responsive tracking.",
     )
-    parser.add_argument(
+    control.add_argument(
         "--no-force-cap",
         action="store_true",
-        help="Disable the force-cap watchdog (--input vision free-play). Normally a wrist "
-        "force above ~30 N latches the arm into a HOLD lock that nothing in the vision path "
-        "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
-        "Use this to rule the watchdog in/out while debugging.",
+        help="Disable the force-cap watchdog (--input vision free-play). Normally a wrist force "
+        "above ~30 N latches a HOLD lock nothing in the vision path releases (looks like the arm "
+        "'stops responding' after a wall bump).",
     )
-    parser.add_argument(
+
+    vision = parser.add_argument_group("vision (--input vision)")
+    vision.add_argument(
+        "--stereo-calib",
+        default=None,
+        help="Path to a stereohand stereo_calib.json (required for --input vision).",
+    )
+    vision.add_argument(
+        "--left", default="0", help="Left-camera source: device index or stream URL."
+    )
+    vision.add_argument(
+        "--right", default="2", help="Right-camera source: device index or stream URL."
+    )
+    vision.add_argument(
+        "--max-fps",
+        type=int,
+        default=None,
+        help="Cap hand-tracking to N fps (fewer MediaPipe passes = less GIL pressure). "
+        "Default: process every new camera frame.",
+    )
+    vision.add_argument(
+        "--orientation",
+        action="store_true",
+        help="Enable 6-DoF orientation mirroring: mirror the hand's roll/pitch/yaw too. Off by "
+        "default — position-only is a calmer, round-peg baseline.",
+    )
+    vision.add_argument(
+        "--no-cam-window",
+        action="store_true",
+        help="Hide the live stereo camera/3D-skeleton window (shown by default).",
+    )
+
+    record = parser.add_argument_group("record")
+    record.add_argument(
         "--record",
         nargs="?",
         const="",
         default=None,
         metavar="OUT",
-        help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ "
-        "if OUT is omitted). Stops automatically on a successful insertion.",
+        help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ if "
+        "OUT is omitted). The complete scene + controller spec is stamped into the metadata so "
+        "the episode can be reproduced later. Stops automatically on success / force-abort.",
     )
+
     add_logging_arguments(parser)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_args()
     configure_from_args(args)
 
     # Detect whether --input is a keyword or an episode path.
@@ -278,64 +331,46 @@ def main() -> int:
         log.error("--input vision requires --stereo-calib PATH.")
         return 2
 
-    scene_path = resolve_scene_path(
-        generated=args.generated_wall,
-        wall_seed=args.wall_seed,
-        distractors=args.distractors,
-    )
-    if not scene_path.exists():
-        log.error("scene file not found at %s", scene_path)
-        return 2
-
     render_mode = "headless" if args.headless else "viewer"
-    log.info("Loading scene (%s): %s", render_mode, scene_path)
-    # For replay, rebuild the *exact generation scene* from the episode metadata:
-    # generation built SimEnv(seed=master_seed, randomize=True).reset(episode_index)
-    # (coverage-randomized target hole + joint start). Without matching that, the
-    # replay lands on the default home scene with the wrong target hole, so the
-    # recorded commands aim into a wall — the episode no longer matches its data.
     reset_index: int | None
-    if replay_columns is not None and "scene_seed" in replay_meta:
-        scene_seed, reset_index = (int(v) for v in replay_meta["scene_seed"])
-        randomize = True
+    if replay_columns is not None:
+        # Reproduce the recording: rebuild its exact scene + controller from the
+        # stored spec (the recorded commands are replayed verbatim below).
+        env, observation, controller, reset_index, scene_path = _rebuild_for_replay(
+            replay_meta, render_mode
+        )
     else:
-        scene_seed, reset_index, randomize = args.seed, None, False
-    env = SimEnv(str(scene_path), render_mode=render_mode, seed=scene_seed, randomize=randomize)
-    observation = env.reset(reset_index)
+        scene_path = resolve_scene_path(
+            generated=args.generated_wall, wall_seed=args.wall_seed, distractors=args.distractors
+        )
+        if not scene_path.exists():
+            log.error("scene file not found at %s", scene_path)
+            return 2
+        reset_index = None
+        env = SimEnv(
+            str(scene_path), render_mode=render_mode, seed=args.script_seed, randomize=False
+        )
+        observation = env.reset(reset_index)
+        # --input vision wants responsive, mirror-like tracking (bigger command clamp,
+        # lower joint damping); scripted/default uses the careful-insertion backbone.
+        if args.input == "vision":
+            controller = Controller(
+                env,
+                max_dpos_per_step=args.max_dpos if args.max_dpos is not None else 0.3,
+                joint_damping=1.5,
+                force_cap_n=math.inf if args.no_force_cap else 30.0,
+            )
+        else:
+            controller = Controller(
+                env,
+                max_dpos_per_step=args.max_dpos if args.max_dpos is not None else DEFAULT_MAX_DPOS,
+            )
+    log.info("Loading scene (%s): %s", render_mode, scene_path)
     if not args.headless:
         env.launch_viewer(wrist_cam=args.cam == "wrist")
         # Mark the target hole for the human (viewer-only; never in the policy-facing
         # wrist-cam render). Lets the operator know which hole to aim at.
         env.highlight_target(observation.target_hole_position)
-
-    # --input vision wants responsive, mirror-like tracking, not the slew-limited
-    # careful-insertion backbone (which feels like velocity control): a bigger
-    # command clamp lets the impedance spring toward the hand, and lower joint
-    # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
-    if args.input == "vision":
-        max_dpos = args.max_dpos if args.max_dpos is not None else 0.3
-        controller = Controller(
-            env,
-            max_dpos_per_step=max_dpos,
-            joint_damping=1.5,
-            force_cap_n=math.inf if args.no_force_cap else 30.0,
-        )
-    elif replay_columns is not None:
-        # Replay faithfully: use the SAME command clamp generation recorded with.
-        # The recorded cmd_* is the raw operator *base* command (the clamp is
-        # applied to base+delta inside the controller, exactly as in generation),
-        # so re-clamping at the recorded max_dpos reproduces the run — not math.inf.
-        recorded_max_dpos = replay_meta.get("max_dpos")
-        if args.max_dpos is not None:
-            max_dpos = args.max_dpos
-        elif recorded_max_dpos is not None:
-            max_dpos = float(recorded_max_dpos)
-        else:
-            max_dpos = DEFAULT_MAX_DPOS
-        controller = Controller(env, max_dpos_per_step=max_dpos)
-    else:
-        max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
-        controller = Controller(env, max_dpos_per_step=max_dpos)
 
     # Aim the scripted human at the active trial's hole *position*, but keep the
     # home grasp orientation rather than the hole-site frame: M3 is plumbing, and
@@ -349,27 +384,9 @@ def main() -> int:
 
     input_strategy: InputStrategy
     tracker = None
-    if (
-        replay_columns is not None
-        and replay_meta.get("source") == "scripted"
-        and reset_index is not None
-    ):
-        # Scripted episode: reconstruct the operator from its seed (deterministic,
-        # byte-identical to the recorded stream) and run it LIVE for the full budget.
-        # Replaying the recorded commands instead would freeze at the recorded run's
-        # terminal step — fine same-policy, but a longer cross-policy run (e.g.
-        # noassist over an expert-recorded success) would stall there and never match.
-        input_strategy = make_episode_operator(
-            target_position,
-            home_quaternion,
-            seed=scene_seed,
-            episode_index=reset_index,
-            max_approach_speed=float(
-                replay_meta.get("max_approach_speed") or DEFAULT_MAX_APPROACH_SPEED
-            ),
-        )
-    elif replay_columns is not None:
-        # Recorded-human episode (no scripted seed): replay the recorded commands.
+    if replay_columns is not None:
+        # Dumb iterator over the recorded commands — source-agnostic, so this replays
+        # scripted, recorded-human AND vision episodes (no operator to reconstruct).
         input_strategy = _ReplayInput(replay_columns)
     elif args.input == "vision":
         from ai_teleop.input.hand_tracker import StereoHandSource
@@ -407,7 +424,7 @@ def main() -> int:
         )
     else:
         target_pose = np.concatenate([target_position, home_quaternion])
-        input_strategy = ScriptedNoisyHuman(target_pose, seed=args.seed)
+        input_strategy = ScriptedNoisyHuman(target_pose, seed=args.script_seed)
 
     start_dist = float(np.linalg.norm(observation.ee_pose[:3] - target_position))
     log.info(
@@ -416,15 +433,13 @@ def main() -> int:
         np.array2string(target_position, precision=3),
         start_dist * 1000,
     )
-    # Resolve the step budget. Unset (None) defaults, for a replay, to the *generation*
-    # budget the episode was produced under (so a cross-policy replay — e.g. noassist
-    # over an expert-recorded episode — runs to the same cap, not the recorded outcome
-    # length, which would truncate it). Live input falls back to DEFAULT_MAX_STEPS.
-    # Explicit 0/negative => run effectively forever; range() is lazy.
+    # Resolve the step budget. A replay plays back exactly the recorded commands, so it
+    # runs for the recorded length; live input falls back to DEFAULT_MAX_STEPS. Explicit
+    # 0/negative => run effectively forever; range() is lazy.
     if args.max_steps is not None:
         requested_steps = args.max_steps
     elif replay_columns is not None:
-        requested_steps = int(replay_meta.get("max_steps") or len(replay_columns["step"]))
+        requested_steps = len(replay_columns["step"])
     else:
         requested_steps = DEFAULT_MAX_STEPS
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
@@ -520,9 +535,24 @@ def main() -> int:
         assert record_path is not None
         recorder.save(
             record_path,
+            # Complete spec so the episode can be reproduced later (the bug was a
+            # half-stored spec → wrong scene/controller on replay). Mirrors what
+            # _rebuild_for_replay reads back. force_cap None ⇒ watchdog off (inf).
             metadata={
                 "source": args.input,
-                "seed": args.seed,
+                "policy": args.policy,
+                "seed": args.script_seed,
+                "randomize": False,
+                "reset_index": None,
+                "generated_wall": args.generated_wall,
+                "wall_seed": args.wall_seed if args.generated_wall else None,
+                "distractors": args.distractors,
+                "scene": scene_path.name,
+                "max_dpos": controller.max_dpos_per_step,
+                "joint_damping": controller.joint_damping,
+                "force_cap": None if math.isinf(controller.force_cap_n) else controller.force_cap_n,
+                "success_depth": DEFAULT_SUCCESS_DEPTH,
+                "lateral_tolerance": DEFAULT_LATERAL_TOLERANCE,
                 "target_hole_index": int(observation.target_hole_index),
                 "terminal_reason": terminal_reason.value,
                 "episode_success": terminal_reason is TerminalReason.SUCCESS,

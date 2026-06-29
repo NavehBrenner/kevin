@@ -104,6 +104,19 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     # episode, else the `kvn episode --input` mode for a recorded one. Optional:
     # episodes written before it was stamped omit it (readers fall back).
     source: str
+    # Replay spec — the complete scene + controller recipe so `kvn episode --input
+    # <ep>` rebuilds the exact episode it ran in (see scripts/run_episode.py
+    # _rebuild_for_replay). Recorded episodes stamp these; generated ones derive the
+    # scene from scene_seed and these stay optional. force_cap None ⇒ watchdog off.
+    policy: str
+    seed: int
+    randomize: bool
+    reset_index: int | None
+    generated_wall: bool
+    wall_seed: int | None
+    distractors: int | None
+    scene: str  # scene-file name
+    joint_damping: float
     baseline_terminal_reason: str | None
     baseline_success: bool | None
 
