@@ -51,7 +51,6 @@ def _observation(
         gripper_width=0.08,
         peg_pose=np.concatenate([peg_position, IDENTITY_QUAT]),
         hole_poses=np.concatenate([hole_position, IDENTITY_QUAT]).reshape(1, 7),
-        target_hole_index=0,
         sim_time=sim_time,
     )
 
@@ -78,7 +77,7 @@ def _drive(observer: TrialObserver, observations: list[Observation]) -> TrialKPI
 
 def test_seating_geometry_penetration_matches_hand_value():
     geometry = SeatingGeometry.from_observation(
-        _observation(peg_position=_SEATED_PEG, sim_time=0.0)
+        _observation(peg_position=_SEATED_PEG, sim_time=0.0), 0
     )
     assert geometry.penetration == pytest.approx(0.02)
     assert geometry.lateral_error == pytest.approx(0.0, abs=1e-12)
@@ -87,7 +86,7 @@ def test_seating_geometry_penetration_matches_hand_value():
 def test_seating_geometry_lateral_error_is_off_axis_distance():
     # Shift the peg 0.004 m in y → that becomes pure lateral error.
     peg = _SEATED_PEG + np.array([0.0, 0.004, 0.0])
-    geometry = SeatingGeometry.from_observation(_observation(peg_position=peg, sim_time=0.0))
+    geometry = SeatingGeometry.from_observation(_observation(peg_position=peg, sim_time=0.0), 0)
     assert geometry.penetration == pytest.approx(0.02)
     assert geometry.lateral_error == pytest.approx(0.004)
 
@@ -265,7 +264,7 @@ def test_observer_runs_as_step_callback_through_run_episode():
         controller = Controller(environment)
         start = environment.reset()
         target = np.concatenate([
-            start.hole_poses[start.target_hole_index][:3],
+            start.hole_poses[0][:3],  # task goal: hole_0
             controller.home_pose[3:],
         ])
         human = ScriptedNoisyHuman(target, seed=0)

@@ -82,6 +82,7 @@ class TrialObserver:
     def __init__(
         self,
         *,
+        target_hole_index: int = 0,
         success_depth: float = DEFAULT_SUCCESS_DEPTH,
         lateral_tolerance: float = DEFAULT_LATERAL_TOLERANCE,
         force_cap: float = DEFAULT_FORCE_CAP,
@@ -91,6 +92,7 @@ class TrialObserver:
         seed: int | None = None,
         config_label: str | None = None,
     ) -> None:
+        self._target_hole_index = target_hole_index
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
@@ -145,7 +147,7 @@ class TrialObserver:
             self._outcome = TrialOutcome.FORCE_ABORT
             return True
 
-        geometry = SeatingGeometry.from_observation(observation)
+        geometry = SeatingGeometry.from_observation(observation, self._target_hole_index)
         if (
             geometry.penetration >= self._success_depth
             and geometry.lateral_error < self._lateral_tolerance

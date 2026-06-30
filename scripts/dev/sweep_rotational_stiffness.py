@@ -32,14 +32,14 @@ POS_D = [80.0, 80.0, 89.0]
 def run(
     scene_path: Path, k_rot: float, d_rot: float, target_idx: int, bore_aware: bool
 ) -> tuple[float, float]:
-    env = SimEnv(str(scene_path), render_mode="headless", target_hole_index=target_idx)
+    env = SimEnv(str(scene_path), render_mode="headless")
     obs = env.reset()
     controller = Controller(
         env,
         stiffness_tcp=np.array(POS_K + [k_rot] * 3),
         damping_tcp=np.array(POS_D + [d_rot] * 3),
     )
-    hole = obs.hole_poses[obs.target_hole_index]
+    hole = obs.hole_poses[target_idx]
     bore = axis_from_quat(hole[3:], 0)
     grasp = (
         bore_aligned_grasp(controller.home_pose[3:], bore)
@@ -54,7 +54,9 @@ def run(
     )
     for _ in range(6000):
         base = human.get_command(obs)
-        controller.compute(obs, apply_delta(base, Expert().get_delta(obs, base)))
+        controller.compute(
+            obs, apply_delta(base, Expert(target_hole_index=target_idx).get_delta(obs, base))
+        )
         env.step()
         obs = env.get_observation()
     tip = obs.peg_pose[:3] + 0.030 * axis_from_quat(obs.peg_pose[3:], 2)

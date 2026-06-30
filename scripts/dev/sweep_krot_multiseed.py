@@ -28,14 +28,14 @@ SEEDS = range(1, 7)
 
 def seated(scene_path: Path, k_rot: float, target_idx: int, seed: int) -> bool:
     d_rot = 4.0 * (k_rot / 3.0) ** 0.5
-    env = SimEnv(str(scene_path), render_mode="headless", target_hole_index=target_idx)
+    env = SimEnv(str(scene_path), render_mode="headless")
     obs = env.reset()
     controller = Controller(
         env,
         stiffness_tcp=np.array([400.0, 400.0, 500.0, k_rot, k_rot, k_rot]),
         damping_tcp=np.array([80.0, 80.0, 89.0, d_rot, d_rot, d_rot]),
     )
-    hole = obs.hole_poses[obs.target_hole_index]
+    hole = obs.hole_poses[target_idx]
     bore = axis_from_quat(hole[3:], 0)
     grasp = bore_aligned_grasp(controller.home_pose[3:], bore)
     human = ScriptedNoisyHuman(
@@ -47,7 +47,9 @@ def seated(scene_path: Path, k_rot: float, target_idx: int, seed: int) -> bool:
     ever = False
     for _ in range(6000):
         base = human.get_command(obs)
-        controller.compute(obs, apply_delta(base, Expert().get_delta(obs, base)))
+        controller.compute(
+            obs, apply_delta(base, Expert(target_hole_index=target_idx).get_delta(obs, base))
+        )
         env.step()
         obs = env.get_observation()
         tip = obs.peg_pose[:3] + 0.030 * axis_from_quat(obs.peg_pose[3:], 2)

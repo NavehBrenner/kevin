@@ -58,7 +58,6 @@ def run_episode(
     *,
     max_steps: int,
     render: bool = False,
-    reset_episode_index: int | None = None,
     step_callback=None,
 ) -> EpisodeResult:
     """Run one episode of the composed M3 loop; return the terminal state.
@@ -83,15 +82,13 @@ def run_episode(
             controller's torque is held (ZOH) across a tick's substeps; control
             runs at the loop rate, physics at 500 Hz. Leave False for
             headless/batch: exactly one step per tick, deterministic, no sleep.
-        reset_episode_index: forwarded to `environment.reset(...)` for the M4
-            coverage-randomized reset (None ⇒ the deterministic home pose).
         step_callback: optional `f(step, observation, base_command, delta,
             command) -> bool`. Called each tick with the *pre-step* observation
             the assist acted on; this is the M4 data-generation logging hook
             (the loop stays logging-free itself). Returning a truthy value ends
             the episode early — how the driver signals a terminal condition.
     """
-    observation = environment.reset(reset_episode_index)
+    observation = environment.reset()
     sim_steps = 0
     control_ticks = 0
     wall_start = time.monotonic()

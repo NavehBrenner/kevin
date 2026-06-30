@@ -15,15 +15,14 @@ print("=== 1) static full_scene via SimEnv (backward compat) ===")
 env = SimEnv("assets/mjcf/full_scene.xml", render_mode="headless")
 obs = env.reset()
 print(f"  holes discovered: {len(env._hole_site_ids)} (expect 3)")
-print(f"  hole_poses shape: {obs.hole_poses.shape}  target_index={obs.target_hole_index}")
+print(f"  hole_poses shape: {obs.hole_poses.shape}  (task goal: hole_0)")
 env.close()
 
 print("\n=== 2) generated 5-hole wall via env_setup bridge ===")
 env = make_wall_task_env(seed=20, distractors=4, render_mode="headless")
 obs = env.reset()
 print(f"  holes discovered: {len(env._hole_site_ids)} (expect 5)")
-print(f"  target_index={obs.target_hole_index} (expect 0)")
-target_pose = obs.hole_poses[obs.target_hole_index]
+target_pose = obs.hole_poses[0]  # generated walls put the goal at hole_0
 print(f"  target hole world pos: {np.round(target_pose[:3], 4)}")
 # Step the sim a few times to confirm it's runnable (peg held, no explosion).
 for _ in range(50):

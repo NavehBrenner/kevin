@@ -34,7 +34,6 @@ def _observation(peg_position, sim_time, *, wrist_ft=None, ee_position=None, hol
         gripper_width=0.04,
         peg_pose=np.concatenate([peg_position, IDENTITY_QUAT]),
         hole_poses=np.concatenate([hole_position, IDENTITY_QUAT]).reshape(1, 7),
-        target_hole_index=0,
         sim_time=sim_time,
     )
 

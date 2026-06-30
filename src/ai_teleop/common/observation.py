@@ -30,17 +30,11 @@ class Observation:
     # --- Privileged ground truth (training & evaluation only) ------------
     peg_pose: np.ndarray  # shape (7,)    peg body pose in world
     hole_poses: np.ndarray  # shape (N, 7)  every hole's pose in world
-    target_hole_index: int  # which hole is the active target this trial
+
+    # Which hole is the *goal* is not here: that is an episode/task concept the
+    # task layer owns (it picks the index and feeds it to the expert, the
+    # operator's target, and the seating/observer scoring). The env reports every
+    # hole's pose as privileged sensing and stays agnostic to the objective.
 
     # --- Timing ----------------------------------------------------------
     sim_time: float  # seconds since reset
-
-    @property
-    def target_hole_pose(self) -> np.ndarray:
-        """Pose (7,) of the active target hole — ``hole_poses[target_hole_index]``."""
-        return self.hole_poses[self.target_hole_index]
-
-    @property
-    def target_hole_position(self) -> np.ndarray:
-        """Position (3,) of the active target hole (a view; ``.copy()`` to keep)."""
-        return self.target_hole_pose[:3]

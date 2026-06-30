@@ -53,7 +53,6 @@ def _make_observation(
         gripper_width=0.08,
         peg_pose=np.concatenate([body_position, peg_quat]),
         hole_poses=np.concatenate([hole_position, _HOLE_QUAT]).reshape(1, 7),
-        target_hole_index=0,
         sim_time=0.0,
     )
 

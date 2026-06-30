@@ -60,7 +60,6 @@ def _observation(*, sim_time: float = 0.0, wrist_ft: np.ndarray | None = None) -
         gripper_width=0.05,
         peg_pose=np.array([0.5, 0.0, 0.45, 1.0, 0.0, 0.0, 0.0]),
         hole_poses=np.array([[0.6, 0.0, 0.5, 1.0, 0.0, 0.0, 0.0]]),
-        target_hole_index=0,
         sim_time=sim_time,
     )
 
@@ -247,7 +246,7 @@ def test_learned_residual_runs_in_run_episode_unchanged():
     try:
         observation = env.reset()
         controller = Controller(env)
-        target_position = observation.hole_poses[observation.target_hole_index][:3].copy()
+        target_position = observation.hole_poses[0][:3].copy()  # task goal: hole_0
         target_pose = np.concatenate([target_position, controller.home_pose[3:]])
         human = ScriptedNoisyHuman(target_pose, seed=0)
         assist = LearnedResidual(_model(), _identity_stats())

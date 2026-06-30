@@ -92,7 +92,7 @@ def main() -> int:
     # Sanity-log every hole pose [criterion: hole poses match MJCF].
     log.info("hole sites (world frame, position only):")
     for i, hole_pose in enumerate(obs.hole_poses):
-        marker = "  <-- target" if i == env.target_hole_index else ""
+        marker = "  <-- hole_0 (task goal)" if i == 0 else ""
         log.info("  hole_%d: pos=%s%s", i, hole_pose[:3].round(4).tolist(), marker)
 
     # ---- [criterion: step + sensor read] ----------------------------

@@ -64,6 +64,10 @@ class Expert:
 
     Parameters
     ----------
+    target_hole_index:
+        Which hole (index into ``observation.hole_poses``) the expert servos
+        toward. Supplied by the episode/task layer — the observation no longer
+        carries the goal. Generated walls put the target at ``hole_0``.
     peg_half_length:
         Distance from the peg body origin to its tip along the long axis (m).
     d_near, d_far:
@@ -83,6 +87,7 @@ class Expert:
     def __init__(
         self,
         *,
+        target_hole_index: int = 0,
         peg_half_length: float = 0.030,
         d_near: float = 0.01,
         d_far: float = 0.10,
@@ -92,6 +97,7 @@ class Expert:
         jam_force_threshold: float = 8.0,
         grip_reduce_force: float = 1.0,
     ) -> None:
+        self._target_hole_index = target_hole_index
         self._peg_half_length = peg_half_length
         self._d_near = d_near
         self._d_far = d_far
@@ -106,7 +112,7 @@ class Expert:
         peg_axis = axis_from_quat(observation.peg_pose[3:], 2)  # long axis = local +z
         peg_tip = observation.peg_pose[:3] + self._peg_half_length * peg_axis
 
-        hole_pose = observation.hole_poses[observation.target_hole_index]
+        hole_pose = observation.hole_poses[self._target_hole_index]
         hole_position = hole_pose[:3]
         insertion_axis = quat_to_matrix(hole_pose[3:])[:, 0]  # bore = hole local +x
 

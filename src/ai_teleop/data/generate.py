@@ -1,7 +1,7 @@
 """M4 data-generation pipeline — produce the behavioral-cloning corpus.
 
 Core functionality (the `scripts/generate_dataset.py` CLI is just its front
-door). Runs N unattended episodes (coverage-randomized scene → realistic noisy
+door). Runs N unattended episodes (a fresh per-episode wall → realistic noisy
 human → analytical expert → controller → sim) and writes **one per-episode
 folder** under ``<dataset>/runs/`` — ``episode_NNNNN/episode.npz`` plus an
 ``imgs/`` subfolder. This is the BC training corpus M5 trains against.
@@ -62,13 +62,25 @@ from ai_teleop.data.trajectory import (
 from ai_teleop.domain import Delta, NoAssist
 from ai_teleop.expert import Expert
 from ai_teleop.input import ScriptedNoisyHuman
+from ai_teleop.sim.config import EnvConfig, episode_wall_seed
+from ai_teleop.sim.env_setup import make_env
 from ai_teleop.sim.runner import run_episode
 from ai_teleop.sim.scene import SimEnv
 from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
 
 log = get_logger("generate")
 
-SCENE_PATH = STATIC_TASK_SCENE  # static 3-hole task wall — the default scene
+SCENE_PATH = STATIC_TASK_SCENE  # static 3-hole task wall — the no-generated-walls scene
+
+# Both generated walls and our static-scene runs place the goal at hole_0. Which
+# hole is the target is the task layer's choice (the env just reports every hole's
+# pose); data generation always aims at hole_0.
+_TARGET_HOLE_INDEX = 0
+
+# Marker recorded as the dataset's `scene` when walls are procedurally generated
+# per episode (there is no single scene file). The static escape hatch records the
+# actual scene-file name instead.
+_GENERATED_SCENE_LABEL = "generated"
 
 DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
@@ -79,16 +91,19 @@ DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
 
 
 def _episode_fingerprint(
-    *, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, scene_path: str
+    *, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, generated_walls: bool
 ) -> str:
     """Stable hash of every input that determines an episode's trajectory.
 
     Two runs with the same fingerprint produce byte-identical episodes, so a
     cached file carrying this fingerprint can be reused instead of re-simulated.
+    The per-episode wall is derived deterministically from ``(seed, episode_index)``,
+    so ``seed`` (hashed here) + the episode index (in the file path) already pin it;
+    only the wall *mode* (``generated_walls``) needs to enter the hash.
     """
     import hashlib
 
-    payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{Path(scene_path).name}"
+    payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{generated_walls}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -113,8 +128,8 @@ class _SeatingMetrics:
     (:meth:`terminal_reason`) are data-generation's own concern.
     """
 
-    def __init__(self, observation: Observation) -> None:
-        geometry = SeatingGeometry.from_observation(observation)
+    def __init__(self, observation: Observation, target_hole_index: int) -> None:
+        geometry = SeatingGeometry.from_observation(observation, target_hole_index)
         self.hole_pose = geometry.target_hole_pose
         self.distance = geometry.distance
         self.lateral_error = geometry.lateral_error
@@ -157,6 +172,7 @@ class _EpisodeLogger:
         self,
         ft_bias: np.ndarray,
         *,
+        target_hole_index: int,
         success_depth: float,
         lateral_tolerance: float,
         force_cap: float,
@@ -167,6 +183,7 @@ class _EpisodeLogger:
         self.recorder = EpisodeRecorder()
         self.terminal_reason = TerminalReason.TIMEOUT
         self._ft_bias = ft_bias
+        self._target_hole_index = target_hole_index
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
@@ -182,7 +199,7 @@ class _EpisodeLogger:
         delta: Delta,
         command,
     ) -> bool:
-        metrics = _SeatingMetrics(observation)
+        metrics = _SeatingMetrics(observation, self._target_hole_index)
         reason = metrics.terminal_reason(
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
@@ -230,8 +247,16 @@ class _TerminationProbe:
     cheap scoring pass over the same scene and operator stream.
     """
 
-    def __init__(self, *, success_depth: float, lateral_tolerance: float, force_cap: float) -> None:
+    def __init__(
+        self,
+        *,
+        target_hole_index: int,
+        success_depth: float,
+        lateral_tolerance: float,
+        force_cap: float,
+    ) -> None:
         self.terminal_reason = TerminalReason.TIMEOUT
+        self._target_hole_index = target_hole_index
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
         self._force_cap = force_cap
@@ -239,7 +264,7 @@ class _TerminationProbe:
     def __call__(
         self, step: int, observation: Observation, base_command, delta: Delta, command
     ) -> bool:
-        reason = _SeatingMetrics(observation).terminal_reason(
+        reason = _SeatingMetrics(observation, self._target_hole_index).terminal_reason(
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
             force_cap=self._force_cap,
@@ -275,8 +300,8 @@ def _baseline_terminal_reason(
     environment: SimEnv,
     controller: Controller,
     human: ScriptedNoisyHuman,
-    episode_index: int,
     *,
+    target_hole_index: int,
     max_steps: int,
     success_depth: float,
     lateral_tolerance: float,
@@ -286,16 +311,13 @@ def _baseline_terminal_reason(
     only — no trajectory is recorded. Returns how the human-only run terminated."""
     controller.reset()  # clear any lock the expert run left latched
     probe = _TerminationProbe(
-        success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
+        target_hole_index=target_hole_index,
+        success_depth=success_depth,
+        lateral_tolerance=lateral_tolerance,
+        force_cap=force_cap,
     )
     run_episode(
-        environment,
-        controller,
-        human,
-        NoAssist(),
-        max_steps=max_steps,
-        reset_episode_index=episode_index,
-        step_callback=probe,
+        environment, controller, human, NoAssist(), max_steps=max_steps, step_callback=probe
     )
     return probe.terminal_reason
 
@@ -311,7 +333,7 @@ def generate_dataset(
     force_cap: float = DEFAULT_FORCE_CAP,
     max_dpos: float = DEFAULT_MAX_DPOS,
     expert_d_far: float = DEFAULT_EXPERT_D_FAR,
-    scene_path: str | Path = SCENE_PATH,
+    generated_walls: bool = True,
     cache: bool = True,
     baseline: bool = True,
     render_images: bool = False,
@@ -324,10 +346,17 @@ def generate_dataset(
     folder per episode, each with an ``imgs/`` subfolder — plus
     ``out_dir/metadata.json`` (dataset-level statistics). Keeps every episode
     (success or failure). Each is reproducible from ``(seed, episode_index)``
-    plus the controller/expert config: the scene randomization and the noisy
-    human both derive from the seed. When ``cache`` is set, an existing episode
-    file whose stored ``fingerprint`` matches the current config is reused
-    instead of being re-simulated.
+    plus the controller/expert config: the per-episode wall and the noisy human
+    both derive from the seed. When ``cache`` is set, an existing episode file
+    whose stored ``fingerprint`` matches the current config is reused instead of
+    being re-simulated.
+
+    With ``generated_walls`` (the default) each episode runs on its own freshly
+    built procedural wall (a fresh, clean ``SimEnv`` per episode, seeded
+    deterministically from ``(seed, episode_index)``) — genuine per-episode wall
+    diversity. ``generated_walls=False`` runs every episode on the static
+    hand-authored wall instead (no ``scenegen``/CadQuery), varying only the
+    operator; useful for fast, dependency-light tests.
 
     When ``baseline`` is set, each episode is additionally re-run with the expert
     replaced by ``NoAssist`` (same scene, same operator) and scored — *not*
@@ -340,10 +369,7 @@ def generate_dataset(
     """
     out_dir = Path(out_dir)
     runs_dir = out_dir / "runs"
-    environment = SimEnv(str(scene_path), render_mode="headless", seed=seed, randomize=True)
-    controller = Controller(environment, max_dpos_per_step=max_dpos)
-    expert = Expert(d_far=expert_d_far)
-    home_quaternion = controller.home_pose[3:]
+    expert = Expert(d_far=expert_d_far, target_hole_index=_TARGET_HOLE_INDEX)
     thresholds = dict(
         success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
     )
@@ -352,7 +378,7 @@ def generate_dataset(
         max_steps=max_steps,
         max_dpos=max_dpos,
         expert_d_far=expert_d_far,
-        scene_path=str(scene_path),
+        generated_walls=generated_walls,
     )
 
     written: list[Path] = []
@@ -365,15 +391,17 @@ def generate_dataset(
             if progress:
                 log.info("episode %5d │ ✓ loaded from cache", episode_index)
             continue
-        # Reset once to read the randomized target + tare the F/T bias, then let
-        # run_episode reset to the identical state (deterministic per index).
-        # Clear the controller's lock too: it persists across episodes, so a
-        # prior force-cap → HOLD trip would otherwise freeze every later episode.
-        controller.reset()
-        observation = environment.reset(episode_index)
-        target_position = observation.hole_poses[observation.target_hole_index][:3].copy()
+
+        # A fresh, clean env per episode: its own wall (generated ⇒ a distinct
+        # procedural wall per index; static ⇒ the same hand-authored wall every
+        # time). The env owns physics only; reset() restores its home state.
+        wall_seed = episode_wall_seed(seed, episode_index) if generated_walls else None
+        environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
+        controller = Controller(environment, max_dpos_per_step=max_dpos)
+        home_quaternion = controller.home_pose[3:]
+        observation = environment.reset()
+        target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
         ft_bias = observation.wrist_ft.copy()
-        target_hole_index = int(observation.target_hole_index)
 
         # Establish the episode's imgs/ folder so the per-episode layout is
         # uniform whether or not frames are rendered (M7 fills it; M5 leaves it
@@ -386,19 +414,14 @@ def generate_dataset(
         )
         logger = _EpisodeLogger(
             ft_bias,
+            target_hole_index=_TARGET_HOLE_INDEX,
             **thresholds,
             render_fn=environment.render_wrist_camera if render_images else None,
             imgs_dir=imgs_dir,
             render_every=render_every,
         )
         run_episode(
-            environment,
-            controller,
-            human,
-            expert,
-            max_steps=max_steps,
-            reset_episode_index=episode_index,
-            step_callback=logger,
+            environment, controller, human, expert, max_steps=max_steps, step_callback=logger
         )
 
         baseline_reason: TerminalReason | None = None
@@ -410,25 +433,27 @@ def generate_dataset(
                 _make_human(
                     target_position, home_quaternion, seed=seed, episode_index=episode_index
                 ),
-                episode_index,
+                target_hole_index=_TARGET_HOLE_INDEX,
                 max_steps=max_steps,
                 **thresholds,
             )
 
+        environment.close()
+
         episode_metadata: dict[str, object] = {
             "master_seed": seed,
             "episode_index": episode_index,
-            # The two derived seeds this episode was generated with. Both root in
-            # (master_seed, episode_index) but drive independent RNG streams:
-            #   scene_seed  — entropy passed to default_rng for scene/"wall"
-            #                 randomization (target hole + joint start offset).
-            #   human_seed  — the concrete int seeding the scripted operator.
+            # scene_seed roots the per-episode derivations in (master_seed,
+            # episode_index); human_seed is the concrete int seeding the scripted
+            # operator; wall_seed (when generated) is the env's procedural wall.
             "scene_seed": [seed, episode_index],
             "human_seed": _human_seed(seed, episode_index),
             "fingerprint": fingerprint,
             "max_dpos": max_dpos,
             "expert_d_far": expert_d_far,
-            "target_hole_index": target_hole_index,
+            "target_hole_index": _TARGET_HOLE_INDEX,
+            "generated_wall": generated_walls,
+            "wall_seed": wall_seed,
             "terminal_reason": logger.terminal_reason.value,
             "episode_success": logger.terminal_reason is TerminalReason.SUCCESS,
             "success_depth": success_depth,
@@ -459,7 +484,7 @@ def generate_dataset(
         "success_depth": success_depth,
         "lateral_tolerance": lateral_tolerance,
         "force_cap": force_cap,
-        "scene": Path(scene_path).name,
+        "scene": _GENERATED_SCENE_LABEL if generated_walls else SCENE_PATH.name,
     }
     _write_dataset_metadata(
         out_dir, summaries, seed=seed, fingerprint=fingerprint, baseline=baseline, config=config
@@ -584,13 +609,10 @@ def regenerate_from_metadata(
     metadata: ResBCDatasetMetadata = json.loads(metadata_path.read_text())
     config = metadata["config"]
 
-    scene_name = config["scene"]
-    scene_path = SCENE_PATH if scene_name == SCENE_PATH.name else SCENE_PATH.parent / scene_name
-    if not scene_path.exists():
-        raise FileNotFoundError(
-            f"scene {scene_name!r} referenced by {metadata_path} not found at {scene_path} "
-            "— procedurally generated walls must be rebuilt before regenerating the dataset."
-        )
+    # Walls are reproduced from their seeds, not loaded from disk: the `scene`
+    # label records whether this dataset used per-episode generated walls or the
+    # static one. Anything other than the static scene-file name means generated.
+    generated_walls = config["scene"] != SCENE_PATH.name
 
     target = Path(out_dir) if out_dir is not None else metadata_path.parent
     written = generate_dataset(
@@ -603,7 +625,7 @@ def regenerate_from_metadata(
         force_cap=config["force_cap"],
         max_dpos=config["max_dpos"],
         expert_d_far=config["expert_d_far"],
-        scene_path=scene_path,
+        generated_walls=generated_walls,
         cache=not force,
         baseline="baseline_no_assist" in metadata,
         progress=progress,
@@ -615,7 +637,7 @@ def regenerate_from_metadata(
         max_steps=config["max_steps"],
         max_dpos=config["max_dpos"],
         expert_d_far=config["expert_d_far"],
-        scene_path=str(scene_path),
+        generated_walls=generated_walls,
     )
     if expected is not None and actual != expected:
         log.warning(

@@ -1,8 +1,9 @@
 """Paired-seed ablation runner — the mechanism behind the M6 head-to-head (LAB-37).
 
 One *trial* is a fixed ``(master_seed, episode_index)`` pair: it pins the
-randomized scene (``SimEnv.reset`` derives it from exactly that pair) and the
-scripted operator (a same-seeded :class:`ScriptedNoisyHuman`, which is **open-loop**
+procedural wall (built from a seed derived from exactly that pair, mirroring data
+generation) and the scripted operator (a same-seeded :class:`ScriptedNoisyHuman`,
+which is **open-loop**
 — its command stream depends only on its seed and tick, never on the realized
 observation). Running that trial once per *config* (e.g. ``NoAssist`` vs the learned
 residual) therefore changes **only the assist layer** — identical scene, identical
@@ -40,9 +41,13 @@ from ai_teleop.input.scripted_noisy_human import (
     DEFAULT_POSITION_BIAS_STD,
     ScriptedNoisyHuman,
 )
+from ai_teleop.sim.config import EnvConfig, episode_wall_seed
+from ai_teleop.sim.env_setup import make_env
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode
-from ai_teleop.sim.scene import SimEnv
-from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
+
+# Both generated walls and the static escape hatch place the goal at hole_0; the
+# expert/observer/operator are all aimed there (the env stays target-agnostic).
+_TARGET_HOLE_INDEX = 0
 
 # Controller command clamp (m/step). Matches the run_episode / data-gen default;
 # it is a difficulty knob the calibration sweep may vary.
@@ -89,7 +94,7 @@ def run_trial(
     config: Config,
     *,
     master_seed: int = 0,
-    scene_path: str | Path = STATIC_TASK_SCENE,
+    generated_walls: bool = True,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
@@ -98,16 +103,22 @@ def run_trial(
 ) -> TrialKPIs:
     """Run one trial of ``config`` and return its KPI record.
 
+    Mirrors data generation: with ``generated_walls`` (the default) the trial runs
+    on its own procedural wall seeded from ``(master_seed, episode_index)``, so eval
+    matches the per-episode-wall training distribution; ``generated_walls=False`` runs
+    on the static wall instead (no ``scenegen``/CadQuery — for fast tests).
+
     ``operator_error_scale`` multiplies the scripted operator's lateral-error σ's
     (bias + drift) off their training defaults — the difficulty knob the LAB-53 pin
     sweeps. When ``trace_path`` is given, the realized-state trace is written there so
     the KPIs can later be recomputed offline via :func:`replay_kpis`.
     """
-    environment = SimEnv(str(scene_path), render_mode="headless", seed=master_seed, randomize=True)
+    wall_seed = episode_wall_seed(master_seed, episode_index) if generated_walls else None
+    environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
     try:
         controller = Controller(environment, max_dpos_per_step=max_dpos)
-        observation = environment.reset(episode_index)
-        target_position = observation.target_hole_position.copy()
+        observation = environment.reset()
+        target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
         home_quaternion = controller.home_pose[3:]
         target_pose = np.concatenate([target_position, home_quaternion])
         human = ScriptedNoisyHuman(
@@ -118,8 +129,17 @@ def run_trial(
         )
         assist = config.assist_factory()
 
-        observer = TrialObserver(seed=episode_index, config_label=config.label, **observer_kwargs)
-        recorder = EvalTraceRecorder() if trace_path is not None else None
+        observer = TrialObserver(
+            target_hole_index=_TARGET_HOLE_INDEX,
+            seed=episode_index,
+            config_label=config.label,
+            **observer_kwargs,
+        )
+        recorder = (
+            EvalTraceRecorder(target_hole_index=_TARGET_HOLE_INDEX)
+            if trace_path is not None
+            else None
+        )
 
         def step_callback(step, obs, base_command, delta, command) -> bool:
             if recorder is not None:
@@ -132,7 +152,6 @@ def run_trial(
             human,
             assist,
             max_steps=max_steps,
-            reset_episode_index=episode_index,
             step_callback=step_callback,
         )
 
@@ -156,7 +175,7 @@ def run_paired(
     *,
     master_seed: int = 0,
     out_dir: str | Path | None = None,
-    scene_path: str | Path = STATIC_TASK_SCENE,
+    generated_walls: bool = True,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
@@ -178,7 +197,7 @@ def run_paired(
             episode_index,
             config,
             master_seed=master_seed,
-            scene_path=scene_path,
+            generated_walls=generated_walls,
             max_steps=max_steps,
             max_dpos=max_dpos,
             operator_error_scale=operator_error_scale,
