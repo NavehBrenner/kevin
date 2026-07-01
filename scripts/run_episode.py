@@ -611,8 +611,8 @@ def main() -> int:
     )
 
     # Pacing: unbounded headless, real time in the viewer, unless --time-factor overrides.
-    # Only expensive live input (vision) needs catch-up substepping; replay/scripted run
-    # physics-rate (deterministic), so a viewer replay reproduces its recording to the step.
+    # The loop is always physics-rate (one command per physics step), so a viewer replay
+    # reproduces its recording to the step regardless of source or pacing.
     time_factor = (
         args.time_factor if args.time_factor is not None else (math.inf if args.headless else 1.0)
     )
@@ -626,7 +626,6 @@ def main() -> int:
             max_steps=max_steps,
             render=not args.headless,
             time_factor=time_factor,
-            allow_catchup=args.input == "vision",
             step_callback=step_callback,
         )
     except KeyboardInterrupt:

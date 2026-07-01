@@ -157,12 +157,17 @@ def main() -> int:
         env_v.reset()
         try:
             env_v.launch_viewer()
+            step_i = 0
             while env_v.viewer is not None and env_v.viewer.is_running():
                 env_v.data.ctrl[:7] = (
                     env_v.data.qfrc_bias[arm_dof] - env_v.data.qfrc_constraint[arm_dof]
                 )
                 env_v.step()
-                env_v.sync_viewer()
+                step_i += 1
+                # sync_viewer no longer self-throttles — caller owns cadence. Render ~50 Hz
+                # (every 10th of the 500 Hz sim) so we don't flood WSLg's GUI pipe.
+                if step_i % 10 == 0:
+                    env_v.sync_viewer()
                 # Mujoco's default timestep is 2 ms; sleep proportionally so
                 # the viewer runs at roughly real-time rather than as fast as
                 # the CPU can chew through frames.

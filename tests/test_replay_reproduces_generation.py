@@ -96,10 +96,11 @@ def test_replay_reproduces_recorded_trajectory(tmp_path):
 
 
 def test_replay_is_faithful_under_finite_time_factor(tmp_path):
-    """LAB-88: physics-rate replay (allow_catchup=False) reproduces the recording at any
-    time_factor — the pacing/sleep path must not perturb physics. A large time_factor keeps
-    the sleeps ~0 so the test stays fast; render=True (viewer) can't run in CI but only adds
-    a sync that never touches sim data, so headless coverage carries the guarantee.
+    """LAB-88: the loop is always physics-rate (one command per physics step), so replay
+    reproduces the recording at any time_factor — the pacing/sleep path must not perturb
+    physics. A large time_factor keeps the sleeps ~0 so the test stays fast; render=True
+    (viewer) can't run in CI but only adds a sync that never touches sim data, so headless
+    coverage carries the guarantee.
     """
     (path,) = generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=300, baseline=False)
     columns, meta = load_episode(path)
@@ -114,7 +115,6 @@ def test_replay_is_faithful_under_finite_time_factor(tmp_path):
         _ReplayAssist(columns),
         max_steps=len(columns["step"]),
         time_factor=1e6,  # finite → exercises the sleep path, but ~never actually sleeps
-        allow_catchup=False,
         step_callback=recorder,
     )
     np.testing.assert_allclose(np.array(recorder.poses), columns["peg_pose"], atol=1e-9)

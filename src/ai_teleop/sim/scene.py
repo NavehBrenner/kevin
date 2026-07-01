@@ -12,7 +12,6 @@ reset argument. See `docs/milestone-1-spec.md`.
 from __future__ import annotations
 
 import re
-import time
 from pathlib import Path
 from typing import Literal
 
@@ -25,11 +24,6 @@ from ai_teleop.common.observation import Observation
 from ai_teleop.sim.config import EnvConfig
 
 RenderMode = Literal["viewer", "headless"]
-
-# The passive viewer only needs ~30-60 Hz, but step() runs at the 500 Hz sim rate.
-# sync_viewer() rate-limits to this fps off a wall-clock deadline — syncing every step
-# saturates WSLg's GUI pipe (window freezes, then snaps back).
-_VIEWER_FPS = 50.0
 
 # Hardcoded for M1 — the scene XML names these explicitly. Anything reading
 # them by string lives here so a rename in the MJCF is a one-place fix.
@@ -170,7 +164,6 @@ class SimEnv:
         # mujoco.viewer is imported lazily — it pulls in GLFW which we don't
         # want loaded during headless runs.
         self._viewer = None
-        self._next_frame_time = 0.0  # wall-clock deadline for the next viewer sync
 
     # ------------------------------------------------------------------
     # Read-only access for callers (controller, smoke test, expert).
@@ -338,20 +331,16 @@ class SimEnv:
         scene.ngeom = geom_index + 1
 
     def sync_viewer(self) -> None:
-        """Push physics state to the viewer window, rate-limited to ~_VIEWER_FPS.
+        """Push physics state to the viewer window. No-op when no viewer is open.
 
-        No-op when no viewer is open. Safe (and intended) to call every step from the
-        stepping thread — it self-throttles off a wall-clock frame deadline, so callers
-        don't track frame timing themselves and syncing never floods WSLg's GUI pipe.
+        A dumb one-shot render — the **caller owns cadence** (call it every N steps, not
+        every 500 Hz physics step, or WSLg's GUI pipe floods and the window freezes). The
+        runner does this off a sim-time frame budget; short scripts call it every few steps.
         Must run on the same thread that steps physics (MuJoCo serializes mj_step and
         mj_copyDataVisual via the MjData stack — concurrent calls error).
         """
-        if self._viewer is None:
-            return
-        now = time.monotonic()
-        if now >= self._next_frame_time:
+        if self._viewer is not None:
             self._viewer.sync()
-            self._next_frame_time = now + 1.0 / _VIEWER_FPS
 
     # ------------------------------------------------------------------
     # Teardown.
