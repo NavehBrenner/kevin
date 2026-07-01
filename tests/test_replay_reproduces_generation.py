@@ -15,7 +15,8 @@ import numpy as np
 
 from ai_teleop.common import Command
 from ai_teleop.control import Controller
-from ai_teleop.data.generate import episode_terminal_reason, generate_dataset
+from ai_teleop.data.generate import generate_dataset
+from ai_teleop.data.step_callbacks import episode_terminal_reason
 from ai_teleop.data.trajectory import TerminalReason, load_episode
 from ai_teleop.domain import Delta
 from ai_teleop.sim.config import EnvConfig
