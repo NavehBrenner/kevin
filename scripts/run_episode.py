@@ -25,7 +25,9 @@ import logging
 import math
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -34,7 +36,7 @@ from ai_teleop.data.schema import EpisodeColumns, EpisodeMetadata
 # Allow running before the package is installed in the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from ai_teleop.common import Command  # noqa: E402
+from ai_teleop.common import Command, Observation  # noqa: E402
 from ai_teleop.common.log import (  # noqa: E402
     add_logging_arguments,
     configure_from_args,
@@ -168,135 +170,41 @@ def _rebuild_for_replay(meta: EpisodeMetadata, render_mode):
     return env, observation, controller, scene_path
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--headless", action="store_true", help="Skip the viewer; run the loop and print a summary."
-    )
-    parser.add_argument(
-        "--seed", type=int, default=0, help="Seed for the scripted human's noise and the SimEnv."
-    )
-    parser.add_argument(
-        "--max-steps",
-        type=int,
-        default=None,
-        help="Episode step budget (one step == one 2 ms sim tick). Default: the recorded "
-        f"length when --input is an episode path (so a replay reproduces it to the step), "
-        f"else {DEFAULT_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
-        "Ctrl-C (handy for free-play with --input vision).",
-    )
-    parser.add_argument(
-        "--generated-wall",
-        action="store_true",
-        help="Run on a freshly generated procedural wall instead of the static scene.",
-    )
-    parser.add_argument(
-        "--cam",
-        choices=["main", "wrist"],
-        default="main",
-        help="Which camera the interactive viewer opens with: 'main' (free camera, default) "
-        "or 'wrist' (locked to the Panda's wrist camera, robot's-eye POV). Viewer keys still "
-        "switch cameras live.",
-    )
-    parser.add_argument(
-        "--input",
-        default="scripted",
-        metavar="MODE_OR_PATH",
-        help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
-        "stereo hand tracking (needs the viewer + --stereo-calib), or a path to an episode "
-        "folder / episode.npz to replay recorded commands.",
-    )
-    parser.add_argument(
-        "--policy",
-        choices=["noassist", "expert", "tf", "vision"],
-        default="noassist",
-        help="Correction layer applied on top of the base commands: 'noassist' (default, raw "
-        "operator), 'expert' analytical residual, 'tf' trained residual (needs --checkpoint), "
-        "'vision' Phase-2 vision-conditioned residual (not implemented). On replay the recorded "
-        "commands are the same under every policy — only the correction differs.",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        default=None,
-        help="Trained residual checkpoint .pt for --policy tf "
-        "(e.g. runs/train/<run>/checkpoint.pt).",
-    )
-    parser.add_argument(
-        "--no-cam-window",
-        action="store_true",
-        help="Hide the live stereo camera/3D-skeleton window (--input vision; shown by default).",
-    )
-    parser.add_argument(
-        "--stereo-calib",
-        default=None,
-        help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
-        "sources are --left / --right.",
-    )
-    parser.add_argument(
-        "--left",
-        default="0",
-        help="Left-camera source for --input vision: device index or stream URL.",
-    )
-    parser.add_argument(
-        "--right",
-        default="2",
-        help="Right-camera source for --input vision: device index or stream URL.",
-    )
-    parser.add_argument(
-        "--max-fps",
-        type=int,
-        default=None,
-        help="Cap hand-tracking to N fps (--input vision), even if the cameras run faster "
-        "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
-        "no cap (process every new camera frame).",
-    )
-    parser.add_argument(
-        "--orientation",
-        action="store_true",
-        help="Enable 6-DoF orientation mirroring (--input vision): mirror the hand's "
-        "roll/pitch/yaw too. Off by default — position-only is a calmer, round-peg baseline.",
-    )
-    parser.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
-    parser.add_argument(
-        "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
-    )
-    parser.add_argument(
-        "--max-dpos",
-        type=float,
-        default=None,
-        help="Controller command clamp in m/step (approach-speed / strictness knob). "
-        "Default 0.025 (careful insertion); --input vision defaults to 0.3 for responsive "
-        "mirror-like tracking (raise it further if the arm still lags your hand).",
-    )
-    parser.add_argument(
-        "--no-force-cap",
-        action="store_true",
-        help="Disable the force-cap watchdog (--input vision free-play). Normally a wrist "
-        "force above ~30 N latches the arm into a HOLD lock that nothing in the vision path "
-        "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
-        "Use this to rule the watchdog in/out while debugging.",
-    )
-    parser.add_argument(
-        "--record",
-        nargs="?",
-        const="",
-        default=None,
-        metavar="OUT",
-        help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ "
-        "if OUT is omitted). Stops automatically on a successful insertion.",
-    )
-    add_logging_arguments(parser)
-    args = parser.parse_args()
-    configure_from_args(args)
+@dataclass
+class EpisodeConfig:
+    """Parsed + validated CLI args plus resolved replay state.
 
-    # Detect whether --input is a keyword or an episode path.
+    Built once by :func:`build_config`, then handed to the ``build_*`` helpers so each
+    stage (env, input, callback) reads from one validated object instead of re-deriving
+    ``--input`` flags from the raw argparse Namespace. Thin on purpose — it wraps
+    ``args`` rather than mirroring every flag as its own field.
+    """
+
+    args: argparse.Namespace
+    render_mode: str
+    replay_columns: EpisodeColumns | None
+    replay_meta: EpisodeMetadata
+
+    @property
+    def is_replay(self) -> bool:
+        return self.replay_columns is not None
+
+
+def build_config(args: argparse.Namespace) -> EpisodeConfig:
+    """Resolve ``--input`` to a replay-or-live config and reject bad flag combinations.
+
+    Detects whether ``--input`` is a keyword ('scripted'/'vision') or an episode path to
+    replay, loading the recorded columns in the latter case. Validation errors log and
+    ``raise SystemExit(2)`` — the same exit code the CLI used before, centralized here so
+    every downstream helper gets a config it can trust.
+    """
     replay_columns: EpisodeColumns | None = None
     replay_meta: EpisodeMetadata = {}
     if args.input not in ("scripted", "vision"):
         episode_npz = _resolve_episode_npz(args.input)
         if not episode_npz.exists():
             log.error("--input %r: not 'scripted', 'vision', or a valid episode path.", args.input)
-            return 2
+            raise SystemExit(2)
         replay_columns, replay_meta = load_episode(episode_npz)
         log.info(
             "Replaying %d steps from %s (source=%s)",
@@ -307,80 +215,90 @@ def main() -> int:
 
     if args.input == "vision" and args.headless:
         log.error("--input vision needs the viewer (drop --headless).")
-        return 2
+        raise SystemExit(2)
     if args.input == "vision" and not args.stereo_calib:
         log.error("--input vision requires --stereo-calib PATH.")
-        return 2
+        raise SystemExit(2)
 
     render_mode = "headless" if args.headless else "viewer"
+    return EpisodeConfig(args, render_mode, replay_columns, replay_meta)
 
-    if replay_columns is not None:
-        # Replay: reconstruct the exact scene + controller from the episode's own
-        # stored spec (NOT the CLI args), so `kvn episode --input <ep>` reproduces
-        # its generation to the step regardless of the flags passed here.
-        log.info("Rebuilding recorded scene (%s) from episode metadata", render_mode)
-        env, observation, controller, scene_path = _rebuild_for_replay(replay_meta, render_mode)
-    else:
-        scene_path = resolve_scene_path(
-            generated=args.generated_wall,
-            wall_seed=args.wall_seed,
-            distractors=args.distractors,
+
+def build_env(config: EpisodeConfig) -> tuple[SimEnv, Observation, Controller, Path]:
+    """Construct ``(env, observation, controller, scene_path)`` for a live or replay run.
+
+    Replay rebuilds the exact recorded scene + controller from the episode's own metadata
+    (see :func:`_rebuild_for_replay`), so ``kvn episode --input <ep>`` reproduces its
+    generation to the step regardless of the flags passed here. Live builds from the CLI
+    args, with the ``--input vision`` responsiveness tweaks.
+    """
+    args = config.args
+    if config.is_replay:
+        log.info("Rebuilding recorded scene (%s) from episode metadata", config.render_mode)
+        return _rebuild_for_replay(config.replay_meta, config.render_mode)
+
+    scene_path = resolve_scene_path(
+        generated=args.generated_wall,
+        wall_seed=args.wall_seed,
+        distractors=args.distractors,
+    )
+    if not scene_path.exists():
+        log.error("scene file not found at %s", scene_path)
+        raise SystemExit(2)
+    log.info("Loading scene (%s): %s", config.render_mode, scene_path)
+    env = SimEnv(
+        str(scene_path),
+        render_mode=config.render_mode,
+        config=EnvConfig(wall_seed=args.wall_seed if args.generated_wall else None),
+    )
+    observation = env.reset()
+    # --input vision wants responsive, mirror-like tracking, not the slew-limited
+    # careful-insertion backbone (which feels like velocity control): a bigger command
+    # clamp lets the impedance spring toward the hand, and lower joint damping unbounds
+    # the ~0.05 m/s free-space slew the default kd=4 caps.
+    if args.input == "vision":
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.3
+        controller = Controller(
+            env,
+            max_dpos_per_step=max_dpos,
+            joint_damping=1.5,
+            force_cap_n=math.inf if args.no_force_cap else 30.0,
         )
-        if not scene_path.exists():
-            log.error("scene file not found at %s", scene_path)
-            return 2
-        log.info("Loading scene (%s): %s", render_mode, scene_path)
-        env = SimEnv(
-            str(scene_path),
-            render_mode=render_mode,
-            config=EnvConfig(wall_seed=args.wall_seed if args.generated_wall else None),
-        )
-        observation = env.reset()
-        # --input vision wants responsive, mirror-like tracking, not the slew-limited
-        # careful-insertion backbone (which feels like velocity control): a bigger
-        # command clamp lets the impedance spring toward the hand, and lower joint
-        # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
-        if args.input == "vision":
-            max_dpos = args.max_dpos if args.max_dpos is not None else 0.3
-            controller = Controller(
-                env,
-                max_dpos_per_step=max_dpos,
-                joint_damping=1.5,
-                force_cap_n=math.inf if args.no_force_cap else 30.0,
-            )
-        else:
-            max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
-            controller = Controller(env, max_dpos_per_step=max_dpos)
-
-    # The task's goal hole. Generated walls (and the static scene's home grasp)
-    # sit in front of hole_0; a replayed episode targets whatever it recorded. The
-    # env reports every hole's pose but not which is the goal — that's chosen here.
-    if replay_columns is not None and "target_hole_index" in replay_meta:
-        target_hole_index = int(replay_meta["target_hole_index"])
     else:
-        target_hole_index = 0
+        max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
+        controller = Controller(env, max_dpos_per_step=max_dpos)
+    return env, observation, controller, scene_path
 
-    if not args.headless:
-        env.launch_viewer(wrist_cam=args.cam == "wrist")
-        # Mark the target hole for the human (viewer-only; never in the policy-facing
-        # wrist-cam render). Lets the operator know which hole to aim at.
-        env.highlight_target(observation.hole_poses[target_hole_index][:3])
 
-    # Aim the scripted human at the active trial's hole *position*, but keep the
-    # home grasp orientation rather than the hole-site frame: M3 is plumbing, and
-    # commanding an arbitrary wrist reorientation would make the crude scripted
-    # approach fight the impedance law. Real orientation corrections are the
-    # expert's job (M4). The controller's 2 cm/step command clamp turns the
-    # full-target command into a smooth bounded approach.
-    target_position = observation.hole_poses[target_hole_index][:3].copy()
-    home_quaternion = controller.home_pose[3:]
-    assist = _build_assist(args.policy, args.checkpoint)
+def resolve_target_hole_index(config: EpisodeConfig) -> int:
+    """The task's goal hole. Generated walls (and the static scene's home grasp) sit in
+    front of hole_0; a replayed episode targets whatever it recorded. The env reports
+    every hole's pose but not which is the goal — that's chosen here.
+    """
+    if config.is_replay and "target_hole_index" in config.replay_meta:
+        return int(config.replay_meta["target_hole_index"])
+    return 0
 
-    input_strategy: InputStrategy
-    tracker = None
-    if replay_columns is not None:
-        input_strategy = _ReplayInput(replay_columns)
-    elif args.input == "vision":
+
+def build_input(
+    config: EpisodeConfig,
+    env: SimEnv,
+    target_position: np.ndarray,
+    home_quaternion: np.ndarray,
+) -> tuple[InputStrategy, Any]:
+    """Resolve the base command source: replay columns, stereo vision, or scripted human.
+
+    Returns ``(input_strategy, tracker)``; ``tracker`` is the ``StereoHandSource`` for
+    main's ``finally`` to close (``None`` for non-vision). Vision does its startup
+    centering here — hold an open palm still to set neutral *before* the sim runs, so the
+    arm holds home until a clean anchor exists; Ctrl-C during centering closes cleanly and
+    ``raise SystemExit(0)``.
+    """
+    args = config.args
+    if config.is_replay:
+        assert config.replay_columns is not None
+        return _ReplayInput(config.replay_columns), None
+    if args.input == "vision":
         from ai_teleop.input.hand_tracker import StereoHandSource
 
         # A bare integer is a device index; anything else is a stream URL / path.
@@ -394,65 +312,72 @@ def main() -> int:
             show_window=not args.no_cam_window,
             max_fps=args.max_fps if args.max_fps is not None else "cam",
         )
-        # Startup centering: hold an open palm still to set neutral *before* the sim runs, so
-        # the arm holds home (no command piped) until a clean anchor — position and
-        # orientation — exists. Ctrl-C here exits without touching the arm.
         try:
             neutral = calibrate_neutral(tracker, on_tick=env.sync_viewer)
         except KeyboardInterrupt:
             log.info("Interrupted during centering.")
             tracker.close()
             env.close()
-            return 0
+            raise SystemExit(0) from None
         tracker.set_renderer_origin(neutral.hand_position)  # center the 3D view on neutral
-        input_strategy = VisionInput(
+        input_strategy: InputStrategy = VisionInput(
             tracker,
             calibration=WorkspaceCalibration(),
             track_orientation=args.orientation,  # opt-in 6-DoF mirroring (off by default)
             initial_anchor=neutral,
         )
         log.info(
-            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand out of frame to clutch."
+            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand "
+            "out of frame to clutch."
         )
-    else:
-        target_pose = np.concatenate([target_position, home_quaternion])
-        input_strategy = ScriptedNoisyHuman(target_pose, seed=args.seed)
+        return input_strategy, tracker
+    # Aim the scripted human at the active trial's hole *position*, but keep the home grasp
+    # orientation rather than the hole-site frame: M3 is plumbing, and commanding an
+    # arbitrary wrist reorientation would make the crude scripted approach fight the
+    # impedance law. Real orientation corrections are the expert's job (M4). The
+    # controller's command clamp turns the full-target command into a bounded approach.
+    target_pose = np.concatenate([target_position, home_quaternion])
+    return ScriptedNoisyHuman(target_pose, seed=args.seed), None
 
-    start_dist = float(np.linalg.norm(observation.ee_pose[:3] - target_position))
-    log.info(
-        "Target hole %d at %s (%.0f mm from home EE)",
-        target_hole_index,
-        np.array2string(target_position, precision=3),
-        start_dist * 1000,
-    )
-    # Resolve the step budget. A replay plays back exactly the recorded commands, so it
-    # runs for the recorded length; live input falls back to DEFAULT_MAX_STEPS. Explicit
-    # 0/negative => run effectively forever; range() is lazy.
+
+def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
+    """Resolve the step budget, returning ``(max_steps, budget_label)``.
+
+    A replay plays back exactly the recorded commands, so it runs for the recorded length;
+    live input falls back to DEFAULT_MAX_STEPS. Explicit 0/negative => run effectively
+    forever (``range()`` is lazy, so ``sys.maxsize`` costs nothing).
+    """
+    args = config.args
     if args.max_steps is not None:
         requested_steps = args.max_steps
-    elif replay_columns is not None:
-        requested_steps = len(replay_columns["step"])
+    elif config.is_replay:
+        assert config.replay_columns is not None
+        requested_steps = len(config.replay_columns["step"])
     else:
         requested_steps = DEFAULT_MAX_STEPS
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
     budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
-    log.info(
-        "Running %s with %s input + %s policy (Ctrl-C to stop)...",
-        budget,
-        args.input,
-        args.policy,
-    )
+    return max_steps, budget
 
-    # The step_callback is the shared data-pipeline plumbing (data/step_callbacks),
-    # so a replay/record run ends exactly where its generated episode did and
-    # records identical rows: EpisodeLogger (record + terminate) for --record,
-    # TerminationProbe (terminate only) for scripted/replay, None for vision
-    # free-play (runs until the viewer closes, so an incidental wall bump won't
-    # end it). run_episode uses the DEFAULT_* thresholds; generate uses its own.
-    logger: EpisodeLogger | None = None
-    record_path: Path | None = None
-    step_callback: EpisodeLogger | TerminationProbe | None = None
 
+def build_step_callback(
+    config: EpisodeConfig,
+    controller: Controller,
+    observation: Observation,
+    target_hole_index: int,
+) -> tuple[EpisodeLogger | TerminationProbe | None, EpisodeLogger | None, Path | None]:
+    """Build the run's step_callback + record bookkeeping.
+
+    The step_callback is the shared data-pipeline plumbing (``data/step_callbacks``), so a
+    replay/record run ends exactly where its generated episode did and records identical
+    rows: EpisodeLogger (record + terminate) for ``--record``, TerminationProbe (terminate
+    only) for scripted/replay, None for vision free-play (runs until the viewer closes, so
+    an incidental wall bump won't end it). run_episode uses the DEFAULT_* thresholds.
+
+    Returns ``(step_callback, logger, record_path)``; ``logger``/``record_path`` are None
+    unless recording (main reads them back to save the ``.npz``).
+    """
+    args = config.args
     if args.record is not None:
         record_path = _resolve_record_path(args.record)
         logger = EpisodeLogger(
@@ -464,16 +389,203 @@ def main() -> int:
             force_cap=DEFAULT_FORCE_CAP,
             render_fn=None,  # vision (M7) frames aren't recorded from the run CLI
         )
-        step_callback = logger
         log.info("Recording to: %s", record_path)
-    elif args.input != "vision":
-        step_callback = TerminationProbe(
+        return logger, logger, record_path
+    if args.input != "vision":
+        probe = TerminationProbe(
             controller,
             target_hole_index=target_hole_index,
             success_depth=DEFAULT_SUCCESS_DEPTH,
             lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
             force_cap=DEFAULT_FORCE_CAP,
         )
+        return probe, None, None
+    return None, None, None
+
+
+def add_run_args(parser: argparse.ArgumentParser) -> None:
+    """Run-behaviour, recording, and controller knobs (headless, budget, clamps)."""
+    group = parser.add_argument_group("run", "How the episode runs, records, and is clamped.")
+    group.add_argument(
+        "--headless", action="store_true", help="Skip the viewer; run the loop and print a summary."
+    )
+    group.add_argument(
+        "--seed", type=int, default=0, help="Seed for the scripted human's noise and the SimEnv."
+    )
+    group.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Episode step budget (one step == one 2 ms sim tick). Default: the recorded "
+        f"length when --input is an episode path (so a replay reproduces it to the step), "
+        f"else {DEFAULT_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
+        "Ctrl-C (handy for free-play with --input vision).",
+    )
+    group.add_argument(
+        "--cam",
+        choices=["main", "wrist"],
+        default="main",
+        help="Which camera the interactive viewer opens with: 'main' (free camera, default) "
+        "or 'wrist' (locked to the Panda's wrist camera, robot's-eye POV). Viewer keys still "
+        "switch cameras live.",
+    )
+    group.add_argument(
+        "--max-dpos",
+        type=float,
+        default=None,
+        help="Controller command clamp in m/step (approach-speed / strictness knob). "
+        "Default 0.025 (careful insertion); --input vision defaults to 0.3 for responsive "
+        "mirror-like tracking (raise it further if the arm still lags your hand).",
+    )
+    group.add_argument(
+        "--no-force-cap",
+        action="store_true",
+        help="Disable the force-cap watchdog (--input vision free-play). Normally a wrist "
+        "force above ~30 N latches the arm into a HOLD lock that nothing in the vision path "
+        "releases (e.g. after bumping the wall) — looks like the arm 'stops responding'. "
+        "Use this to rule the watchdog in/out while debugging.",
+    )
+    group.add_argument(
+        "--record",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="OUT",
+        help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ "
+        "if OUT is omitted). Stops automatically on a successful insertion.",
+    )
+
+
+def add_scene_args(parser: argparse.ArgumentParser) -> None:
+    """Scene selection: static task wall vs a freshly generated procedural wall."""
+    group = parser.add_argument_group("scene", "Which wall/scene the episode runs on.")
+    group.add_argument(
+        "--generated-wall",
+        action="store_true",
+        help="Run on a freshly generated procedural wall instead of the static scene.",
+    )
+    group.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
+    group.add_argument(
+        "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
+    )
+
+
+def add_input_args(parser: argparse.ArgumentParser) -> None:
+    """Base command source (--input) and its stereo-vision camera options."""
+    group = parser.add_argument_group("input", "Where the base commands come from.")
+    group.add_argument(
+        "--input",
+        default="scripted",
+        metavar="MODE_OR_PATH",
+        help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
+        "stereo hand tracking (needs the viewer + --stereo-calib), or a path to an episode "
+        "folder / episode.npz to replay recorded commands.",
+    )
+    group.add_argument(
+        "--stereo-calib",
+        default=None,
+        help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
+        "sources are --left / --right.",
+    )
+    group.add_argument(
+        "--left",
+        default="0",
+        help="Left-camera source for --input vision: device index or stream URL.",
+    )
+    group.add_argument(
+        "--right",
+        default="2",
+        help="Right-camera source for --input vision: device index or stream URL.",
+    )
+    group.add_argument(
+        "--no-cam-window",
+        action="store_true",
+        help="Hide the live stereo camera/3D-skeleton window (--input vision; shown by default).",
+    )
+    group.add_argument(
+        "--max-fps",
+        type=int,
+        default=None,
+        help="Cap hand-tracking to N fps (--input vision), even if the cameras run faster "
+        "(~30). Fewer MediaPipe passes = less GIL pressure on the control loop. Default: "
+        "no cap (process every new camera frame).",
+    )
+    group.add_argument(
+        "--orientation",
+        action="store_true",
+        help="Enable 6-DoF orientation mirroring (--input vision): mirror the hand's "
+        "roll/pitch/yaw too. Off by default — position-only is a calmer, round-peg baseline.",
+    )
+
+
+def add_policy_args(parser: argparse.ArgumentParser) -> None:
+    """The correction layer applied on top of the base commands (--policy)."""
+    group = parser.add_argument_group("policy", "The correction layer under test.")
+    group.add_argument(
+        "--policy",
+        choices=["noassist", "expert", "tf", "vision"],
+        default="noassist",
+        help="Correction layer applied on top of the base commands: 'noassist' (default, raw "
+        "operator), 'expert' analytical residual, 'tf' trained residual (needs --checkpoint), "
+        "'vision' Phase-2 vision-conditioned residual (not implemented). On replay the recorded "
+        "commands are the same under every policy — only the correction differs.",
+    )
+    group.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Trained residual checkpoint .pt for --policy tf "
+        "(e.g. runs/train/<run>/checkpoint.pt).",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Assemble the CLI parser from the per-concern argument-group helpers."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_run_args(parser)
+    add_scene_args(parser)
+    add_input_args(parser)
+    add_policy_args(parser)
+    add_logging_arguments(parser)
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    configure_from_args(args)
+
+    config = build_config(args)
+    env, observation, controller, scene_path = build_env(config)
+    target_hole_index = resolve_target_hole_index(config)
+
+    if not args.headless:
+        env.launch_viewer(wrist_cam=args.cam == "wrist")
+        # Mark the target hole for the human (viewer-only; never in the policy-facing
+        # wrist-cam render). Lets the operator know which hole to aim at.
+        env.highlight_target(observation.hole_poses[target_hole_index][:3])
+
+    target_position = observation.hole_poses[target_hole_index][:3].copy()
+    home_quaternion = controller.home_pose[3:]
+    assist = _build_assist(args.policy, args.checkpoint)
+    input_strategy, tracker = build_input(config, env, target_position, home_quaternion)
+
+    start_dist = float(np.linalg.norm(observation.ee_pose[:3] - target_position))
+    log.info(
+        "Target hole %d at %s (%.0f mm from home EE)",
+        target_hole_index,
+        np.array2string(target_position, precision=3),
+        start_dist * 1000,
+    )
+    max_steps, budget = resolve_max_steps(config)
+    log.info(
+        "Running %s with %s input + %s policy (Ctrl-C to stop)...",
+        budget,
+        args.input,
+        args.policy,
+    )
+
+    step_callback, logger, record_path = build_step_callback(
+        config, controller, observation, target_hole_index
+    )
 
     result = None
     try:
