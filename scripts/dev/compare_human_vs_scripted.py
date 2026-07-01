@@ -115,7 +115,12 @@ def col(label: str, a: np.ndarray) -> str:
 
 def main() -> None:
     rec_paths = sorted((ROOT / "data" / "recorded" / "runs").glob("episode_*/episode.npz"))
-    scr_paths = sorted((ROOT / "data" / "dataset_1" / "runs").glob("episode_*.npz"))
+    # Current generator writes episode_NNNNN/episode.npz folders; older sets were
+    # flat episode_NNNNN.npz. Accept whichever the regenerated scripted set uses.
+    scr_runs = ROOT / "data" / "dataset_1" / "runs"
+    scr_paths = sorted(scr_runs.glob("episode_*/episode.npz")) or sorted(
+        scr_runs.glob("episode_*.npz")
+    )
     rec = aggregate(rec_paths)
     rec_old = aggregate(rec_paths[:8])  # original batch — rig-consistency check
     rec_new = aggregate(rec_paths[8:])

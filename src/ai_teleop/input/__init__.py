@@ -10,7 +10,11 @@ Three concrete implementations share a common interface (defined in `domain`):
 To be populated as needed across Milestones 3-5.
 """
 
-from ai_teleop.input.scripted_noisy_human import ScriptedNoisyHuman, bore_aligned_grasp
+from ai_teleop.input.scripted_noisy_human import (
+    DEFAULT_MAX_APPROACH_SPEED,
+    ScriptedNoisyHuman,
+    bore_aligned_grasp,
+)
 from ai_teleop.input.vision_input import (
     NeutralAnchor,
     VisionInput,
@@ -22,6 +26,7 @@ from ai_teleop.input.vision_input import (
 # (StereoHandSource pulls in the optional `stereo-input` extra only when constructed).
 
 __all__ = [
+    "DEFAULT_MAX_APPROACH_SPEED",
     "NeutralAnchor",
     "ScriptedNoisyHuman",
     "VisionInput",
