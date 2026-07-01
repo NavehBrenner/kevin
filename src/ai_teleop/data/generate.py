@@ -49,7 +49,7 @@ import numpy as np
 from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
 from ai_teleop.common.seating import SeatingGeometry
-from ai_teleop.control import Controller
+from ai_teleop.control import Controller, LockState
 from ai_teleop.data.schema import DatasetConfig, ResBCDatasetMetadata
 from ai_teleop.data.trajectory import (
     SCHEMA_VERSION,
@@ -124,8 +124,10 @@ class _SeatingMetrics:
 
     The geometry (penetration / lateral error / distance) comes from the shared
     ``common.seating`` definition so generation and the M6 eval harness cannot
-    drift on what "seated" means; the force magnitude and the threshold policy
-    (:meth:`terminal_reason`) are data-generation's own concern.
+    drift on what "seated" means; the force magnitude is data-generation's own
+    concern. The termination *policy* is the module-level
+    :func:`episode_terminal_reason` so any caller can reuse it without coupling to
+    this private struct.
     """
 
     def __init__(self, observation: Observation, target_hole_index: int) -> None:
@@ -136,15 +138,32 @@ class _SeatingMetrics:
         self.penetration = geometry.penetration
         self.force_magnitude = float(np.linalg.norm(observation.wrist_ft[:3]))
 
-    def terminal_reason(
-        self, *, success_depth: float, lateral_tolerance: float, force_cap: float
-    ) -> TerminalReason | None:
-        """Why this step ends the episode, or ``None`` to keep going."""
-        if self.penetration >= success_depth and self.lateral_error < lateral_tolerance:
-            return TerminalReason.SUCCESS
-        if self.force_magnitude > force_cap:
-            return TerminalReason.FORCE_ABORT
-        return None
+
+def episode_terminal_reason(
+    *,
+    penetration: float,
+    lateral_error: float,
+    force_magnitude: float,
+    locked: bool,
+    success_depth: float,
+    lateral_tolerance: float,
+    force_cap: float,
+) -> TerminalReason | None:
+    """The single episode-outcome policy — why a step ends the episode, or ``None``.
+
+    Shared by data generation *and* the ``kvn episode`` run CLI so the two can't
+    drift on when an episode is "over" (the structural cause of replays not
+    matching their generated episode). SUCCESS once seated; FORCE_ABORT if the
+    controller's force-cap watchdog has latched HOLD (``locked`` — the arm is
+    frozen, so further steps are dead frames) or the raw wrist force exceeds
+    ``force_cap``; else ``None`` to keep going. Takes primitives (not the private
+    ``_SeatingMetrics``) so any caller can use it without that coupling.
+    """
+    if penetration >= success_depth and lateral_error < lateral_tolerance:
+        return TerminalReason.SUCCESS
+    if locked or force_magnitude > force_cap:
+        return TerminalReason.FORCE_ABORT
+    return None
 
 
 def _save_frame(imgs_dir: Path, step: int, frame: np.ndarray) -> None:
@@ -171,6 +190,7 @@ class _EpisodeLogger:
     def __init__(
         self,
         ft_bias: np.ndarray,
+        controller: Controller,
         *,
         target_hole_index: int,
         success_depth: float,
@@ -183,6 +203,7 @@ class _EpisodeLogger:
         self.recorder = EpisodeRecorder()
         self.terminal_reason = TerminalReason.TIMEOUT
         self._ft_bias = ft_bias
+        self._controller = controller
         self._target_hole_index = target_hole_index
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
@@ -200,7 +221,11 @@ class _EpisodeLogger:
         command,
     ) -> bool:
         metrics = _SeatingMetrics(observation, self._target_hole_index)
-        reason = metrics.terminal_reason(
+        reason = episode_terminal_reason(
+            penetration=metrics.penetration,
+            lateral_error=metrics.lateral_error,
+            force_magnitude=metrics.force_magnitude,
+            locked=self._controller.status.state is LockState.HOLD,
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
             force_cap=self._force_cap,
@@ -249,6 +274,7 @@ class _TerminationProbe:
 
     def __init__(
         self,
+        controller: Controller,
         *,
         target_hole_index: int,
         success_depth: float,
@@ -256,6 +282,7 @@ class _TerminationProbe:
         force_cap: float,
     ) -> None:
         self.terminal_reason = TerminalReason.TIMEOUT
+        self._controller = controller
         self._target_hole_index = target_hole_index
         self._success_depth = success_depth
         self._lateral_tolerance = lateral_tolerance
@@ -264,7 +291,12 @@ class _TerminationProbe:
     def __call__(
         self, step: int, observation: Observation, base_command, delta: Delta, command
     ) -> bool:
-        reason = _SeatingMetrics(observation, self._target_hole_index).terminal_reason(
+        metrics = _SeatingMetrics(observation, self._target_hole_index)
+        reason = episode_terminal_reason(
+            penetration=metrics.penetration,
+            lateral_error=metrics.lateral_error,
+            force_magnitude=metrics.force_magnitude,
+            locked=self._controller.status.state is LockState.HOLD,
             success_depth=self._success_depth,
             lateral_tolerance=self._lateral_tolerance,
             force_cap=self._force_cap,
@@ -311,6 +343,7 @@ def _baseline_terminal_reason(
     only — no trajectory is recorded. Returns how the human-only run terminated."""
     controller.reset()  # clear any lock the expert run left latched
     probe = _TerminationProbe(
+        controller,
         target_hole_index=target_hole_index,
         success_depth=success_depth,
         lateral_tolerance=lateral_tolerance,
@@ -414,6 +447,7 @@ def generate_dataset(
         )
         logger = _EpisodeLogger(
             ft_bias,
+            controller,
             target_hole_index=_TARGET_HOLE_INDEX,
             **thresholds,
             render_fn=environment.render_wrist_camera if render_images else None,

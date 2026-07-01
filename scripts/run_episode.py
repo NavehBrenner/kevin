@@ -2,15 +2,20 @@
 
 The reusable per-episode loop is core functionality and lives in the package
 (`ai_teleop.sim.runner.run_episode`); this script is just its command-line front
-door (also reachable as `kvn episode`). It builds the concrete no-assist stack
-(scene + controller + scripted human aimed at the trial's target hole +
-NoAssist) and reports a one-line summary.
+door (also reachable as `kvn episode`). It composes the concrete stack (scene +
+controller + a base command source + a `--policy` correction layer) and reports
+a one-line summary. The base commands come from `--input` (scripted noisy human,
+stereo hand tracking, or a recorded episode replayed verbatim); the correction
+comes from `--policy` (noassist / expert / trained residual). Replaying an
+episode rebuilds its exact recorded scene from metadata, so `kvn episode
+--input <ep>` reproduces its generation to the step.
 
 Run from the `kevin/` directory:
 
     uv run python scripts/run_episode.py                 # interactive viewer
     uv run python scripts/run_episode.py --headless      # CI / batch
     uv run python scripts/run_episode.py --headless --seed 7 --max-steps 1500
+    uv run python scripts/run_episode.py --headless --input runs/episode_00000  # replay
 """
 
 from __future__ import annotations
@@ -36,14 +41,17 @@ from ai_teleop.common.log import (  # noqa: E402
     get_logger,
 )
 from ai_teleop.common.seating import SeatingGeometry  # noqa: E402
-from ai_teleop.control import Controller  # noqa: E402
+from ai_teleop.control import Controller, LockState  # noqa: E402
 from ai_teleop.data.generate import (  # noqa: E402
+    DEFAULT_FORCE_CAP,
     DEFAULT_LATERAL_TOLERANCE,
+    DEFAULT_MAX_DPOS,
     DEFAULT_SUCCESS_DEPTH,
+    episode_terminal_reason,
 )
 from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
-from ai_teleop.domain.interfaces import InputStrategy  # noqa: E402
+from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
     ScriptedNoisyHuman,
     VisionInput,
@@ -100,6 +108,67 @@ def _resolve_record_path(out: str) -> Path:
     return _DEFAULT_RECORD_RUNS / f"episode_{index:05d}" / "episode.npz"
 
 
+def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
+    """Resolve --policy to the AssistProvider (the correction layer) under test.
+
+    Same scene + operator command stream, different assist — so one recorded episode
+    can be replayed under each policy. Heavy imports (Expert is pure Python; the
+    trained residual pulls in torch) are deferred to the chosen branch.
+    """
+    if policy == "noassist":
+        return NoAssist()
+    if policy == "expert":
+        from ai_teleop.expert import Expert
+
+        return Expert()
+    if policy == "tf":
+        if not checkpoint:
+            raise SystemExit("--policy tf requires --checkpoint PATH (a trained residual .pt).")
+        from ai_teleop.policy import LearnedResidual  # lazy: pulls in torch
+
+        return LearnedResidual.from_checkpoint(checkpoint)
+    # ponytail: vision (Phase-2 vision-conditioned residual) isn't trained yet; fail
+    # loud rather than silently fall back. Add the branch when the checkpoint exists.
+    raise SystemExit(f"--policy {policy} is not implemented yet.")
+
+
+def _rebuild_for_replay(meta: EpisodeMetadata, render_mode):
+    """Rebuild the exact scene + controller a recorded episode ran in, from its metadata.
+
+    Replay reproduces the recording, so the scene (static vs generated wall + seed) and
+    the controller (command clamp, joint damping, force cap) must match what was recorded —
+    otherwise the replayed commands drive a different physical episode (the bug: the scene
+    was rebuilt from CLI args, not the episode's own spec). Everything is keyed on
+    ``wall_seed`` + arg-less ``reset()``; older episodes fall back to sensible defaults.
+
+    Returns ``(env, observation, controller, scene_path)``.
+    """
+    generated = bool(meta.get("generated_wall", False))
+    wall_seed = meta.get("wall_seed")
+    scene_path = resolve_scene_path(
+        generated=generated,
+        wall_seed=wall_seed,
+        distractors=meta.get("distractors"),
+    )
+    env = SimEnv(
+        str(scene_path),
+        render_mode=render_mode,
+        config=EnvConfig(wall_seed=wall_seed if generated else None),
+    )
+    observation = env.reset()
+
+    controller_kwargs: dict[str, float] = {
+        "max_dpos_per_step": float(meta.get("max_dpos", DEFAULT_MAX_DPOS))
+    }
+    if "joint_damping" in meta:
+        controller_kwargs["joint_damping"] = float(meta["joint_damping"])
+    if "force_cap" in meta:  # stored None means the watchdog was off (--no-force-cap)
+        force_cap = meta["force_cap"]
+        controller_kwargs["force_cap_n"] = math.inf if force_cap is None else float(force_cap)
+    controller = Controller(env, **controller_kwargs)
+    return env, observation, controller, scene_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -111,9 +180,11 @@ def main() -> int:
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=DEFAULT_MAX_STEPS,
-        help="Episode step budget (one step == one 2 ms sim tick). Use 0 for no limit — "
-        "run until you close the viewer or Ctrl-C (handy for free-play with --input vision).",
+        default=None,
+        help="Episode step budget (one step == one 2 ms sim tick). Default: the recorded "
+        f"length when --input is an episode path (so a replay reproduces it to the step), "
+        f"else {DEFAULT_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
+        "Ctrl-C (handy for free-play with --input vision).",
     )
     parser.add_argument(
         "--generated-wall",
@@ -135,6 +206,21 @@ def main() -> int:
         help="Base command source: 'scripted' noisy human (default), 'vision' two-webcam "
         "stereo hand tracking (needs the viewer + --stereo-calib), or a path to an episode "
         "folder / episode.npz to replay recorded commands.",
+    )
+    parser.add_argument(
+        "--policy",
+        choices=["noassist", "expert", "tf", "vision"],
+        default="noassist",
+        help="Correction layer applied on top of the base commands: 'noassist' (default, raw "
+        "operator), 'expert' analytical residual, 'tf' trained residual (needs --checkpoint), "
+        "'vision' Phase-2 vision-conditioned residual (not implemented). On replay the recorded "
+        "commands are the same under every policy — only the correction differs.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Trained residual checkpoint .pt for --policy tf "
+        "(e.g. runs/train/<run>/checkpoint.pt).",
     )
     parser.add_argument(
         "--no-cam-window",
@@ -227,23 +313,45 @@ def main() -> int:
         log.error("--input vision requires --stereo-calib PATH.")
         return 2
 
-    scene_path = resolve_scene_path(
-        generated=args.generated_wall,
-        wall_seed=args.wall_seed,
-        distractors=args.distractors,
-    )
-    if not scene_path.exists():
-        log.error("scene file not found at %s", scene_path)
-        return 2
-
     render_mode = "headless" if args.headless else "viewer"
-    log.info("Loading scene (%s): %s", render_mode, scene_path)
-    env = SimEnv(
-        str(scene_path),
-        render_mode=render_mode,
-        config=EnvConfig(wall_seed=args.wall_seed if args.generated_wall else None),
-    )
-    observation = env.reset()
+
+    if replay_columns is not None:
+        # Replay: reconstruct the exact scene + controller from the episode's own
+        # stored spec (NOT the CLI args), so `kvn episode --input <ep>` reproduces
+        # its generation to the step regardless of the flags passed here.
+        log.info("Rebuilding recorded scene (%s) from episode metadata", render_mode)
+        env, observation, controller, scene_path = _rebuild_for_replay(replay_meta, render_mode)
+    else:
+        scene_path = resolve_scene_path(
+            generated=args.generated_wall,
+            wall_seed=args.wall_seed,
+            distractors=args.distractors,
+        )
+        if not scene_path.exists():
+            log.error("scene file not found at %s", scene_path)
+            return 2
+        log.info("Loading scene (%s): %s", render_mode, scene_path)
+        env = SimEnv(
+            str(scene_path),
+            render_mode=render_mode,
+            config=EnvConfig(wall_seed=args.wall_seed if args.generated_wall else None),
+        )
+        observation = env.reset()
+        # --input vision wants responsive, mirror-like tracking, not the slew-limited
+        # careful-insertion backbone (which feels like velocity control): a bigger
+        # command clamp lets the impedance spring toward the hand, and lower joint
+        # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
+        if args.input == "vision":
+            max_dpos = args.max_dpos if args.max_dpos is not None else 0.3
+            controller = Controller(
+                env,
+                max_dpos_per_step=max_dpos,
+                joint_damping=1.5,
+                force_cap_n=math.inf if args.no_force_cap else 30.0,
+            )
+        else:
+            max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
+            controller = Controller(env, max_dpos_per_step=max_dpos)
 
     # The task's goal hole. Generated walls (and the static scene's home grasp)
     # sit in front of hole_0; a replayed episode targets whatever it recorded. The
@@ -259,26 +367,6 @@ def main() -> int:
         # wrist-cam render). Lets the operator know which hole to aim at.
         env.highlight_target(observation.hole_poses[target_hole_index][:3])
 
-    # --input vision wants responsive, mirror-like tracking, not the slew-limited
-    # careful-insertion backbone (which feels like velocity control): a bigger
-    # command clamp lets the impedance spring toward the hand, and lower joint
-    # damping unbounds the ~0.05 m/s free-space slew the default kd=4 caps.
-    if args.input == "vision":
-        max_dpos = args.max_dpos if args.max_dpos is not None else 0.3
-        controller = Controller(
-            env,
-            max_dpos_per_step=max_dpos,
-            joint_damping=1.5,
-            force_cap_n=math.inf if args.no_force_cap else 30.0,
-        )
-    elif replay_columns is not None:
-        # Replay: don't re-clamp commands that were already clamped when recorded.
-        max_dpos = args.max_dpos if args.max_dpos is not None else math.inf
-        controller = Controller(env, max_dpos_per_step=max_dpos)
-    else:
-        max_dpos = args.max_dpos if args.max_dpos is not None else 0.025
-        controller = Controller(env, max_dpos_per_step=max_dpos)
-
     # Aim the scripted human at the active trial's hole *position*, but keep the
     # home grasp orientation rather than the hole-site frame: M3 is plumbing, and
     # commanding an arbitrary wrist reorientation would make the crude scripted
@@ -287,7 +375,7 @@ def main() -> int:
     # full-target command into a smooth bounded approach.
     target_position = observation.hole_poses[target_hole_index][:3].copy()
     home_quaternion = controller.home_pose[3:]
-    assist = NoAssist()
+    assist = _build_assist(args.policy, args.checkpoint)
 
     input_strategy: InputStrategy
     tracker = None
@@ -338,15 +426,41 @@ def main() -> int:
         np.array2string(target_position, precision=3),
         start_dist * 1000,
     )
-    # --max-steps 0 (or negative) => run effectively forever; range() is lazy.
-    max_steps = args.max_steps if args.max_steps > 0 else sys.maxsize
-    budget = "unlimited" if args.max_steps <= 0 else f"{args.max_steps} steps"
-    log.info("Running %s with %s input + NoAssist (Ctrl-C to stop)...", budget, args.input)
+    # Resolve the step budget. A replay plays back exactly the recorded commands, so it
+    # runs for the recorded length; live input falls back to DEFAULT_MAX_STEPS. Explicit
+    # 0/negative => run effectively forever; range() is lazy.
+    if args.max_steps is not None:
+        requested_steps = args.max_steps
+    elif replay_columns is not None:
+        requested_steps = len(replay_columns["step"])
+    else:
+        requested_steps = DEFAULT_MAX_STEPS
+    max_steps = requested_steps if requested_steps > 0 else sys.maxsize
+    budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
+    log.info(
+        "Running %s with %s input + %s policy (Ctrl-C to stop)...",
+        budget,
+        args.input,
+        args.policy,
+    )
 
     recorder: EpisodeRecorder | None = None
     terminal_reason = TerminalReason.TIMEOUT
     record_path: Path | None = None
     step_callback = None
+
+    def _reason(obs, geometry: SeatingGeometry) -> TerminalReason | None:
+        """Shared episode-outcome policy — identical to data generation, so a
+        replay ends exactly where its generated episode did (no path divergence)."""
+        return episode_terminal_reason(
+            penetration=geometry.penetration,
+            lateral_error=geometry.lateral_error,
+            force_magnitude=float(np.linalg.norm(obs.wrist_ft[:3])),
+            locked=controller.status.state is LockState.HOLD,
+            success_depth=DEFAULT_SUCCESS_DEPTH,
+            lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
+            force_cap=DEFAULT_FORCE_CAP,
+        )
 
     if args.record is not None:
         record_path = _resolve_record_path(args.record)
@@ -356,10 +470,7 @@ def main() -> int:
         def step_callback(step: int, obs, base_command, delta, command) -> bool:
             nonlocal terminal_reason
             geometry = SeatingGeometry.from_observation(obs, target_hole_index)
-            inserted = (
-                geometry.penetration >= DEFAULT_SUCCESS_DEPTH
-                and geometry.lateral_error < DEFAULT_LATERAL_TOLERANCE
-            )
+            reason = _reason(obs, geometry)
             recorder.add(  # type: ignore[union-attr]
                 step=step,
                 sim_time=obs.sim_time,
@@ -377,21 +488,26 @@ def main() -> int:
                 peg_pose=obs.peg_pose,
                 target_hole_pose=geometry.target_hole_pose,
                 distance=geometry.distance,
-                step_success=inserted,
+                step_success=reason is TerminalReason.SUCCESS,
             )
-            if inserted:
-                terminal_reason = TerminalReason.SUCCESS
-                return True
-            # Force-cap watchdog has latched the arm into HOLD; nothing in the
-            # vision path releases it, so end the recording here instead of
-            # capturing frozen ticks. force_cap_n is math.inf under
-            # --no-force-cap, so this never fires when the watchdog is off.
-            if float(np.linalg.norm(obs.wrist_ft[:3])) > controller.force_cap_n:
-                terminal_reason = TerminalReason.FORCE_ABORT
+            if reason is not None:
+                terminal_reason = reason
                 return True
             return False
 
         log.info("Recording to: %s", record_path)
+    elif args.input != "vision":
+        # Scripted / replay without recording: terminate exactly like data
+        # generation (seating, force-cap, or HOLD lock). Vision free-play has no
+        # callback — it runs until the viewer closes, so an incidental wall bump
+        # won't end it.
+        def step_callback(step: int, obs, base_command, delta, command) -> bool:
+            nonlocal terminal_reason
+            reason = _reason(obs, SeatingGeometry.from_observation(obs, target_hole_index))
+            if reason is not None:
+                terminal_reason = reason
+                return True
+            return False
 
     result = None
     try:
@@ -414,12 +530,25 @@ def main() -> int:
         assert record_path is not None
         recorder.save(
             record_path,
+            # Complete replay spec so the episode reproduces later: _rebuild_for_replay
+            # reads these back to reconstruct the exact scene + controller. force_cap
+            # None ⇒ the watchdog was off (--no-force-cap).
             metadata={
                 "source": args.input,
+                "policy": args.policy,
                 "seed": args.seed,
                 "target_hole_index": target_hole_index,
                 "generated_wall": args.generated_wall,
                 "wall_seed": args.wall_seed if args.generated_wall else None,
+                "distractors": args.distractors,
+                "scene": scene_path.name,
+                "max_dpos": controller.max_dpos_per_step,
+                "joint_damping": controller.joint_damping,
+                "force_cap": (
+                    None if math.isinf(controller.force_cap_n) else controller.force_cap_n
+                ),
+                "success_depth": DEFAULT_SUCCESS_DEPTH,
+                "lateral_tolerance": DEFAULT_LATERAL_TOLERANCE,
                 "terminal_reason": terminal_reason.value,
                 "episode_success": terminal_reason is TerminalReason.SUCCESS,
             },
@@ -429,8 +558,11 @@ def main() -> int:
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
         log.info(
-            "Episode done: %d steps  final lock state = %s  EE-to-hole %.0f mm -> %.0f mm",
+            "Episode done: %d steps (%.2f s sim)  [%s]  final lock state = %s  "
+            "EE-to-hole %.0f mm -> %.0f mm",
             result.n_steps,
+            result.final_observation.sim_time,
+            terminal_reason.value,
             result.lock_status.state.value,
             start_dist * 1000,
             final_dist * 1000,
