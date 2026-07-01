@@ -98,6 +98,19 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     baseline_terminal_reason: str | None
     baseline_success: bool | None
 
+    # Replay spec — the scene + controller recipe so ``kvn episode --input <ep>``
+    # rebuilds the exact episode it ran in (see scripts/run_episode.py
+    # _rebuild_for_replay). Recorded episodes stamp these; generated episodes carry
+    # generated_wall/wall_seed already and derive the rest from generation defaults.
+    # force_cap None ⇒ the force-cap watchdog was off (--no-force-cap).
+    policy: str
+    seed: int
+    generated_wall: bool
+    wall_seed: int | None
+    distractors: int | None
+    joint_damping: float
+    scene: str  # scene-file name
+
 
 class _EpisodeSummaryBase(TypedDict):
     """Required keys of one entry in the dataset-level ``episodes`` list."""
