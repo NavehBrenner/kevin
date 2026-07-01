@@ -11,30 +11,43 @@ injected noise" — a trivial, unphysical denoising task. Instead this actor
 commits to a *biased, drifting, coarse* trajectory that is internally consistent
 over time, so the correction problem stays a geometric/contact-reasoning one.
 
-Composition of three layers, fully determined by the constructor `seed`:
+The command stream itself carries an **approach phase** (LAB-78): the actor
+integrates a command that *chases* the drifting biased goal at a capped rate,
+seeded from where the arm actually starts. So the command sweeps in from ~400 mm
+out to the goal — the operator owns the approach, not the controller's command
+clamp. (The old model parked the command at the goal from tick 0 and leaned on
+the clamp to manufacture the approach; that left the command stream — a live
+policy input via the command-history GRU — structurally unlike a real
+operator's, which bit M7 vision specifically.)
 
-    c_t = held(goal ⊕ drift_t)  ⊕  tremor_t
-    goal = (p_hole + bias,  R_hole · ΔR_bias)        # fixed for the whole episode
+Composition, fully determined by the constructor `seed` (plus the arm's
+deterministic reset pose, read once from the first observation):
+
+    command_0 = observation.ee_pose[:3]                          # seed at the arm's start
+    target_t  = goal ⊕ drift_t                                   # the drifting biased goal
+    command_t = command_{t-1} + clamp(target_t - command_{t-1},  max_approach_speed · dt)
+    goal      = (p_hole + bias,  R_hole · ΔR_bias)               # fixed for the whole episode
 
 - **Intent / bias** — `bias` (position + orientation) drawn **once** at
   construction. A systematic, consistent misjudgement of where the hole is; it
   does not resample per step. This consistency is what makes the correction
   non-trivial.
 - **Drift** — a low-frequency Ornstein–Uhlenbeck process on position and
-  orientation, refreshed at ``refresh_hz`` (~5–10 Hz) and **held** between
-  refreshes. Models a human issuing discrete coarse intents while the controller
-  runs fast; the drift is correlated over hundreds of ms, not white.
+  orientation, advanced **every control tick** (not held), so the command keeps
+  making small moves even after arrival; correlated over hundreds of ms, not
+  white.
+- **Approach** — the command integrates toward ``target_t`` at up to
+  ``max_approach_speed``, decelerating proportionally inside the last step.
 - **Tremor** — optional small per-tick high-frequency jitter (off by default),
   kept well below the magnitude that would make denoising the whole game.
 
 The actor is deliberately **contact-unaware**: it always commands toward the
 (biased) goal regardless of what the peg is touching — it will keep pushing into
 flat wall if its goal sits off the hole, exactly the situation the assist must
-rescue. The M2 controller's 2 cm/step command clamp turns the full-goal command
-into a smooth bounded approach (the division of labour M3 established).
+rescue.
 
 Noise *magnitudes* here are placeholders to be calibrated post-baseline; the
-*form* (biased + drifting + coarse) is what is fixed now.
+*form* (biased + drifting + capped-rate approach) is what is fixed now.
 """
 
 from __future__ import annotations
@@ -50,8 +63,14 @@ from ai_teleop.common.observation import Observation
 # at (scale 1.0 == these values). Bias is the constant per-episode offset; drift is
 # the stationary OU wander on top of it — together they set the lateral error at
 # contact, which the difficulty pin (LAB-53) trades against the chamfer capture radius.
-DEFAULT_POSITION_BIAS_STD: float = 0.01
+DEFAULT_POSITION_BIAS_STD: float = 0.013
 DEFAULT_DRIFT_POSITION_STD: float = 0.005
+
+# Cap on how fast the command sweeps toward the (drifting) goal, m/s. Sets the
+# approach duration and near-field command speed; the LAB-78 fit target. The
+# controller's per-step clamp (2 cm/step) sits well above the per-tick move this
+# implies, so the actor — not the clamp — owns the approach.
+DEFAULT_MAX_APPROACH_SPEED: float = 0.35
 
 
 def _axis_angle_to_quat(axis_angle: np.ndarray) -> np.ndarray:
@@ -86,11 +105,12 @@ class ScriptedNoisyHuman:
         OU time constant, in seconds (larger ⇒ slower, more correlated drift).
     tremor_std:
         Per-tick high-frequency position-tremor σ, in metres. 0 disables tremor.
-    refresh_hz:
-        Rate at which the commanded target refreshes (~5–10 Hz); held between.
+    max_approach_speed:
+        Cap on the command sweep toward the goal, in m/s. Larger ⇒ faster
+        approach. See :data:`DEFAULT_MAX_APPROACH_SPEED`.
     control_hz:
-        Control-loop rate (one ``get_command`` call per tick). Sets the
-        refresh-hold length ``round(control_hz / refresh_hz)``.
+        Control-loop rate (one ``get_command`` call per tick). Sets the per-tick
+        drift step ``dt = 1 / control_hz`` and the per-tick approach cap.
     seed:
         RNG seed. The data-gen driver passes a per-episode seed so that
         ``(master_seed, episode_index)`` fully determines the command stream.
@@ -106,7 +126,7 @@ class ScriptedNoisyHuman:
         drift_orientation_std: float = float(np.deg2rad(1.0)),
         drift_tau: float = 0.3,
         tremor_std: float = 0.0,
-        refresh_hz: float = 8.0,
+        max_approach_speed: float = DEFAULT_MAX_APPROACH_SPEED,
         control_hz: float = 500.0,
         seed: int = 0,
     ) -> None:
@@ -120,12 +140,12 @@ class ScriptedNoisyHuman:
         self._drift_position_std = drift_position_std
         self._drift_orientation_std = drift_orientation_std
         self._tremor_std = tremor_std
-        self._hold_steps = max(1, round(control_hz / refresh_hz))
+        self._dt_control = 1.0 / control_hz
+        self._max_step = max_approach_speed * self._dt_control  # per-tick cap, metres
 
-        # OU decay over one refresh interval: stationary std preserved via the
-        # sqrt(1 - beta^2) innovation scaling.
-        refresh_dt = 1.0 / refresh_hz
-        self._ou_beta = float(np.exp(-refresh_dt / drift_tau))
+        # Per-tick OU decay; stationary std preserved via the sqrt(1 - beta^2)
+        # innovation scaling, so the drift's stationary σ is independent of dt.
+        self._ou_beta = float(np.exp(-self._dt_control / drift_tau))
         self._ou_innovation = float(np.sqrt(1.0 - self._ou_beta**2))
 
         self._rng = np.random.default_rng(seed)
@@ -139,16 +159,18 @@ class ScriptedNoisyHuman:
         mujoco.mju_mulQuat(self._goal_quaternion, bias_quat, self._target_quaternion)
         mujoco.mju_normalize4(self._goal_quaternion)
 
-        # OU drift state (axis-angle for orientation), updated at each refresh.
+        # OU drift state (axis-angle for orientation), advanced every tick.
         self._drift_position = np.zeros(3)
         self._drift_orientation = np.zeros(3)
 
-        self._tick = 0
-        self._held_position = self._goal_position.copy()
-        self._held_quaternion = self._goal_quaternion.copy()
+        # Command-integrator state, seeded lazily from the first observation's
+        # ee_pose (the arm's deterministic reset pose) so the approach starts
+        # where the arm actually is.
+        self._command_position = np.zeros(3)
+        self._initialized = False
 
-    def _refresh_held_target(self) -> None:
-        """Advance the OU drift one refresh step and recompute the held target."""
+    def _advance_drift(self) -> None:
+        """Advance the position + orientation OU drift one control tick."""
         self._drift_position = (
             self._ou_beta * self._drift_position
             + self._ou_innovation * self._drift_position_std * self._rng.normal(size=3)
@@ -158,26 +180,32 @@ class ScriptedNoisyHuman:
             + self._ou_innovation * self._drift_orientation_std * self._rng.normal(size=3)
         )
 
-        self._held_position = self._goal_position + self._drift_position
+    def get_command(self, observation: Observation) -> Command:
+        if not self._initialized:
+            self._command_position = observation.ee_pose[:3].copy()
+            self._initialized = True
 
-        drift_quat = _axis_angle_to_quat(self._drift_orientation)
-        held_quaternion = np.zeros(4)
-        mujoco.mju_mulQuat(held_quaternion, drift_quat, self._goal_quaternion)
-        mujoco.mju_normalize4(held_quaternion)
-        self._held_quaternion = held_quaternion
+        self._advance_drift()
 
-    def get_command(self, observation: Observation) -> Command:  # noqa: ARG002
-        # Refresh the held target at the start of each hold window (tick 0 too,
-        # so the first command already carries one drift step).
-        if self._tick % self._hold_steps == 0:
-            self._refresh_held_target()
-        self._tick += 1
+        # Capped-rate move of the command toward the drifting biased goal,
+        # decelerating proportionally inside the last step.
+        target = self._goal_position + self._drift_position
+        step = target - self._command_position
+        distance = float(np.linalg.norm(step))
+        self._command_position = self._command_position + step * min(
+            1.0, self._max_step / (distance + 1e-9)
+        )
 
-        position = self._held_position
+        position = self._command_position
         if self._tremor_std > 0.0:
             position = position + self._rng.normal(0.0, self._tremor_std, size=3)
 
-        return Command(position.copy(), self._held_quaternion.copy())
+        drift_quat = _axis_angle_to_quat(self._drift_orientation)
+        quaternion = np.zeros(4)
+        mujoco.mju_mulQuat(quaternion, drift_quat, self._goal_quaternion)
+        mujoco.mju_normalize4(quaternion)
+
+        return Command(position.copy(), quaternion)
 
 
 def bore_aligned_grasp(home_quaternion: np.ndarray, bore_axis: np.ndarray) -> np.ndarray:
