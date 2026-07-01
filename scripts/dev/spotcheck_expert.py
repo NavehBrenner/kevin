@@ -29,7 +29,7 @@ def run(assist, seed=2, steps=6000, bias=0.012):
     env = SimEnv(str(SCENE), render_mode="headless")
     obs = env.reset()
     controller = Controller(env)
-    target = obs.hole_poses[obs.target_hole_index][:3].copy()
+    target = obs.hole_poses[0][:3].copy()  # task goal: hole_0
     home_quat = controller.home_pose[3:]
     human = ScriptedNoisyHuman(
         np.concatenate([target, home_quat]),

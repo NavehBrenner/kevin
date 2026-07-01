@@ -29,7 +29,7 @@ def run(scene_path, assist, seed=2, steps=6000):
     env = SimEnv(str(scene_path), render_mode="headless")
     o = env.reset()
     c = Controller(env)
-    hole = o.hole_poses[o.target_hole_index]
+    hole = o.hole_poses[0]  # task goal: hole_0
     bore = axis_from_quat(hole[3:], 0)  # hole local +x = bore
     human = ScriptedNoisyHuman(
         np.concatenate([hole[:3], c.home_pose[3:]]),

@@ -74,7 +74,7 @@ def run_views(
     env = SimEnv(str(scene_path), render_mode="headless", camera_height=PANEL, camera_width=PANEL)
     observation = env.reset()
     controller = Controller(env, max_dpos_per_step=max_dpos)
-    target = observation.hole_poses[observation.target_hole_index][:3].copy()
+    target = observation.hole_poses[0][:3].copy()  # task goal: hole_0
     human = ScriptedNoisyHuman(
         np.concatenate([target, controller.home_pose[3:]]),
         position_bias_std=0.012,

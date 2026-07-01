@@ -46,11 +46,16 @@ class SeatingGeometry:
     target_hole_pose: np.ndarray
 
     @classmethod
-    def from_observation(cls, observation: Observation) -> SeatingGeometry:
+    def from_observation(cls, observation: Observation, target_hole_index: int) -> SeatingGeometry:
+        """Seating geometry against ``hole_poses[target_hole_index]``.
+
+        The target index is supplied by the caller (the episode/task layer), not
+        read off the observation — the env does not know which hole is the goal.
+        """
         peg_axis = axis_from_quat(observation.peg_pose[3:], 2)
         tip = observation.peg_pose[:3] + PEG_HALF_LENGTH * peg_axis
 
-        hole_pose = observation.hole_poses[observation.target_hole_index]
+        hole_pose = observation.hole_poses[target_hole_index]
         insertion_axis = axis_from_quat(hole_pose[3:], 0)
 
         error = hole_pose[:3] - tip

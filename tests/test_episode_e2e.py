@@ -50,7 +50,7 @@ def env():
 def _target_pose_at_hole(env_, controller) -> np.ndarray:
     """(7,) EE target: active hole position + the controller's home orientation."""
     obs = env_.reset()
-    hole_position = obs.hole_poses[obs.target_hole_index][:3].copy()
+    hole_position = obs.hole_poses[0][:3].copy()  # task goal: hole_0
     home_quat = controller.home_pose[3:].copy()
     return np.concatenate([hole_position, home_quat])
 

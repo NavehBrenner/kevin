@@ -19,21 +19,23 @@ from ai_teleop.input.scripted_noisy_human import (
     DEFAULT_POSITION_BIAS_STD,
     ScriptedNoisyHuman,
 )
+from ai_teleop.sim.config import EnvConfig, episode_wall_seed
+from ai_teleop.sim.env_setup import make_env
 from ai_teleop.sim.runner import run_episode
-from ai_teleop.sim.scene import SimEnv
-from ai_teleop.sim.scene_source import STATIC_TASK_SCENE
+
+_TARGET_HOLE_INDEX = 0  # data-gen places the goal at hole_0
 
 
 def probe(
     scale: float, *, use_expert: bool = False, episode_index: int = 0, master_seed: int = 0
 ) -> None:
-    environment = SimEnv(
-        str(STATIC_TASK_SCENE), render_mode="headless", seed=master_seed, randomize=True
+    environment = make_env(
+        EnvConfig(wall_seed=episode_wall_seed(master_seed, episode_index)), render_mode="headless"
     )
     try:
         controller = Controller(environment)
-        observation = environment.reset(episode_index)
-        target_position = observation.target_hole_position.copy()
+        observation = environment.reset()
+        target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
         home_quaternion = controller.home_pose[3:]
         target_pose = np.concatenate([target_position, home_quaternion])
         human = ScriptedNoisyHuman(
@@ -46,7 +48,7 @@ def probe(
         best = {"pen": -1e9, "lat_at_best": None, "min_lat": 1e9}
 
         def step_callback(step, obs, base_command, delta, command) -> bool:
-            geom = SeatingGeometry.from_observation(obs)
+            geom = SeatingGeometry.from_observation(obs, _TARGET_HOLE_INDEX)
             if geom.penetration > best["pen"]:
                 best["pen"] = geom.penetration
                 best["lat_at_best"] = geom.lateral_error
@@ -56,15 +58,9 @@ def probe(
         from ai_teleop.domain import NoAssist
         from ai_teleop.expert import Expert
 
-        assist = Expert() if use_expert else NoAssist()
+        assist = Expert(target_hole_index=_TARGET_HOLE_INDEX) if use_expert else NoAssist()
         run_episode(
-            environment,
-            controller,
-            human,
-            assist,
-            max_steps=6000,
-            reset_episode_index=episode_index,
-            step_callback=step_callback,
+            environment, controller, human, assist, max_steps=6000, step_callback=step_callback
         )
         tag = "EXPERT  " if use_expert else "NoAssist"
         print(

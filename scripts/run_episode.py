@@ -50,6 +50,7 @@ from ai_teleop.input import (  # noqa: E402
     WorkspaceCalibration,
     calibrate_neutral,
 )
+from ai_teleop.sim.config import EnvConfig  # noqa: E402
 from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
@@ -235,21 +236,28 @@ def main() -> int:
         log.error("scene file not found at %s", scene_path)
         return 2
 
-    # For replay, use the episode's original seed so the scene matches.
-    scene_seed = (
-        int(replay_meta["seed"])
-        if replay_columns is not None and "seed" in replay_meta
-        else args.seed
-    )
     render_mode = "headless" if args.headless else "viewer"
     log.info("Loading scene (%s): %s", render_mode, scene_path)
-    env = SimEnv(str(scene_path), render_mode=render_mode, seed=scene_seed)
+    env = SimEnv(
+        str(scene_path),
+        render_mode=render_mode,
+        config=EnvConfig(wall_seed=args.wall_seed if args.generated_wall else None),
+    )
     observation = env.reset()
+
+    # The task's goal hole. Generated walls (and the static scene's home grasp)
+    # sit in front of hole_0; a replayed episode targets whatever it recorded. The
+    # env reports every hole's pose but not which is the goal — that's chosen here.
+    if replay_columns is not None and "target_hole_index" in replay_meta:
+        target_hole_index = int(replay_meta["target_hole_index"])
+    else:
+        target_hole_index = 0
+
     if not args.headless:
         env.launch_viewer(wrist_cam=args.cam == "wrist")
         # Mark the target hole for the human (viewer-only; never in the policy-facing
         # wrist-cam render). Lets the operator know which hole to aim at.
-        env.highlight_target(observation.target_hole_position)
+        env.highlight_target(observation.hole_poses[target_hole_index][:3])
 
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
     # careful-insertion backbone (which feels like velocity control): a bigger
@@ -277,7 +285,7 @@ def main() -> int:
     # approach fight the impedance law. Real orientation corrections are the
     # expert's job (M4). The controller's 2 cm/step command clamp turns the
     # full-target command into a smooth bounded approach.
-    target_position = observation.target_hole_position.copy()
+    target_position = observation.hole_poses[target_hole_index][:3].copy()
     home_quaternion = controller.home_pose[3:]
     assist = NoAssist()
 
@@ -326,7 +334,7 @@ def main() -> int:
     start_dist = float(np.linalg.norm(observation.ee_pose[:3] - target_position))
     log.info(
         "Target hole %d at %s (%.0f mm from home EE)",
-        observation.target_hole_index,
+        target_hole_index,
         np.array2string(target_position, precision=3),
         start_dist * 1000,
     )
@@ -347,7 +355,7 @@ def main() -> int:
 
         def step_callback(step: int, obs, base_command, delta, command) -> bool:
             nonlocal terminal_reason
-            geometry = SeatingGeometry.from_observation(obs)
+            geometry = SeatingGeometry.from_observation(obs, target_hole_index)
             inserted = (
                 geometry.penetration >= DEFAULT_SUCCESS_DEPTH
                 and geometry.lateral_error < DEFAULT_LATERAL_TOLERANCE
@@ -409,7 +417,9 @@ def main() -> int:
             metadata={
                 "source": args.input,
                 "seed": args.seed,
-                "target_hole_index": int(observation.target_hole_index),
+                "target_hole_index": target_hole_index,
+                "generated_wall": args.generated_wall,
+                "wall_seed": args.wall_seed if args.generated_wall else None,
                 "terminal_reason": terminal_reason.value,
                 "episode_success": terminal_reason is TerminalReason.SUCCESS,
             },

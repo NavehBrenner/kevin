@@ -36,30 +36,26 @@ from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_LATERAL_TOLERANCE,
     DEFAULT_MAX_STEPS,
     DEFAULT_SUCCESS_DEPTH,
-    SCENE_PATH,
     _make_human,
     _SeatingMetrics,
 )
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.policy import LearnedResidual  # noqa: E402
+from ai_teleop.sim.config import EnvConfig, episode_wall_seed  # noqa: E402
+from ai_teleop.sim.env_setup import make_env  # noqa: E402
 from ai_teleop.sim.runner import run_episode  # noqa: E402
-from ai_teleop.sim.scene import SimEnv  # noqa: E402
 
 log = get_logger("spotcheck")
 
+# Data generation places the goal at hole_0; the spot-check scores against the same.
+_TARGET_HOLE_INDEX = 0
 
-def _seated_after(environment, controller, human, assist, episode_index, *, max_steps):
+
+def _seated_after(environment, controller, human, assist, *, max_steps):
     """Run one episode; return (penetration_m, lateral_error_m, success)."""
     controller.reset()
-    result = run_episode(
-        environment,
-        controller,
-        human,
-        assist,
-        max_steps=max_steps,
-        reset_episode_index=episode_index,
-    )
-    metrics = _SeatingMetrics(result.final_observation)
+    result = run_episode(environment, controller, human, assist, max_steps=max_steps)
+    metrics = _SeatingMetrics(result.final_observation, _TARGET_HOLE_INDEX)
     success = metrics.penetration >= DEFAULT_SUCCESS_DEPTH and (
         metrics.lateral_error < DEFAULT_LATERAL_TOLERANCE
     )
@@ -80,15 +76,19 @@ def main(argv: list[str] | None = None) -> int:
     policy = LearnedResidual.from_checkpoint(args.checkpoint, device=args.device)
     no_assist = NoAssist()
 
-    environment = SimEnv(str(SCENE_PATH), render_mode="headless", seed=args.seed, randomize=True)
-    controller = Controller(environment)
-    home_quaternion = controller.home_pose[3:]
-
     policy_successes = 0
     human_successes = 0
     for episode_index in range(args.episodes):
-        observation = environment.reset(episode_index)
-        target_position = observation.hole_poses[observation.target_hole_index][:3].copy()
+        # One clean env per episode, on its own wall (seeded like data-gen), so the
+        # paired policy/human runs are compared on an identical scene.
+        environment = make_env(
+            EnvConfig(wall_seed=episode_wall_seed(args.seed, episode_index)),
+            render_mode="headless",
+        )
+        controller = Controller(environment)
+        home_quaternion = controller.home_pose[3:]
+        observation = environment.reset()
+        target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
 
         policy.reset()  # explicit per-episode reset (also auto-resets on sim_time restart)
         policy_pen, policy_lat, policy_ok = _seated_after(
@@ -98,7 +98,6 @@ def main(argv: list[str] | None = None) -> int:
                 target_position, home_quaternion, seed=args.seed, episode_index=episode_index
             ),
             policy,
-            episode_index,
             max_steps=args.max_steps,
         )
         human_pen, human_lat, human_ok = _seated_after(
@@ -108,9 +107,9 @@ def main(argv: list[str] | None = None) -> int:
                 target_position, home_quaternion, seed=args.seed, episode_index=episode_index
             ),
             no_assist,
-            episode_index,
             max_steps=args.max_steps,
         )
+        environment.close()
         policy_successes += int(policy_ok)
         human_successes += int(human_ok)
         log.info(
@@ -124,7 +123,6 @@ def main(argv: list[str] | None = None) -> int:
             human_lat * 1e3,
         )
 
-    environment.close()
     n = args.episodes
     log.info(
         "success: policy %d/%d (%.0f%%) vs human-only %d/%d (%.0f%%)",

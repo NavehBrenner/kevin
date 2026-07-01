@@ -45,7 +45,7 @@ def main() -> None:
     env = SimEnv(str(scene_path), render_mode="headless", seed=0)
     obs = env.reset()
     controller = Controller(env)
-    target_pose = np.concatenate([obs.target_hole_position, controller.home_pose[3:]])
+    target_pose = np.concatenate([obs.hole_poses[0][:3], controller.home_pose[3:]])  # goal: hole_0
     human = ScriptedNoisyHuman(target_pose, seed=0)
 
     t0 = time.monotonic()

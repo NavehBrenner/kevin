@@ -96,12 +96,13 @@ class EvalTraceRecorder:
         recorder.save(path, metadata={"seed": 7, "config_label": "residual"})
     """
 
-    def __init__(self) -> None:
+    def __init__(self, target_hole_index: int = 0) -> None:
         self._rows: list[dict[str, np.ndarray]] = []
+        self._target_hole_index = target_hole_index
 
     def record(self, observation: Observation, base_command: Command, delta: Delta) -> None:
         """Append one realized-state row from the per-tick objects."""
-        target_hole_pose = observation.target_hole_pose
+        target_hole_pose = observation.hole_poses[self._target_hole_index]
         self._add(
             step=len(self._rows),
             sim_time=observation.sim_time,
@@ -160,8 +161,9 @@ def replay_trace(
 
     Yields exactly what the ``step_callback`` saw live, so a :class:`TrialObserver`
     driven over this stream computes the identical KPIs. Only the *target* hole is
-    logged, so the reconstructed ``Observation`` carries a one-row ``hole_poses`` with
-    ``target_hole_index == 0`` — all the seating geometry reads.
+    logged, so the reconstructed ``Observation`` carries a one-row ``hole_poses`` —
+    drive the replaying observer with ``target_hole_index=0`` (its default) so the
+    seating geometry reads that single logged hole.
     """
     n_steps = int(columns["step"].shape[0])
     for index in range(n_steps):
@@ -173,7 +175,6 @@ def replay_trace(
             gripper_width=float(columns["gripper_width"][index]),
             peg_pose=columns["peg_pose"][index],
             hole_poses=columns["target_hole_pose"][index][None, :],
-            target_hole_index=0,
             sim_time=float(columns["sim_time"][index]),
         )
         base_command = Command(

@@ -37,7 +37,7 @@ NUDGE = Config(label="nudge", assist_factory=_ConstantNudge)
 
 
 def test_run_trial_produces_wellformed_record():
-    kpis = run_trial(0, HUMAN_ONLY, max_steps=MAX_STEPS)
+    kpis = run_trial(0, HUMAN_ONLY, max_steps=MAX_STEPS, generated_walls=False)
     assert isinstance(kpis, TrialKPIs)
     assert kpis.config_label == "human_only"
     assert kpis.seed == 0
@@ -49,7 +49,9 @@ def test_run_trial_produces_wellformed_record():
 def test_paired_run_same_seed_identical_operator_stream(tmp_path):
     """The paired-design pillar: same seed ⇒ identical base_command across configs,
     even though the nudge config follows a different trajectory."""
-    results = run_paired(4, [HUMAN_ONLY, NUDGE], out_dir=tmp_path, max_steps=MAX_STEPS)
+    results = run_paired(
+        4, [HUMAN_ONLY, NUDGE], out_dir=tmp_path, max_steps=MAX_STEPS, generated_walls=False
+    )
     assert set(results) == {"human_only", "nudge"}
 
     human_cols, _ = load_eval_trace(tmp_path / "human_only" / "episode_00004" / TRACE_NPZ_NAME)
@@ -74,9 +76,15 @@ def test_operator_error_scale_changes_the_command_stream(tmp_path):
         max_steps=MAX_STEPS,
         operator_error_scale=0.0,
         trace_path=tmp_path / "off.npz",
+        generated_walls=False,
     )
     run_trial(
-        2, HUMAN_ONLY, max_steps=MAX_STEPS, operator_error_scale=1.0, trace_path=tmp_path / "on.npz"
+        2,
+        HUMAN_ONLY,
+        max_steps=MAX_STEPS,
+        operator_error_scale=1.0,
+        trace_path=tmp_path / "on.npz",
+        generated_walls=False,
     )
     off_cols, _ = load_eval_trace(tmp_path / "off.npz")
     on_cols, _ = load_eval_trace(tmp_path / "on.npz")
@@ -90,6 +98,6 @@ def test_operator_error_scale_changes_the_command_stream(tmp_path):
 def test_saved_trace_replays_to_same_kpis(tmp_path):
     """Offline replay of a real episode's trace reproduces the live KPIs."""
     trace_path = tmp_path / "trace.npz"
-    live = run_trial(7, NUDGE, max_steps=MAX_STEPS, trace_path=trace_path)
+    live = run_trial(7, NUDGE, max_steps=MAX_STEPS, trace_path=trace_path, generated_walls=False)
     replayed = replay_kpis(trace_path)
     assert live.to_dict() == replayed.to_dict()

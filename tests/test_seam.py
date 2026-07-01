@@ -44,7 +44,6 @@ def _make_observation() -> Observation:
         gripper_width=0.08,
         peg_pose=np.zeros(7),
         hole_poses=np.zeros((1, 7)),
-        target_hole_index=0,
         sim_time=0.0,
     )
 

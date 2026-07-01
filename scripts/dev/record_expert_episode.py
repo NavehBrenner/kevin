@@ -43,7 +43,7 @@ def main() -> None:
     env = SimEnv(str(SCENE), render_mode="headless", camera_height=H, camera_width=W)
     obs = env.reset()
     controller = Controller(env)
-    target = obs.hole_poses[obs.target_hole_index][:3].copy()
+    target = obs.hole_poses[0][:3].copy()  # task goal: hole_0
     human = ScriptedNoisyHuman(
         np.concatenate([target, controller.home_pose[3:]]),
         position_bias_std=args.bias,
