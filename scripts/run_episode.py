@@ -40,16 +40,15 @@ from ai_teleop.common.log import (  # noqa: E402
     configure_from_args,
     get_logger,
 )
-from ai_teleop.common.seating import SeatingGeometry  # noqa: E402
-from ai_teleop.control import Controller, LockState  # noqa: E402
+from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_FORCE_CAP,
     DEFAULT_LATERAL_TOLERANCE,
     DEFAULT_MAX_DPOS,
     DEFAULT_SUCCESS_DEPTH,
-    episode_terminal_reason,
 )
-from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason, load_episode  # noqa: E402
+from ai_teleop.data.step_callbacks import EpisodeLogger, TerminationProbe  # noqa: E402
+from ai_teleop.data.trajectory import TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
@@ -444,70 +443,37 @@ def main() -> int:
         args.policy,
     )
 
-    recorder: EpisodeRecorder | None = None
-    terminal_reason = TerminalReason.TIMEOUT
+    # The step_callback is the shared data-pipeline plumbing (data/step_callbacks),
+    # so a replay/record run ends exactly where its generated episode did and
+    # records identical rows: EpisodeLogger (record + terminate) for --record,
+    # TerminationProbe (terminate only) for scripted/replay, None for vision
+    # free-play (runs until the viewer closes, so an incidental wall bump won't
+    # end it). run_episode uses the DEFAULT_* thresholds; generate uses its own.
+    logger: EpisodeLogger | None = None
     record_path: Path | None = None
-    step_callback = None
+    step_callback: EpisodeLogger | TerminationProbe | None = None
 
-    def _reason(obs, geometry: SeatingGeometry) -> TerminalReason | None:
-        """Shared episode-outcome policy — identical to data generation, so a
-        replay ends exactly where its generated episode did (no path divergence)."""
-        return episode_terminal_reason(
-            penetration=geometry.penetration,
-            lateral_error=geometry.lateral_error,
-            force_magnitude=float(np.linalg.norm(obs.wrist_ft[:3])),
-            locked=controller.status.state is LockState.HOLD,
+    if args.record is not None:
+        record_path = _resolve_record_path(args.record)
+        logger = EpisodeLogger(
+            observation.wrist_ft.copy(),  # ft_bias
+            controller,
+            target_hole_index=target_hole_index,
+            success_depth=DEFAULT_SUCCESS_DEPTH,
+            lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
+            force_cap=DEFAULT_FORCE_CAP,
+            render_fn=None,  # vision (M7) frames aren't recorded from the run CLI
+        )
+        step_callback = logger
+        log.info("Recording to: %s", record_path)
+    elif args.input != "vision":
+        step_callback = TerminationProbe(
+            controller,
+            target_hole_index=target_hole_index,
             success_depth=DEFAULT_SUCCESS_DEPTH,
             lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
             force_cap=DEFAULT_FORCE_CAP,
         )
-
-    if args.record is not None:
-        record_path = _resolve_record_path(args.record)
-        ft_bias = observation.wrist_ft.copy()
-        recorder = EpisodeRecorder()
-
-        def step_callback(step: int, obs, base_command, delta, command) -> bool:
-            nonlocal terminal_reason
-            geometry = SeatingGeometry.from_observation(obs, target_hole_index)
-            reason = _reason(obs, geometry)
-            recorder.add(  # type: ignore[union-attr]
-                step=step,
-                sim_time=obs.sim_time,
-                wrist_ft=obs.wrist_ft - ft_bias,
-                joint_positions=obs.joint_positions,
-                joint_velocities=obs.joint_velocities,
-                ee_pose=obs.ee_pose,
-                gripper_width=obs.gripper_width,
-                cmd_position=base_command.target_position,
-                cmd_quaternion=base_command.target_quaternion,
-                cmd_grip=base_command.delta_grip_force,
-                delta_position=delta.delta_position,
-                delta_orientation=delta.delta_orientation,
-                delta_grip=delta.delta_grip_force,
-                peg_pose=obs.peg_pose,
-                target_hole_pose=geometry.target_hole_pose,
-                distance=geometry.distance,
-                step_success=reason is TerminalReason.SUCCESS,
-            )
-            if reason is not None:
-                terminal_reason = reason
-                return True
-            return False
-
-        log.info("Recording to: %s", record_path)
-    elif args.input != "vision":
-        # Scripted / replay without recording: terminate exactly like data
-        # generation (seating, force-cap, or HOLD lock). Vision free-play has no
-        # callback — it runs until the viewer closes, so an incidental wall bump
-        # won't end it.
-        def step_callback(step: int, obs, base_command, delta, command) -> bool:
-            nonlocal terminal_reason
-            reason = _reason(obs, SeatingGeometry.from_observation(obs, target_hole_index))
-            if reason is not None:
-                terminal_reason = reason
-                return True
-            return False
 
     result = None
     try:
@@ -526,9 +492,14 @@ def main() -> int:
         if tracker is not None:
             tracker.close()
 
-    if recorder is not None and len(recorder) > 0:
+    # The callback latched why the episode ended (TIMEOUT if none was set / vision).
+    terminal_reason = (
+        step_callback.terminal_reason if step_callback is not None else TerminalReason.TIMEOUT
+    )
+
+    if logger is not None and len(logger.recorder) > 0:
         assert record_path is not None
-        recorder.save(
+        logger.recorder.save(
             record_path,
             # Complete replay spec so the episode reproduces later: _rebuild_for_replay
             # reads these back to reconstruct the exact scene + controller. force_cap
@@ -553,7 +524,9 @@ def main() -> int:
                 "episode_success": terminal_reason is TerminalReason.SUCCESS,
             },
         )
-        log.info("Saved %d steps → %s  [%s]", len(recorder), record_path, terminal_reason.value)
+        log.info(
+            "Saved %d steps → %s  [%s]", len(logger.recorder), record_path, terminal_reason.value
+        )
 
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))

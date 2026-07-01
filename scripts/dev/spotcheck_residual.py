@@ -37,8 +37,8 @@ from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_MAX_STEPS,
     DEFAULT_SUCCESS_DEPTH,
     _make_human,
-    _SeatingMetrics,
 )
+from ai_teleop.data.step_callbacks import _SeatingMetrics  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.policy import LearnedResidual  # noqa: E402
 from ai_teleop.sim.config import EnvConfig, episode_wall_seed  # noqa: E402
