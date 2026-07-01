@@ -7,8 +7,11 @@ controller + a base command source + a `--policy` correction layer) and reports
 a one-line summary. The base commands come from `--input` (scripted noisy human,
 stereo hand tracking, or a recorded episode replayed verbatim); the correction
 comes from `--policy` (noassist / expert / trained residual). Replaying an
-episode rebuilds its exact recorded scene from metadata, so `kvn episode
---input <ep>` reproduces its generation to the step.
+episode rebuilds its exact recorded scene from metadata and runs physics-rate control
+(one recorded command per physics step, as generation ran), so `kvn episode --input <ep>`
+reproduces its generation to the step — in the viewer too, not just headless. `--time-factor`
+caps the sim:wall speed (headless: unbounded; viewer default: real time; <1 slow-mo,
+>1 fast-forward).
 
 Run from the `kevin/` directory:
 
@@ -16,6 +19,7 @@ Run from the `kevin/` directory:
     uv run python scripts/run_episode.py --headless      # CI / batch
     uv run python scripts/run_episode.py --headless --seed 7 --max-steps 1500
     uv run python scripts/run_episode.py --headless --input runs/episode_00000  # replay
+    uv run python scripts/run_episode.py --input runs/episode_00000 --time-factor 0.3  # slow-mo
 """
 
 from __future__ import annotations
@@ -403,11 +407,30 @@ def build_step_callback(
     return None, None, None
 
 
+def _time_factor(value: str) -> float:
+    """Parse --time-factor: a positive float, or 'inf'/'max' for uncapped (as-fast-as-possible)."""
+    if value.lower() in ("inf", "max"):
+        return math.inf
+    factor = float(value)
+    if factor <= 0:
+        raise argparse.ArgumentTypeError("--time-factor must be > 0 (or 'inf'/'max' for uncapped).")
+    return factor
+
+
 def add_run_args(parser: argparse.ArgumentParser) -> None:
     """Run-behaviour, recording, and controller knobs (headless, budget, clamps)."""
     group = parser.add_argument_group("run", "How the episode runs, records, and is clamped.")
     group.add_argument(
         "--headless", action="store_true", help="Skip the viewer; run the loop and print a summary."
+    )
+    group.add_argument(
+        "--time-factor",
+        type=_time_factor,
+        default=None,
+        metavar="RATIO",
+        help="Cap the sim:wall-clock speed ratio (enforced by sleeping; never speeds up a slow "
+        "box). Default: unbounded ('inf') when --headless, else 1.0 (real time). Use <1 for slow "
+        "motion (e.g. 0.3), >1 to fast-forward, or 'inf'/'max' for as-fast-as-possible.",
     )
     group.add_argument(
         "--seed", type=int, default=0, help="Seed for the scripted human's noise and the SimEnv."
@@ -587,6 +610,12 @@ def main() -> int:
         config, controller, observation, target_hole_index
     )
 
+    # Pacing: unbounded headless, real time in the viewer, unless --time-factor overrides.
+    # Only expensive live input (vision) needs catch-up substepping; replay/scripted run
+    # physics-rate (deterministic), so a viewer replay reproduces its recording to the step.
+    time_factor = (
+        args.time_factor if args.time_factor is not None else (math.inf if args.headless else 1.0)
+    )
     result = None
     try:
         result = run_episode(
@@ -596,6 +625,8 @@ def main() -> int:
             assist,
             max_steps=max_steps,
             render=not args.headless,
+            time_factor=time_factor,
+            allow_catchup=args.input == "vision",
             step_callback=step_callback,
         )
     except KeyboardInterrupt:

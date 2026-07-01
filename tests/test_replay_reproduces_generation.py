@@ -95,6 +95,31 @@ def test_replay_reproduces_recorded_trajectory(tmp_path):
         np.testing.assert_allclose(np.array(recorder.poses), columns["peg_pose"], atol=1e-9)
 
 
+def test_replay_is_faithful_under_finite_time_factor(tmp_path):
+    """LAB-88: physics-rate replay (allow_catchup=False) reproduces the recording at any
+    time_factor — the pacing/sleep path must not perturb physics. A large time_factor keeps
+    the sleeps ~0 so the test stays fast; render=True (viewer) can't run in CI but only adds
+    a sync that never touches sim data, so headless coverage carries the guarantee.
+    """
+    (path,) = generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=300, baseline=False)
+    columns, meta = load_episode(path)
+
+    env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
+    controller = Controller(env, max_dpos_per_step=float(meta["max_dpos"]))
+    recorder = _PegRecorder()
+    run_episode(
+        env,
+        controller,
+        _ReplayInput(columns),
+        _ReplayAssist(columns),
+        max_steps=len(columns["step"]),
+        time_factor=1e6,  # finite → exercises the sleep path, but ~never actually sleeps
+        allow_catchup=False,
+        step_callback=recorder,
+    )
+    np.testing.assert_allclose(np.array(recorder.poses), columns["peg_pose"], atol=1e-9)
+
+
 def test_episode_terminal_reason_policy():
     deep = dict(success_depth=0.015, lateral_tolerance=0.006, force_cap=50.0)
     # seated → SUCCESS (wins even with high force / lock).

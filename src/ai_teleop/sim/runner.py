@@ -20,6 +20,7 @@ dependency-inversion property M3 exists to establish.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -30,15 +31,35 @@ from ai_teleop.domain import apply_delta
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy
 from ai_teleop.sim.scene import SimEnv
 
-# Sim runs at 500 Hz (dt=2 ms in the MJCF). Headless: one control tick == one sim step.
-# Render: one control tick advances physics enough steps to track wall-clock (see below).
+# Sim runs at 500 Hz (dt=2 ms in the MJCF). One control tick == one sim step (physics-rate
+# control) unless catch-up substepping is enabled — see run_episode + _substeps below.
 SIM_DT = 0.002
 DEFAULT_MAX_STEPS = 2000  # ~4 s of sim time — a full M3 episode budget.
 
-# Render-path real-time pacing: cap how many physics steps one control tick may run to
-# catch sim-time up to wall-time, so a one-off stall (GC, window resize) can't spiral into
-# a long burst. If this binds repeatedly, physics genuinely can't hit 500 Hz on this box.
+# Catch-up pacing: cap how many physics steps one control tick may run to catch sim-time
+# up to wall-time, so a one-off stall (GC, window resize) can't spiral into a long burst.
+# If this binds repeatedly, physics genuinely can't hit the target rate on this box.
 _MAX_CATCHUP_STEPS = 25  # 50 ms of sim time
+
+
+def _substeps(elapsed_wall: float, sim_steps: int, time_factor: float, allow_catchup: bool) -> int:
+    """Physics steps this control tick should advance.
+
+    Physics-rate control (``allow_catchup=False``, the default) always returns 1: one
+    command + one controller recompute per physics step, exactly as headless generation
+    ran — so a replay reproduces its recording tick-for-tick regardless of pacing. Pacing
+    is then done purely by sleeping (see ``run_episode``).
+
+    Catch-up substepping (``allow_catchup=True``) is for *expensive* live input (stereo
+    vision) that can't produce a command every 2 ms tick: advance enough steps to pin
+    sim-time to ``time_factor`` × elapsed wall-time, holding torque (ZOH) across them. This
+    is non-deterministic (step count depends on machine load) — fine for live teleop, never
+    for replay. ``time_factor=inf`` (uncapped) also collapses to 1: no wall-clock to track.
+    """
+    if not allow_catchup or math.isinf(time_factor):
+        return 1
+    behind = round(elapsed_wall * time_factor / SIM_DT) - sim_steps
+    return min(max(behind, 1), _MAX_CATCHUP_STEPS)
 
 
 @dataclass(frozen=True)
@@ -58,6 +79,8 @@ def run_episode(
     *,
     max_steps: int,
     render: bool = False,
+    time_factor: float = math.inf,
+    allow_catchup: bool = False,
     step_callback=None,
 ) -> EpisodeResult:
     """Run one episode of the composed M3 loop; return the terminal state.
@@ -75,13 +98,19 @@ def run_episode(
         input_strategy: an `InputStrategy` producing the base `Command`.
         assist: an `AssistProvider` producing the correction `Delta`.
         max_steps: episode budget in *physics* steps (sim-time = max_steps * SIM_DT).
-        render: when True, run the sim at wall-clock real time via catch-up
-            substepping — each control tick advances physics enough steps to pin
-            sim-time to elapsed wall-time, so the sim stays real-time despite
-            per-tick GUI/vision cost (and the viewer refreshes at ~50 Hz). The
-            controller's torque is held (ZOH) across a tick's substeps; control
-            runs at the loop rate, physics at 500 Hz. Leave False for
-            headless/batch: exactly one step per tick, deterministic, no sleep.
+        render: when True, sync the interactive viewer each tick (~50 Hz). Pacing
+            is separate — see `time_factor`. Leave False for headless/batch.
+        time_factor: pacing cap — the max sim:wall speed ratio, enforced by
+            sleeping (never speeds up a slow machine). `inf` (default) = uncapped,
+            as-fast-as-possible (headless/batch). `1.0` = real time. `<1` = slow
+            motion, `>1` = fast-forward (up to what the box can step).
+        allow_catchup: when True, expensive live input (stereo vision, which can't
+            emit a command every 2 ms) may advance multiple physics steps per tick
+            with torque held (ZOH) to keep sim-time tracking wall-time. This is
+            non-deterministic (step count depends on load) — fine for live teleop,
+            never for replay. Leave False (the default) for physics-rate control:
+            exactly one command + controller recompute per physics step, so a replay
+            reproduces its recording tick-for-tick at any `time_factor`.
         step_callback: optional `f(step, observation, base_command, delta,
             command) -> bool`. Called each tick with the *pre-step* observation
             the assist acted on; this is the M4 data-generation logging hook
@@ -103,15 +132,11 @@ def run_episode(
 
         controller.compute(observation, command)
 
-        # How many physics steps this control tick advances. Headless/data-gen: exactly
-        # one (deterministic). Render: enough to pin sim-time to elapsed wall-time, so the
-        # sim runs real-time regardless of per-tick GUI/vision cost; torque is held across
-        # the substeps. `behind` is computed absolutely (no incremental drift).
-        if render:
-            behind = round((time.monotonic() - wall_start) / SIM_DT) - sim_steps
-            n_substeps = min(max(behind, 1), _MAX_CATCHUP_STEPS)
-        else:
-            n_substeps = 1
+        # How many physics steps this control tick advances (see _substeps): 1 for
+        # physics-rate control (deterministic — replay reproduces its recording), or a
+        # catch-up burst for expensive live input (vision). `elapsed` is absolute (no
+        # incremental drift).
+        n_substeps = _substeps(time.monotonic() - wall_start, sim_steps, time_factor, allow_catchup)
 
         for _ in range(n_substeps):
             environment.step()
@@ -123,10 +148,13 @@ def run_episode(
 
         if render:
             environment.sync_viewer()  # self-throttled to ~50 Hz
-            # If we've caught up to wall-time, sleep until the next physics step is due
-            # instead of busy-spinning the control loop (this is the metronome when work
-            # is light; when work is heavy `ahead` is negative and the next tick catches up).
-            ahead = (wall_start + sim_steps * SIM_DT) - time.monotonic()
+        if not math.isinf(time_factor):
+            # Sleep to hold the sim:wall speed cap (time_factor). Absolute target, so a slow
+            # tick is absorbed by the next rather than accumulating drift.
+            # ponytail: ~1 ms sleep granularity at 500 Hz means a heavy box just lags real
+            # time slightly (still one step per tick, still deterministic) — fine for
+            # eyeballing. No fix until sub-ms pacing is actually needed.
+            ahead = wall_start + sim_steps * SIM_DT / time_factor - time.monotonic()
             if ahead > 0:
                 time.sleep(ahead)
         if stop:
