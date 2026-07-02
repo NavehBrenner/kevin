@@ -31,10 +31,13 @@ Typical use in a script::
 from __future__ import annotations
 
 import argparse
+import io
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TextIO
 
 # Soft import: rich is an optional dependency. Absent -> stdlib StreamHandler.
 try:
@@ -56,6 +59,60 @@ _LOG_DIR = Path("outputs") / "logs"
 _CONSOLE_FORMAT = "%(asctime)s %(levelname)-5s [%(name_short)s] %(message)s"
 _FILE_FORMAT = "%(asctime)s %(levelname)-8s [%(name_short)s] %(message)s"
 _TIME_FORMAT = "%H:%M:%S"
+
+_protected_console: TextIO | None = None
+
+
+def _capture_console_stream() -> TextIO:
+    """Force a fresh protected duplicate of whatever ``sys.stderr`` is *right now*.
+
+    Only ``configure_logging`` calls this — it's the one trusted, application-level point
+    that means "capture the real console as of now." See :func:`console_stream` for why an
+    automatic re-capture (e.g. keyed on ``sys.stderr``'s identity changing) is actively
+    wrong: stereohand's ``HandLandmarker`` redirect doesn't just retarget fd 2, it also
+    *replaces* the ``sys.stderr`` object for its session's duration (root-caused directly —
+    see the installed ``stereohand/landmarker.py``'s own docstring on
+    ``_acquire_native_stderr_redirect``: on native Windows a real console's ``sys.stderr``
+    is backed by ``_io._WindowsConsoleIO``, which caches a Win32 handle rather than reading
+    fd 2 on every write, so a bare ``dup2`` wouldn't touch already-open Python objects at
+    all — stereohand works around that by rebuilding ``sys.stderr`` on the current fd 2 and
+    restoring the original on release). A naive "re-capture when identity changes" policy
+    would detect that swap and re-dup ``sys.stderr.fileno()`` *while the redirect is still
+    active* — which duplicates fd 2 pointing at the redirected **log file**, not the
+    console, silently reproducing the exact bug this module exists to avoid (confirmed:
+    this is why ``calibrate_neutral``'s spinner fell back to non-TTY log lines mid-episode
+    even after the swallowed-logging fix landed). Capturing once, only from
+    ``configure_logging``, sidesteps this: by the time any vision tracker exists and could
+    swap ``sys.stderr``, the real duplicate is already taken and cached.
+    """
+    global _protected_console
+    try:
+        fd = os.dup(sys.stderr.fileno())
+        _protected_console = os.fdopen(
+            fd,
+            "w",
+            buffering=1,  # line-buffered so the spinner's `\r` overwrites show up live
+            encoding=getattr(sys.stderr, "encoding", None),
+            errors=getattr(sys.stderr, "errors", None) or "replace",
+        )
+    except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+        _protected_console = sys.stderr
+    return _protected_console
+
+
+def console_stream() -> TextIO:
+    """The real console, immune to a native dependency later swapping/redirecting stderr.
+
+    Returns whatever :func:`_capture_console_stream` last captured (from
+    ``configure_logging``); if nothing has captured yet (this module used before any script
+    configured logging), falls back to a lazy one-time capture here so the function is still
+    safe to call standalone. Deliberately does **not** re-check ``sys.stderr``'s identity on
+    every call and re-capture when it changes — see :func:`_capture_console_stream` for why
+    that's actively wrong here, not just unnecessary.
+    """
+    if _protected_console is None:
+        return _capture_console_stream()
+    return _protected_console
 
 
 class _ShortNameFilter(logging.Filter):
@@ -91,11 +148,17 @@ def default_log_path(prog: str | None = None) -> Path:
 
 
 def _console_handler(*, level: int, use_rich: bool) -> logging.Handler:
-    """A stderr console handler — RichHandler when available + on a TTY, else stdlib."""
-    on_tty = sys.stderr.isatty()
+    """A stderr console handler — RichHandler when available + on a TTY, else stdlib.
+
+    Writes to :func:`console_stream`, not the live ``sys.stderr`` object — see that
+    function's docstring for why (a later vision-tracker fd redirect would otherwise
+    blackhole every line logged during the episode).
+    """
+    stream = console_stream()
+    on_tty = stream.isatty()
     if use_rich and RichHandler is not None and on_tty:
         handler: logging.Handler = RichHandler(
-            console=Console(stderr=True),
+            console=Console(file=stream),
             rich_tracebacks=True,
             show_path=False,
             omit_repeated_times=False,
@@ -104,7 +167,7 @@ def _console_handler(*, level: int, use_rich: bool) -> logging.Handler:
         # supplies the tag + message.
         handler.setFormatter(logging.Formatter("[%(name_short)s] %(message)s"))
     else:
-        handler = logging.StreamHandler(sys.stderr)
+        handler = logging.StreamHandler(stream)
         handler.setFormatter(logging.Formatter(_CONSOLE_FORMAT, datefmt=_TIME_FORMAT))
     handler.setLevel(level)
     handler.addFilter(_ShortNameFilter())
@@ -145,6 +208,7 @@ def configure_logging(
     if not isinstance(numeric_level, int):  # unknown name -> getLevelName returns a str
         raise ValueError(f"unknown log level: {level!r}")
 
+    _capture_console_stream()  # fresh capture of *this* call's sys.stderr; see its docstring
     logger = logging.getLogger(PACKAGE_LOGGER_NAME)
     logger.setLevel(numeric_level)
     # Tear down any handlers a previous call added before re-adding.

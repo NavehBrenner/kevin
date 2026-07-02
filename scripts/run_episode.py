@@ -371,6 +371,7 @@ def build_input(
             right=_camera_source(args.cameras[1]),
             show_window=not args.no_cam_window,
             max_fps=args.max_fps if args.max_fps is not None else "cam",
+            max_skew_s=args.stereo_max_skew,
         )
         try:
             neutral = calibrate_neutral(tracker, on_tick=env.sync_viewer)
@@ -637,6 +638,20 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
         help="Seconds the hand may vanish before the clutch releases (--input vision). The "
         "arm holds the last command through drops shorter than this; raise it (e.g. 0.4) if a "
         "flaky sensor keeps freezing the arm mid-motion. Default 0.2.",
+    )
+    group.add_argument(
+        "--stereo-max-skew",
+        type=float,
+        default=0.02,
+        metavar="SECONDS",
+        help="Max capture-timestamp gap between the two cameras before a frame pair is "
+        "dropped (--input vision). The cameras run on independent, uncoordinated capture "
+        "threads, so a mismatched USB controller/camera pair can skew well past the default "
+        "and get most pairs rejected on timing alone, before MediaPipe ever runs -- measured "
+        "(scripts/dev/skew_rejection_probe.py) at 88%% rejected on one pair at the default "
+        "vs 7%% at 0.05. If StereoHandSource's sensor-health log line (on close) shows high "
+        "drop-out despite good lighting/positioning, measure your skew with that probe and "
+        "raise this to match. Default 0.02 (stereohand's own default).",
     )
 
 
