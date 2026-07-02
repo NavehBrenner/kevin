@@ -67,7 +67,7 @@ def test_log_file_tee_writes_records(tmp_path):
     configure_logging(level="INFO", log_file=log_path, use_rich=False)
     get_logger("filetest").info("written to %s", "disk")
     assert log_path.exists()
-    contents = log_path.read_text()
+    contents = log_path.read_text(encoding="utf-8")
     assert "written to disk" in contents
     assert "[filetest]" in contents  # short-name tag, not the ai_teleop. prefix
 

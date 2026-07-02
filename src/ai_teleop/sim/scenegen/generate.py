@@ -105,7 +105,7 @@ def _load_cached_scene(out_dir: Path, spec: WallSpec) -> WallScene | None:
         # Round-trip the live spec through JSON so tuples (e.g. in
         # sampling_ranges) compare equal to the lists loaded from disk.
         spec_json = json.loads(json.dumps(meta.spec_to_dict(spec)))
-        if json.loads(header.read_text()) != spec_json:
+        if json.loads(header.read_text(encoding="utf-8")) != spec_json:
             return None
     except (OSError, ValueError):
         return None

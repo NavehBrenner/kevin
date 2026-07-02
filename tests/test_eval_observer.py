@@ -308,7 +308,7 @@ _MEASUREMENT_CORE = ("observer.py", "schema.py", "trace.py")
 def test_eval_measurement_core_does_not_import_control():
     eval_dir = _module_dir("ai_teleop.eval")
     for filename in _MEASUREMENT_CORE:
-        source = (eval_dir / filename).read_text()
+        source = (eval_dir / filename).read_text(encoding="utf-8")
         matches = re.findall(r"^\s*(?:import|from)\s+ai_teleop\.control", source, re.MULTILINE)
         assert not matches, f"control import found in eval/{filename}"
 
@@ -316,6 +316,6 @@ def test_eval_measurement_core_does_not_import_control():
 def test_control_does_not_import_eval():
     control_dir = _module_dir("ai_teleop.control")
     for python_file in control_dir.rglob("*.py"):
-        source = python_file.read_text()
+        source = python_file.read_text(encoding="utf-8")
         matches = re.findall(r"^\s*(?:import|from)\s+ai_teleop\.eval", source, re.MULTILINE)
         assert not matches, f"eval import found in control/{python_file.name}"

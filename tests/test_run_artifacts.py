@@ -102,9 +102,9 @@ def test_write_run_artifacts_produces_loadable_run(tmp_path):
     assert (run_dir / HISTORY_PLOT_NAME).stat().st_size > 0
 
     # metadata + history round-trip as JSON.
-    on_disk = json.loads((run_dir / METADATA_NAME).read_text())
+    on_disk = json.loads((run_dir / METADATA_NAME).read_text(encoding="utf-8"))
     assert on_disk["results"]["best_val_loss"] == 0.3
-    assert json.loads((run_dir / HISTORY_NAME).read_text()) == _HISTORY
+    assert json.loads((run_dir / HISTORY_NAME).read_text(encoding="utf-8")) == _HISTORY
 
     # The checkpoint reloads into a deployable provider.
     provider = LearnedResidual.from_checkpoint(run_dir / CHECKPOINT_NAME)

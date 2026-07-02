@@ -4,8 +4,12 @@
 # on every commit.
 set -euo pipefail
 
-if [ ! -x .venv/bin/ruff ]; then
-    echo "pre-commit: no .venv/bin/ruff — run 'uv pip install -e .[dev]'; skipping." >&2
+if [ -x .venv/bin/ruff ]; then
+    RUFF=.venv/bin/ruff
+elif [ -x .venv/Scripts/ruff.exe ]; then
+    RUFF=.venv/Scripts/ruff.exe
+else
+    echo "pre-commit: no .venv ruff — run 'uv pip install -e .[dev]'; skipping." >&2
     exit 0
 fi
 
@@ -15,5 +19,5 @@ if [ ${#files[@]} -eq 0 ]; then
 fi
 
 echo "pre-commit: ruff format on ${#files[@]} staged file(s)..."
-.venv/bin/ruff format "${files[@]}"
+"$RUFF" format "${files[@]}"
 git add "${files[@]}"
