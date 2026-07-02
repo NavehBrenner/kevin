@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ai_teleop.common.observation import Observation
 from ai_teleop.control import LockStatus
@@ -36,7 +36,7 @@ from ai_teleop.sim.scene import SimEnv
 # replay reproduce its recording tick-for-tick — no wall-clock-dependent substepping.
 SIM_DT = 0.002
 DEFAULT_MAX_STEPS = 2000  # ~4 s of sim time — a full M3 episode budget.
-DEFAULT_RENDER_FPS = 50.0  # target viewer frames per *sim* second when there's spare time.
+DEFAULT_RENDER_FPS = 30.0  # target viewer frames per *sim* second when there's spare time.
 DEFAULT_MIN_RENDER_FPS = 15.0  # floor — render at least this often even if it costs wall-time.
 
 
@@ -61,6 +61,13 @@ class EpisodeResult:
     final_observation: Observation
     lock_status: LockStatus
     n_steps: int
+    # Per-phase wall-time (seconds) accumulated over the run, for the --profile breakdown:
+    # input / assist / callback / control / step / observe / render / sleep. Always
+    # populated — ~8 perf_counter reads per tick is <0.1% overhead even headless.
+    step_timings: dict[str, float] = field(default_factory=dict)
+    # How many times sync_viewer() actually fired. Divided by wall-time it's the achieved
+    # viewer fps — reveals when the loop is stuck at the min_render_fps floor (no slack).
+    render_count: int = 0
 
 
 def run_episode(
@@ -125,24 +132,47 @@ def run_episode(
     frame_interval = max(1, round(1.0 / (render_fps * SIM_DT)))
     floor_interval = max(frame_interval, round(1.0 / (min_render_fps * SIM_DT)))
     last_render_step = 0
+    render_count = 0
+    # Per-phase wall-time, so --profile can say *what* the loop spends its budget on
+    # (the WSLg viewer/camera round-trips are the usual suspects). perf_counter is ~50 ns,
+    # so timing every phase costs well under 0.1% even at physics rate.
+    timings = {
+        k: 0.0
+        for k in ("input", "assist", "callback", "control", "step", "observe", "render", "sleep")
+    }
+    perf = time.perf_counter
+    mark = perf()
+
+    def lap(phase: str) -> None:
+        nonlocal mark
+        now = perf()
+        timings[phase] += now - mark
+        mark = now
+
     while sim_steps < max_steps:
         base_command = input_strategy.get_command(observation)
+        lap("input")
         delta = assist.get_delta(observation, base_command)
         command = apply_delta(base_command, delta)
+        lap("assist")
 
         if step_callback is not None:
             stop = bool(step_callback(control_ticks, observation, base_command, delta, command))
+            lap("callback")
             if stop:
                 break
 
         controller.compute(observation, command)
+        lap("control")
 
         environment.step()
         sim_steps += 1
         sim_time += SIM_DT
+        lap("step")
 
         observation = environment.get_observation()
         control_ticks += 1
+        lap("observe")
 
         if render:
             # slack > 0 ⇒ ahead of the wall-clock cap (spare time to render); < 0 ⇒ behind.
@@ -155,6 +185,8 @@ def run_episode(
             if _should_render(sim_steps - last_render_step, frame_interval, floor_interval, slack):
                 environment.sync_viewer()
                 last_render_step = sim_steps
+                render_count += 1
+            lap("render")
 
         # Sleep to hold the sim:wall speed cap (time_factor). Absolute target (recomputed
         # post-render), so a slow tick is absorbed by the next rather than drifting.
@@ -165,9 +197,12 @@ def run_episode(
         sim_ahead_s = sim_time - wall_time * time_factor
         if sim_ahead_s > 0:
             time.sleep(sim_ahead_s)
+        lap("sleep")
 
     return EpisodeResult(
         final_observation=observation,
         lock_status=controller.status,
         n_steps=sim_steps,
+        step_timings=timings,
+        render_count=render_count,
     )

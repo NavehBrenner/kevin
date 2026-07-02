@@ -125,6 +125,11 @@ def test_no_assist_runs_end_to_end(env):
 
     assert isinstance(result, EpisodeResult)
     assert result.n_steps == E2E_STEPS
+    # The --profile probe is wired: per-phase timings accumulate, and render_count
+    # stays 0 with render=False (the viewer never syncs headless).
+    assert sum(result.step_timings.values()) > 0.0
+    assert result.step_timings["step"] > 0.0
+    assert result.render_count == 0
     # Lock stays in a sane state — free tracking (ACTIVE) or a clean force-cap
     # hold if contact happened; never an undefined state.
     assert result.lock_status.state in (LockState.ACTIVE, LockState.HOLD)
