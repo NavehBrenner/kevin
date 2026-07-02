@@ -46,9 +46,16 @@ fi
 # EXTRAS env var overrides the tiers entirely (and takes precedence over --dev).
 EXTRAS="${EXTRAS:-$DEFAULT_EXTRAS}"
 
-echo "==> Creating virtualenv (.venv) and installing .[$EXTRAS] ..."
-uv venv
-uv pip install -e ".[$EXTRAS]"
+# `uv sync` installs the exact versions pinned in uv.lock (reproducible across
+# machines), creating .venv and installing the project editable. Do NOT use
+# `uv pip install` here: it re-resolves from scratch and can pick different versions
+# per platform — e.g. on Windows it resolved an old cadquery→numba→llvmlite that
+# won't build on 3.12, while the lock pins a clean cadquery. Extras become --extra flags.
+extra_args=()
+IFS=',' read -ra _extras <<< "$EXTRAS"
+for e in "${_extras[@]}"; do extra_args+=(--extra "$e"); done
+echo "==> Creating .venv and syncing locked deps (extras: $EXTRAS) ..."
+uv sync "${extra_args[@]}"
 
 echo "==> Enabling git hooks (core.hooksPath .githooks) ..."
 git config core.hooksPath .githooks

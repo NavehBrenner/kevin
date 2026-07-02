@@ -28,10 +28,15 @@ $Extras = if ($env:EXTRAS) { $env:EXTRAS }
 
 Push-Location $RepoRoot
 try {
-    Write-Host "==> Creating virtualenv (.venv, Python 3.12) and installing .[$Extras] ..."
+    # `uv sync` installs the exact versions pinned in uv.lock (reproducible across
+    # machines), creating .venv and installing the project editable. Do NOT use
+    # `uv pip install` here: it re-resolves from scratch and can pick different versions
+    # per platform — on Windows it resolved an old cadquery->numba->llvmlite that won't
+    # build on 3.12, while the lock pins a clean cadquery. Extras become --extra flags.
+    $ExtraArgs = ($Extras -split ',') | ForEach-Object { '--extra', $_ }
+    Write-Host "==> Creating .venv (Python 3.12) and syncing locked deps (extras: $Extras) ..."
     uv python install 3.12          # no-op if already present
-    uv venv --python 3.12           # also honoured by the committed .python-version
-    uv pip install -e ".[$Extras]"
+    uv sync --python 3.12 $ExtraArgs
 
     # Launcher: a kvn.bat that calls THIS clone's venv interpreter via
     # `-m ai_teleop.cli` — the interpreter path, not the console-script shim, so it
