@@ -73,6 +73,27 @@ log = get_logger("episode")
 _DEFAULT_RECORD_RUNS = Path("data/recorded/runs")
 
 
+def _fast_exit(code: int = 0) -> None:
+    """Hard-exit without tearing down the MuJoCo viewer / offscreen renderer GL context.
+
+    That teardown (an un-invoked `env.close()`) blocks ~10s under WSLg; everything
+    durable is expected to already be flushed by the caller. `os._exit()` alone still
+    isn't enough on Windows: it funnels through the CRT's `_exit()` -> `ExitProcess()`,
+    which (unlike a real external kill) runs `DLL_PROCESS_DETACH` for every loaded DLL —
+    since the GL context here was never explicitly closed, that unload notification ends
+    up doing the same slow teardown we're trying to skip. `TerminateProcess` on our own
+    handle skips `DLL_PROCESS_DETACH` entirely (MSDN: "does not notify the DLLs attached
+    to the process"), giving the instant exit `os._exit()` was meant to provide.
+    """
+    logging.shutdown()
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.TerminateProcess(kernel32.GetCurrentProcess(), code)
+    os._exit(code)
+
+
 def _resolve_episode_npz(path: str) -> Path:
     """Resolve an episode folder or .npz path to the canonical episode.npz."""
     p = Path(path)
@@ -356,8 +377,7 @@ def build_input(
         except KeyboardInterrupt:
             log.info("Interrupted during centering.")
             tracker.close()
-            env.close()
-            raise SystemExit(0) from None
+            _fast_exit(0)
         tracker.set_renderer_origin(neutral.hand_position)  # center the 3D view on neutral
         input_strategy: InputStrategy = VisionInput(
             tracker,
@@ -367,8 +387,7 @@ def build_input(
             dropout_grace_s=args.dropout_grace,
         )
         log.info(
-            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand "
-            "out of frame to clutch."
+            "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand out of frame to clutch."
         )
         return input_strategy, tracker
     # Aim the scripted human at the active trial's hole *position*, but keep the home grasp
@@ -539,8 +558,7 @@ def add_run_args(parser: argparse.ArgumentParser) -> None:
         "--record-out",
         default=None,
         metavar="OUT",
-        help="Output dir for --record (episode.npz and/or imgs/). Auto-numbered under "
-        "data/recorded/ if omitted.",
+        help="Output dir for --record (episode.npz and/or imgs/). Auto-numbered under data/recorded/ if omitted.",
     )
     group.add_argument(
         "--render-every",
@@ -559,8 +577,7 @@ def add_scene_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         metavar="SEED",
-        help="Run on a freshly generated procedural wall from this seed. Omit for the static "
-        "task scene.",
+        help="Run on a freshly generated procedural wall from this seed. Omit for the static task scene.",
     )
     group.add_argument(
         "--distractors",
@@ -584,16 +601,14 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--stereo-calib",
         default=None,
-        help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
-        "sources are --cameras.",
+        help="Path to a stereohand stereo_calib.json (required for --input vision). Camera sources are --cameras.",
     )
     group.add_argument(
         "--cameras",
         nargs=2,
         default=["0", "2"],
         metavar=("LEFT", "RIGHT"),
-        help="Left and right camera sources for --input vision: device indices or stream URLs "
-        "(default: 0 2).",
+        help="Left and right camera sources for --input vision: device indices or stream URLs (default: 0 2).",
     )
     group.add_argument(
         "--no-cam-window",
@@ -640,8 +655,7 @@ def add_policy_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--checkpoint",
         default=None,
-        help="Trained residual checkpoint .pt for --policy tf "
-        "(e.g. runs/train/<run>/checkpoint.pt).",
+        help="Trained residual checkpoint .pt for --policy tf (e.g. runs/train/<run>/checkpoint.pt).",
     )
 
 
@@ -675,8 +689,7 @@ def _log_profile(result) -> None:
     realtime = (steps * SIM_DT) / total
     viewer_fps = result.render_count / total
     log.info(
-        "Profile (%d steps, %.2fs wall, %.0f Hz loop, %.2fx real-time, "
-        "viewer %.1f fps over %d frames):\n%s",
+        "Profile (%d steps, %.2fs wall, %.0f Hz loop, %.2fx real-time, viewer %.1f fps over %d frames):\n%s",
         steps,
         total,
         steps / total,
@@ -788,8 +801,7 @@ def main() -> int:
     if result is not None:
         final_dist = float(np.linalg.norm(result.final_observation.ee_pose[:3] - target_position))
         log.info(
-            "Episode done: %d steps (%.2f s sim)  [%s]  final lock state = %s  "
-            "EE-to-hole %.0f mm -> %.0f mm",
+            "Episode done: %d steps (%.2f s sim)  [%s]  final lock state = %s  EE-to-hole %.0f mm -> %.0f mm",
             result.n_steps,
             result.final_observation.sim_time,
             terminal_reason.value,
@@ -799,13 +811,12 @@ def main() -> int:
         )
         if args.profile and result.n_steps > 0:
             _log_profile(result)
-    # ponytail: tearing down the MuJoCo viewer / offscreen renderer GL context
-    # under WSLg blocks ~10s after the run is already done. Everything durable
-    # (the .npz, the logs) is flushed above, so hard-exit instead of waiting on
-    # a clean teardown the OS reclaims anyway. main() is only the __main__
-    # entrypoint, never imported. Drop to env.close()+return if that changes.
-    logging.shutdown()
-    os._exit(0)
+    # ponytail: tearing down the MuJoCo viewer / offscreen renderer GL context under
+    # WSLg blocks ~10s after the run is already done. Everything durable (the .npz,
+    # the logs) is flushed above, so hard-exit instead — see _fast_exit(). main() is
+    # only the __main__ entrypoint, never imported. Drop to env.close()+return if
+    # that changes.
+    _fast_exit(0)
 
 
 if __name__ == "__main__":
