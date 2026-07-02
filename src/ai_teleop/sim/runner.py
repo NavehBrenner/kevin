@@ -47,9 +47,11 @@ def _should_render(
     (`frame_interval`); at the target when there's spare wall-time (`slack > 0`); and always
     at least at the floor rate (`floor_interval`) even when behind — the floor wins.
     """
-    if steps_since_render < frame_interval:
-        return False
-    return slack > 0 or steps_since_render >= floor_interval
+    at_fps_limit = steps_since_render < frame_interval
+    at_fps_floor = steps_since_render >= floor_interval
+    is_ahead = slack > 0
+
+    return not at_fps_limit and (is_ahead or at_fps_floor)
 
 
 @dataclass(frozen=True)
@@ -128,9 +130,10 @@ def run_episode(
         delta = assist.get_delta(observation, base_command)
         command = apply_delta(base_command, delta)
 
-        stop = False
         if step_callback is not None:
             stop = bool(step_callback(control_ticks, observation, base_command, delta, command))
+            if stop:
+                break
 
         controller.compute(observation, command)
 
@@ -153,17 +156,15 @@ def run_episode(
                 environment.sync_viewer()
                 last_render_step = sim_steps
 
-        if not math.isinf(time_factor):
-            # Sleep to hold the sim:wall speed cap (time_factor). Absolute target (recomputed
-            # post-render), so a slow tick is absorbed by the next rather than drifting.
-            # ponytail: ~1 ms sleep granularity at 500 Hz means a heavy box just lags real
-            # time slightly (still one step per tick, still deterministic) — fine for
-            # eyeballing. No fix until sub-ms pacing is actually needed.
-            ahead = wall_start + sim_time / time_factor - time.monotonic()
-            if ahead > 0:
-                time.sleep(ahead)
-        if stop:
-            break
+        # Sleep to hold the sim:wall speed cap (time_factor). Absolute target (recomputed
+        # post-render), so a slow tick is absorbed by the next rather than drifting.
+        # ponytail: ~1 ms sleep granularity at 500 Hz means a heavy box just lags real
+        # time slightly (still one step per tick, still deterministic) — fine for
+        # eyeballing. No fix until sub-ms pacing is actually needed.
+        wall_time = time.monotonic() - wall_start
+        sim_ahead_s = sim_time - wall_time * time_factor
+        if sim_ahead_s > 0:
+            time.sleep(sim_ahead_s)
 
     return EpisodeResult(
         final_observation=observation,
