@@ -2123,7 +2123,7 @@ wheels = [
 [[package]]
 name = "stereohand"
 version = "0.1.0"
-source = { git = "https://github.com/NavehBrenner/stereohand.git#6bbd495ebd1b56e743b6d999f6432cfdc0520fbe" }
+source = { git = "https://github.com/NavehBrenner/stereohand.git#741ab05fe151825769baf0d942aa3858225d4e95" }
 dependencies = [
     { name = "mediapipe" },
     { name = "numpy" },
