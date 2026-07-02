@@ -193,6 +193,27 @@ class EpisodeConfig:
     def is_replay(self) -> bool:
         return self.replay_columns is not None
 
+    @property
+    def replay_as_baseline(self) -> bool:
+        """Replaying `--policy noassist` over an *assisted* scripted recording → regenerate
+        the human-only baseline instead of replaying the recorded commands.
+
+        The recorded `cmd_*` stop at the assisted run's terminal step, so a plain replay is
+        truncated (the viewer artifact). But the scripted operator is deterministic from
+        `human_seed`, and the baseline's length is recorded, so we can reproduce the exact
+        human-only rollout the dataset scored. Only for scripted-source recordings that carry
+        both `human_seed` and `baseline_n_steps` (older episodes fall back to plain replay).
+        """
+        meta = self.replay_meta
+        return (
+            self.is_replay
+            and self.args.policy == "noassist"
+            and meta.get("policy") not in (None, "noassist")
+            and meta.get("source") == "scripted"
+            and "human_seed" in meta
+            and "baseline_n_steps" in meta
+        )
+
 
 def build_config(args: argparse.Namespace) -> EpisodeConfig:
     """Resolve ``--input`` to a replay-or-live config and reject bad flag combinations.
@@ -299,6 +320,17 @@ def build_input(
     ``raise SystemExit(0)``.
     """
     args = config.args
+    if config.replay_as_baseline:
+        # Regenerate the deterministic operator (recorded commands stop at the assisted run's
+        # terminal — replaying them would truncate the human-only rollout; the viewer artifact).
+        seed = int(config.replay_meta["human_seed"])
+        log.info(
+            "Regenerating the human-only baseline operator (seed=%d) — the recorded commands "
+            "stop at the assisted run's terminal, so a plain replay would cut it short.",
+            seed,
+        )
+        target_pose = np.concatenate([target_position, home_quaternion])
+        return ScriptedNoisyHuman(target_pose, seed=seed), None
     if config.is_replay:
         assert config.replay_columns is not None
         return _ReplayInput(config.replay_columns), None
@@ -348,12 +380,16 @@ def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
     """Resolve the step budget, returning ``(max_steps, budget_label)``.
 
     A replay plays back exactly the recorded commands, so it runs for the recorded length;
-    live input falls back to DEFAULT_MAX_STEPS. Explicit 0/negative => run effectively
-    forever (``range()`` is lazy, so ``sys.maxsize`` costs nothing).
+    a regenerated baseline (see ``replay_as_baseline``) runs for the recorded baseline length
+    so it reproduces the scored human-only rollout; live input falls back to DEFAULT_MAX_STEPS.
+    Explicit 0/negative => run effectively forever (``range()`` is lazy, so ``sys.maxsize``
+    costs nothing).
     """
     args = config.args
     if args.max_steps is not None:
         requested_steps = args.max_steps
+    elif config.replay_as_baseline:
+        requested_steps = int(config.replay_meta["baseline_n_steps"])
     elif config.is_replay:
         assert config.replay_columns is not None
         requested_steps = len(config.replay_columns["step"])

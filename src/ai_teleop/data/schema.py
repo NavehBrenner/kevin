@@ -97,12 +97,14 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
 
     baseline_terminal_reason: str | None
     baseline_success: bool | None
+    baseline_n_steps: int | None  # steps the human-only baseline ran (vs the expert's n_steps)
 
     # Replay spec — the scene + controller recipe so ``kvn episode --input <ep>``
     # rebuilds the exact episode it ran in (see scripts/run_episode.py
     # _rebuild_for_replay). Recorded episodes stamp these; generated episodes carry
     # generated_wall/wall_seed already and derive the rest from generation defaults.
     # force_cap None ⇒ the force-cap watchdog was off (--no-force-cap).
+    source: str  # base-command source: "scripted" (datagen), "vision", or a replayed path
     policy: str
     seed: int
     generated_wall: bool
