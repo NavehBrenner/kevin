@@ -235,6 +235,7 @@ class StereoHandSource:
         right: int | str = 2,
         show_window: bool = False,
         max_fps: int | Literal["cam"] = "cam",
+        max_skew_s: float = 0.02,
     ) -> None:
         from stereohand import RenderConfig, StereoCalibration, StereoHandTracker
 
@@ -252,11 +253,24 @@ class StereoHandSource:
         # recenter=True only drives the renderer's open-palm countdown HUD, a handy visual
         # while the operator holds the startup-centering pose; kevin times the hold itself in
         # calibrate_neutral, and the renderer's origin offset is a no-op for us.
+        #
+        # max_skew_s: the two cameras run on independent, uncoordinated capture threads
+        # (stereohand's StereoCapture), so a pair is only fused if their capture timestamps
+        # land within this tolerance of each other -- unrelated to whether MediaPipe detects
+        # a hand at all. Measured directly (kevin's scripts/dev/skew_rejection_probe.py) on
+        # one camera pair: the default 0.02s rejected 88% of pairs on timing alone (mean
+        # observed skew ~32 ms), while 0.05s accepted 93% -- this dominated the "low fps"
+        # sensor-health numbers (StereoHandSource.close()'s log line) far more than anything
+        # in kevin's own control loop. Hardware-dependent (a mismatched USB controller/camera
+        # pair skews more than a matched one), so it's a tunable knob here, not a changed
+        # global default -- if your own sensor-health line shows high drop-out despite good
+        # lighting/hand positioning, measure your skew with that probe before raising this.
         self._tracker = StereoHandTracker.open(
             calibration,
             left=left,
             right=right,
             max_fps=max_fps,
+            max_skew_s=max_skew_s,
             render=show_window,
             render_config=RenderConfig() if show_window else None,
         )

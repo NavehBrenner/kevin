@@ -32,7 +32,6 @@ readings.
 from __future__ import annotations
 
 import math
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -42,7 +41,7 @@ import numpy as np
 
 from ai_teleop.common.command import Command
 from ai_teleop.common.geometry import quat_conjugate, quat_mul
-from ai_teleop.common.log import get_logger
+from ai_teleop.common.log import console_stream, get_logger
 from ai_teleop.common.observation import Observation
 
 from .hand_tracker import HandReading
@@ -51,6 +50,14 @@ log = get_logger("vision_input")
 
 # Braille spinner frames for the live centering line (TTY only).
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# calibrate_neutral's poll loop runs at ~200 Hz (poll_interval_s=0.005); on_tick (typically
+# SimEnv.sync_viewer) is throttled to this wall-clock cadence rather than firing every poll,
+# matching the run loop's own render-cadence throttle (sim/runner.py's render_fps). An
+# unthrottled 200 Hz of viewer syncs floods MuJoCo's internal render thread and starves the
+# stereohand tracker thread of GIL time right when the operator most needs a responsive
+# calibration read — see project-wiki/concepts/realtime-teleop-loop.md.
+_ON_TICK_INTERVAL_S = 1.0 / 30.0
 
 
 class _HandSource(Protocol):
@@ -105,11 +112,18 @@ def calibrate_neutral(
     last_orientation = np.array([1.0, 0.0, 0.0, 0.0])
     last_countdown: int | None = None
     last_good_time: float | None = None  # clock() of the last present open-palm frame
+    last_tick_time: float | None = None  # clock() of the last on_tick fire
 
     # On a real terminal, draw one self-overwriting status line with a live
     # spinner so the operator sees it's working; otherwise fall back to the
     # per-state log lines (clean redirected output, and what the tests read).
-    live = sys.stderr.isatty()
+    # Both paths go through console_stream(), not the live sys.stderr object: a vision
+    # tracker is already constructed by the time this runs, and its HandLandmarker session
+    # has the OS-level stderr fd redirected to a log file for its whole lifetime (see
+    # console_stream()'s docstring) — writing straight to sys.stderr here would silently
+    # vanish into that file instead of reaching the operator's terminal.
+    console = console_stream()
+    live = console.isatty()
     last_render = ""
 
     def show(now: float, text: str, *, done: bool = False) -> None:
@@ -122,16 +136,19 @@ def calibrate_neutral(
         if payload == last_render:
             return
         last_render = payload
-        sys.stderr.write(payload)
-        sys.stderr.flush()
+        console.write(payload)
+        console.flush()
 
     if not live:
         log.info("centering — hold an open palm still for %.0fs to set neutral", hold_s)
     while True:
-        if on_tick is not None:
-            on_tick()
         reading = source.read()
         now = clock()
+        if on_tick is not None and (
+            last_tick_time is None or now - last_tick_time >= _ON_TICK_INTERVAL_S
+        ):
+            on_tick()
+            last_tick_time = now
         if not (reading.present and reading.recenter_pose):
             # Tolerate a brief drop-out / pose flicker: only a loss sustained past
             # pose_grace_s resets an active hold; within the window keep counting.
