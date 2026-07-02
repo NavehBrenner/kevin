@@ -244,6 +244,9 @@ def build_config(args: argparse.Namespace) -> EpisodeConfig:
     if args.input == "vision" and not args.stereo_calib:
         log.error("--input vision requires --stereo-calib PATH.")
         raise SystemExit(2)
+    if args.render_images and args.record is None:
+        log.error("--render-images needs --record (frames are saved beside the recorded .npz).")
+        raise SystemExit(2)
 
     render_mode = "headless" if args.headless else "viewer"
     return EpisodeConfig(args, render_mode, replay_columns, replay_meta)
@@ -406,6 +409,7 @@ def build_step_callback(
     controller: Controller,
     observation: Observation,
     target_hole_index: int,
+    environment: SimEnv,
 ) -> tuple[EpisodeLogger | TerminationProbe | None, EpisodeLogger | None, Path | None]:
     """Build the run's step_callback + record bookkeeping.
 
@@ -421,6 +425,10 @@ def build_step_callback(
     args = config.args
     if args.record is not None:
         record_path = _resolve_record_path(args.record)
+        imgs_dir: Path | None = None
+        if args.render_images:
+            imgs_dir = record_path.parent / "imgs"
+            imgs_dir.mkdir(parents=True, exist_ok=True)
         logger = EpisodeLogger(
             observation.wrist_ft.copy(),  # ft_bias
             controller,
@@ -428,7 +436,9 @@ def build_step_callback(
             success_depth=DEFAULT_SUCCESS_DEPTH,
             lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
             force_cap=DEFAULT_FORCE_CAP,
-            render_fn=None,  # vision (M7) frames aren't recorded from the run CLI
+            render_fn=environment.render_wrist_camera if args.render_images else None,
+            imgs_dir=imgs_dir,
+            render_every=args.render_every,
         )
         log.info("Recording to: %s", record_path)
         return logger, logger, record_path
@@ -520,6 +530,19 @@ def add_run_args(parser: argparse.ArgumentParser) -> None:
         metavar="OUT",
         help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ "
         "if OUT is omitted). Stops automatically on a successful insertion.",
+    )
+    group.add_argument(
+        "--render-images",
+        action="store_true",
+        help="With --record, also render the wrist camera and save PNG frames into the "
+        "recording's imgs/ folder (the vision stream the M7 policy is fed). Off by default.",
+    )
+    group.add_argument(
+        "--render-every",
+        type=int,
+        default=1,
+        metavar="N",
+        help="With --render-images, save a frame every N recorded steps (cadence knob).",
     )
 
 
@@ -691,7 +714,7 @@ def main() -> int:
     )
 
     step_callback, logger, record_path = build_step_callback(
-        config, controller, observation, target_hole_index
+        config, controller, observation, target_hole_index, env
     )
 
     # Pacing: unbounded headless, real time in the viewer, unless --time-factor overrides.
