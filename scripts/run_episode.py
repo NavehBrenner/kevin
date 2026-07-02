@@ -7,8 +7,11 @@ controller + a base command source + a `--policy` correction layer) and reports
 a one-line summary. The base commands come from `--input` (scripted noisy human,
 stereo hand tracking, or a recorded episode replayed verbatim); the correction
 comes from `--policy` (noassist / expert / trained residual). Replaying an
-episode rebuilds its exact recorded scene from metadata, so `kvn episode
---input <ep>` reproduces its generation to the step.
+episode rebuilds its exact recorded scene from metadata and runs physics-rate control
+(one recorded command per physics step, as generation ran), so `kvn episode --input <ep>`
+reproduces its generation to the step — in the viewer too, not just headless. `--time-factor`
+caps the sim:wall speed (headless: unbounded; viewer default: real time; <1 slow-mo,
+>1 fast-forward).
 
 Run from the `kevin/` directory:
 
@@ -16,6 +19,7 @@ Run from the `kevin/` directory:
     uv run python scripts/run_episode.py --headless      # CI / batch
     uv run python scripts/run_episode.py --headless --seed 7 --max-steps 1500
     uv run python scripts/run_episode.py --headless --input runs/episode_00000  # replay
+    uv run python scripts/run_episode.py --input runs/episode_00000 --time-factor 0.3  # slow-mo
 """
 
 from __future__ import annotations
@@ -189,6 +193,27 @@ class EpisodeConfig:
     def is_replay(self) -> bool:
         return self.replay_columns is not None
 
+    @property
+    def replay_as_baseline(self) -> bool:
+        """Replaying `--policy noassist` over an *assisted* scripted recording → regenerate
+        the human-only baseline instead of replaying the recorded commands.
+
+        The recorded `cmd_*` stop at the assisted run's terminal step, so a plain replay is
+        truncated (the viewer artifact). But the scripted operator is deterministic from
+        `human_seed`, and the baseline's length is recorded, so we can reproduce the exact
+        human-only rollout the dataset scored. Only for scripted-source recordings that carry
+        both `human_seed` and `baseline_n_steps` (older episodes fall back to plain replay).
+        """
+        meta = self.replay_meta
+        return (
+            self.is_replay
+            and self.args.policy == "noassist"
+            and meta.get("policy") not in (None, "noassist")
+            and meta.get("source") == "scripted"
+            and "human_seed" in meta
+            and "baseline_n_steps" in meta
+        )
+
 
 def build_config(args: argparse.Namespace) -> EpisodeConfig:
     """Resolve ``--input`` to a replay-or-live config and reject bad flag combinations.
@@ -295,6 +320,17 @@ def build_input(
     ``raise SystemExit(0)``.
     """
     args = config.args
+    if config.replay_as_baseline:
+        # Regenerate the deterministic operator (recorded commands stop at the assisted run's
+        # terminal — replaying them would truncate the human-only rollout; the viewer artifact).
+        seed = int(config.replay_meta["human_seed"])
+        log.info(
+            "Regenerating the human-only baseline operator (seed=%d) — the recorded commands "
+            "stop at the assisted run's terminal, so a plain replay would cut it short.",
+            seed,
+        )
+        target_pose = np.concatenate([target_position, home_quaternion])
+        return ScriptedNoisyHuman(target_pose, seed=seed), None
     if config.is_replay:
         assert config.replay_columns is not None
         return _ReplayInput(config.replay_columns), None
@@ -344,12 +380,16 @@ def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
     """Resolve the step budget, returning ``(max_steps, budget_label)``.
 
     A replay plays back exactly the recorded commands, so it runs for the recorded length;
-    live input falls back to DEFAULT_MAX_STEPS. Explicit 0/negative => run effectively
-    forever (``range()`` is lazy, so ``sys.maxsize`` costs nothing).
+    a regenerated baseline (see ``replay_as_baseline``) runs for the recorded baseline length
+    so it reproduces the scored human-only rollout; live input falls back to DEFAULT_MAX_STEPS.
+    Explicit 0/negative => run effectively forever (``range()`` is lazy, so ``sys.maxsize``
+    costs nothing).
     """
     args = config.args
     if args.max_steps is not None:
         requested_steps = args.max_steps
+    elif config.replay_as_baseline:
+        requested_steps = int(config.replay_meta["baseline_n_steps"])
     elif config.is_replay:
         assert config.replay_columns is not None
         requested_steps = len(config.replay_columns["step"])
@@ -403,11 +443,30 @@ def build_step_callback(
     return None, None, None
 
 
+def _time_factor(value: str) -> float:
+    """Parse --time-factor: a positive float, or 'inf'/'max' for uncapped (as-fast-as-possible)."""
+    if value.lower() in ("inf", "max"):
+        return math.inf
+    factor = float(value)
+    if factor <= 0:
+        raise argparse.ArgumentTypeError("--time-factor must be > 0 (or 'inf'/'max' for uncapped).")
+    return factor
+
+
 def add_run_args(parser: argparse.ArgumentParser) -> None:
     """Run-behaviour, recording, and controller knobs (headless, budget, clamps)."""
     group = parser.add_argument_group("run", "How the episode runs, records, and is clamped.")
     group.add_argument(
         "--headless", action="store_true", help="Skip the viewer; run the loop and print a summary."
+    )
+    group.add_argument(
+        "--time-factor",
+        type=_time_factor,
+        default=None,
+        metavar="RATIO",
+        help="Cap the sim:wall-clock speed ratio (enforced by sleeping; never speeds up a slow "
+        "box). Default: unbounded ('inf') when --headless, else 1.0 (real time). Use <1 for slow "
+        "motion (e.g. 0.3), >1 to fast-forward, or 'inf'/'max' for as-fast-as-possible.",
     )
     group.add_argument(
         "--seed", type=int, default=0, help="Seed for the scripted human's noise and the SimEnv."
@@ -587,6 +646,12 @@ def main() -> int:
         config, controller, observation, target_hole_index
     )
 
+    # Pacing: unbounded headless, real time in the viewer, unless --time-factor overrides.
+    # The loop is always physics-rate (one command per physics step), so a viewer replay
+    # reproduces its recording to the step regardless of source or pacing.
+    time_factor = (
+        args.time_factor if args.time_factor is not None else (math.inf if args.headless else 1.0)
+    )
     result = None
     try:
         result = run_episode(
@@ -596,6 +661,7 @@ def main() -> int:
             assist,
             max_steps=max_steps,
             render=not args.headless,
+            time_factor=time_factor,
             step_callback=step_callback,
         )
     except KeyboardInterrupt:

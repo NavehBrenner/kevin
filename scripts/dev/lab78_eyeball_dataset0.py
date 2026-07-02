@@ -8,6 +8,7 @@ Run: uv run python scripts/dev/lab78_eyeball_dataset0.py
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -31,9 +32,10 @@ def col(a: np.ndarray) -> str:
 
 
 def main() -> None:
-    paths = sorted((ROOT / "data" / "dataset_0" / "runs").glob("episode_*/episode.npz"))
+    dataset = sys.argv[1] if len(sys.argv) > 1 else "dataset_0"  # ponytail: argv, not argparse
+    paths = sorted((ROOT / "data" / dataset / "runs").glob("episode_*/episode.npz"))
     scr = aggregate(paths)
-    print(f"\ndataset_0: {len(paths)} episodes\n")
+    print(f"\n{dataset}: {len(paths)} episodes\n")
     print(f"{'metric':<26}{'SCRIPTED (new)':<26}{'REAL-HUMAN target':<20}")
     print("-" * 72)
     for key, target in TARGETS.items():

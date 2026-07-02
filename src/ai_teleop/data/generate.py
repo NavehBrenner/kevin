@@ -138,7 +138,7 @@ def _make_human(
     )
 
 
-def _baseline_terminal_reason(
+def _run_baseline(
     environment: SimEnv,
     controller: Controller,
     human: ScriptedNoisyHuman,
@@ -148,9 +148,11 @@ def _baseline_terminal_reason(
     success_depth: float,
     lateral_tolerance: float,
     force_cap: float,
-) -> TerminalReason:
-    """Re-run the same scene + operator with ``NoAssist`` (no expert), scoring
-    only — no trajectory is recorded. Returns how the human-only run terminated."""
+) -> tuple[TerminalReason, int]:
+    """Re-run the same scene + operator with ``NoAssist`` (no expert), scoring only — no
+    trajectory is recorded. Returns ``(terminal_reason, n_steps)``: how the human-only run
+    ended and how long it took, so the dataset can measure the expert's insertion-time win
+    (baseline steps-to-terminate vs the expert episode's ``n_steps``)."""
     controller.reset()  # clear any lock the expert run left latched
     probe = TerminationProbe(
         controller,
@@ -159,10 +161,10 @@ def _baseline_terminal_reason(
         lateral_tolerance=lateral_tolerance,
         force_cap=force_cap,
     )
-    run_episode(
+    result = run_episode(
         environment, controller, human, NoAssist(), max_steps=max_steps, step_callback=probe
     )
-    return probe.terminal_reason
+    return probe.terminal_reason, result.n_steps
 
 
 def generate_dataset(
@@ -269,8 +271,9 @@ def generate_dataset(
         )
 
         baseline_reason: TerminalReason | None = None
+        baseline_n_steps: int | None = None
         if baseline:
-            baseline_reason = _baseline_terminal_reason(
+            baseline_reason, baseline_n_steps = _run_baseline(
                 environment,
                 controller,
                 # fresh operator with the same seed ⇒ identical command stream
@@ -285,6 +288,10 @@ def generate_dataset(
         environment.close()
 
         episode_metadata: dict[str, object] = {
+            # Base commands came from the scripted noisy human, corrected by the expert —
+            # so a replay logs source=scripted (not "unknown") and can note the recorded policy.
+            "source": "scripted",
+            "policy": "expert",
             "master_seed": seed,
             "episode_index": episode_index,
             # scene_seed roots the per-episode derivations in (master_seed,
@@ -307,6 +314,7 @@ def generate_dataset(
         if baseline_reason is not None:
             episode_metadata["baseline_terminal_reason"] = baseline_reason.value
             episode_metadata["baseline_success"] = baseline_reason is TerminalReason.SUCCESS
+            episode_metadata["baseline_n_steps"] = baseline_n_steps
         logger.recorder.save(path, metadata=episode_metadata)
 
         written.append(path)

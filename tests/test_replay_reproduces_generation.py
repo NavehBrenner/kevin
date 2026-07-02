@@ -16,9 +16,10 @@ import numpy as np
 from ai_teleop.common import Command
 from ai_teleop.control import Controller
 from ai_teleop.data.generate import generate_dataset
-from ai_teleop.data.step_callbacks import episode_terminal_reason
+from ai_teleop.data.step_callbacks import TerminationProbe, episode_terminal_reason
 from ai_teleop.data.trajectory import TerminalReason, load_episode
-from ai_teleop.domain import Delta
+from ai_teleop.domain import Delta, NoAssist
+from ai_teleop.input import ScriptedNoisyHuman
 from ai_teleop.sim.config import EnvConfig
 from ai_teleop.sim.env_setup import make_env
 from ai_teleop.sim.runner import run_episode
@@ -93,6 +94,64 @@ def test_replay_reproduces_recorded_trajectory(tmp_path):
             step_callback=recorder,
         )
         np.testing.assert_allclose(np.array(recorder.poses), columns["peg_pose"], atol=1e-9)
+
+
+def test_regenerated_baseline_matches_the_scored_baseline(tmp_path):
+    """LAB-88: the human-only baseline is reproducible from ``human_seed``, so `--policy
+    noassist` (which regenerates the operator rather than replaying the assisted run's
+    truncated commands) reproduces the exact baseline the dataset scored — length and all.
+    Guards the viewer-artifact fix and the ``baseline_n_steps`` measurement.
+    """
+    (path,) = generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=300, baseline=True)
+    _, meta = load_episode(path)
+    assert meta["source"] == "scripted" and meta["policy"] == "expert"
+    baseline_n_steps = meta["baseline_n_steps"]
+    assert isinstance(baseline_n_steps, int) and baseline_n_steps > 0
+
+    # Rebuild the operator exactly as run_episode.py's replay-as-baseline path does:
+    # ScriptedNoisyHuman(target ⊕ home_quat, seed=human_seed) on the same wall + reset.
+    env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
+    controller = Controller(env, max_dpos_per_step=float(meta["max_dpos"]))
+    observation = env.reset()
+    hole_index = int(meta["target_hole_index"])
+    target_pose = np.concatenate([observation.hole_poses[hole_index][:3], controller.home_pose[3:]])
+    human = ScriptedNoisyHuman(target_pose, seed=int(meta["human_seed"]))
+    probe = TerminationProbe(
+        controller,
+        target_hole_index=hole_index,
+        success_depth=float(meta["success_depth"]),
+        lateral_tolerance=float(meta["lateral_tolerance"]),
+        force_cap=float(meta["force_cap"]),
+    )
+    result = run_episode(env, controller, human, NoAssist(), max_steps=300, step_callback=probe)
+
+    assert result.n_steps == baseline_n_steps
+    assert probe.terminal_reason.value == meta["baseline_terminal_reason"]
+
+
+def test_replay_is_faithful_under_finite_time_factor(tmp_path):
+    """LAB-88: the loop is always physics-rate (one command per physics step), so replay
+    reproduces the recording at any time_factor — the pacing/sleep path must not perturb
+    physics. A large time_factor keeps the sleeps ~0 so the test stays fast; render=True
+    (viewer) can't run in CI but only adds a sync that never touches sim data, so headless
+    coverage carries the guarantee.
+    """
+    (path,) = generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=300, baseline=False)
+    columns, meta = load_episode(path)
+
+    env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
+    controller = Controller(env, max_dpos_per_step=float(meta["max_dpos"]))
+    recorder = _PegRecorder()
+    run_episode(
+        env,
+        controller,
+        _ReplayInput(columns),
+        _ReplayAssist(columns),
+        max_steps=len(columns["step"]),
+        time_factor=1e6,  # finite → exercises the sleep path, but ~never actually sleeps
+        step_callback=recorder,
+    )
+    np.testing.assert_allclose(np.array(recorder.poses), columns["peg_pose"], atol=1e-9)
 
 
 def test_episode_terminal_reason_policy():

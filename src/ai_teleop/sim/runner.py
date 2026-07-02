@@ -20,6 +20,7 @@ dependency-inversion property M3 exists to establish.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -30,15 +31,27 @@ from ai_teleop.domain import apply_delta
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy
 from ai_teleop.sim.scene import SimEnv
 
-# Sim runs at 500 Hz (dt=2 ms in the MJCF). Headless: one control tick == one sim step.
-# Render: one control tick advances physics enough steps to track wall-clock (see below).
+# Sim runs at 500 Hz (dt=2 ms in the MJCF). The loop is always physics-rate: exactly one
+# base command + one controller recompute + one mj_step per iteration. This is what makes a
+# replay reproduce its recording tick-for-tick — no wall-clock-dependent substepping.
 SIM_DT = 0.002
 DEFAULT_MAX_STEPS = 2000  # ~4 s of sim time — a full M3 episode budget.
+DEFAULT_RENDER_FPS = 50.0  # target viewer frames per *sim* second when there's spare time.
+DEFAULT_MIN_RENDER_FPS = 15.0  # floor — render at least this often even if it costs wall-time.
 
-# Render-path real-time pacing: cap how many physics steps one control tick may run to
-# catch sim-time up to wall-time, so a one-off stall (GC, window resize) can't spiral into
-# a long burst. If this binds repeatedly, physics genuinely can't hit 500 Hz on this box.
-_MAX_CATCHUP_STEPS = 25  # 50 ms of sim time
+
+def _should_render(
+    steps_since_render: int, frame_interval: int, floor_interval: int, slack: float
+) -> bool:
+    """Whether to sync the viewer this step. Never faster than the target rate
+    (`frame_interval`); at the target when there's spare wall-time (`slack > 0`); and always
+    at least at the floor rate (`floor_interval`) even when behind — the floor wins.
+    """
+    at_fps_limit = steps_since_render < frame_interval
+    at_fps_floor = steps_since_render >= floor_interval
+    is_ahead = slack > 0
+
+    return not at_fps_limit and (is_ahead or at_fps_floor)
 
 
 @dataclass(frozen=True)
@@ -58,6 +71,9 @@ def run_episode(
     *,
     max_steps: int,
     render: bool = False,
+    time_factor: float = math.inf,
+    render_fps: float = DEFAULT_RENDER_FPS,
+    min_render_fps: float = DEFAULT_MIN_RENDER_FPS,
     step_callback=None,
 ) -> EpisodeResult:
     """Run one episode of the composed M3 loop; return the terminal state.
@@ -75,13 +91,22 @@ def run_episode(
         input_strategy: an `InputStrategy` producing the base `Command`.
         assist: an `AssistProvider` producing the correction `Delta`.
         max_steps: episode budget in *physics* steps (sim-time = max_steps * SIM_DT).
-        render: when True, run the sim at wall-clock real time via catch-up
-            substepping — each control tick advances physics enough steps to pin
-            sim-time to elapsed wall-time, so the sim stays real-time despite
-            per-tick GUI/vision cost (and the viewer refreshes at ~50 Hz). The
-            controller's torque is held (ZOH) across a tick's substeps; control
-            runs at the loop rate, physics at 500 Hz. Leave False for
-            headless/batch: exactly one step per tick, deterministic, no sleep.
+        render: when True, sync the interactive viewer at `render_fps`. Pacing is
+            separate — see `time_factor`. Leave False for headless/batch.
+        time_factor: pacing cap — the max sim:wall speed ratio, enforced by
+            sleeping (never speeds up a slow machine). `inf` (default) = uncapped,
+            as-fast-as-possible (headless/batch). `1.0` = real time. `<1` = slow
+            motion, `>1` = fast-forward (up to what the box can step).
+        render_fps: *target* viewer frames per second — the loop syncs the viewer
+            at most this often (every `1/(render_fps·SIM_DT)` physics steps), and only
+            when there's spare wall-time (we're ahead of the `time_factor` pace). When
+            the box can't render this fast without slipping behind real time, the rate
+            drops toward `min_render_fps` to give physics the time back. Ignored when
+            `render=False`.
+        min_render_fps: *floor* viewer frames per sim-second — render at least this
+            often even when behind wall-time (so the viewer never freezes on a slow
+            box; it just falls further behind — smooth slow-motion, not dropped frames).
+            The floor wins over the spare-time gate. Keep it ≤ `render_fps`.
         step_callback: optional `f(step, observation, base_command, delta,
             command) -> bool`. Called each tick with the *pre-step* observation
             the assist acted on; this is the M4 data-generation logging hook
@@ -90,47 +115,56 @@ def run_episode(
     """
     observation = environment.reset()
     sim_steps = 0
+    sim_time = 0.0
     control_ticks = 0
     wall_start = time.monotonic()
+    # Viewer sync cadence, in physics steps: at most one frame per `frame_interval` steps
+    # (the render_fps target), and a guaranteed one per `floor_interval` steps (the
+    # min_render_fps floor). Both count sim-steps, so the floor can't starve; the wall
+    # clock only *gates* the target rate, never physics — determinism is untouched.
+    frame_interval = max(1, round(1.0 / (render_fps * SIM_DT)))
+    floor_interval = max(frame_interval, round(1.0 / (min_render_fps * SIM_DT)))
+    last_render_step = 0
     while sim_steps < max_steps:
         base_command = input_strategy.get_command(observation)
         delta = assist.get_delta(observation, base_command)
         command = apply_delta(base_command, delta)
 
-        stop = False
         if step_callback is not None:
             stop = bool(step_callback(control_ticks, observation, base_command, delta, command))
+            if stop:
+                break
 
         controller.compute(observation, command)
 
-        # How many physics steps this control tick advances. Headless/data-gen: exactly
-        # one (deterministic). Render: enough to pin sim-time to elapsed wall-time, so the
-        # sim runs real-time regardless of per-tick GUI/vision cost; torque is held across
-        # the substeps. `behind` is computed absolutely (no incremental drift).
-        if render:
-            behind = round((time.monotonic() - wall_start) / SIM_DT) - sim_steps
-            n_substeps = min(max(behind, 1), _MAX_CATCHUP_STEPS)
-        else:
-            n_substeps = 1
+        environment.step()
+        sim_steps += 1
+        sim_time += SIM_DT
 
-        for _ in range(n_substeps):
-            environment.step()
-            sim_steps += 1
-            if sim_steps >= max_steps:
-                break
         observation = environment.get_observation()
         control_ticks += 1
 
         if render:
-            environment.sync_viewer()  # self-throttled to ~50 Hz
-            # If we've caught up to wall-time, sleep until the next physics step is due
-            # instead of busy-spinning the control loop (this is the metronome when work
-            # is light; when work is heavy `ahead` is negative and the next tick catches up).
-            ahead = (wall_start + sim_steps * SIM_DT) - time.monotonic()
-            if ahead > 0:
-                time.sleep(ahead)
-        if stop:
-            break
+            # slack > 0 ⇒ ahead of the wall-clock cap (spare time to render); < 0 ⇒ behind.
+            # Uncapped (time_factor=inf) has no wall target — always treat as spare.
+            slack = (
+                math.inf
+                if math.isinf(time_factor)
+                else wall_start + sim_time / time_factor - time.monotonic()
+            )
+            if _should_render(sim_steps - last_render_step, frame_interval, floor_interval, slack):
+                environment.sync_viewer()
+                last_render_step = sim_steps
+
+        # Sleep to hold the sim:wall speed cap (time_factor). Absolute target (recomputed
+        # post-render), so a slow tick is absorbed by the next rather than drifting.
+        # ponytail: ~1 ms sleep granularity at 500 Hz means a heavy box just lags real
+        # time slightly (still one step per tick, still deterministic) — fine for
+        # eyeballing. No fix until sub-ms pacing is actually needed.
+        wall_time = time.monotonic() - wall_start
+        sim_ahead_s = sim_time - wall_time * time_factor
+        if sim_ahead_s > 0:
+            time.sleep(sim_ahead_s)
 
     return EpisodeResult(
         final_observation=observation,

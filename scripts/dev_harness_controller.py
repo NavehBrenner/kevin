@@ -105,7 +105,7 @@ def run_phase(
     lock_state_changes: list[tuple[float, str, str]] = []
     prev_state = controller.status.state
 
-    for _ in range(n_steps):
+    for step_i in range(n_steps):
         obs = env.get_observation()
         t = obs.sim_time
         cmd = Command(
@@ -114,7 +114,10 @@ def run_phase(
         )
         controller.compute(obs, cmd)
         env.step()
-        env.sync_viewer()
+        # sync_viewer no longer self-throttles — caller owns cadence. Render ~50 Hz
+        # (every 10th of the 500 Hz sim) so we don't flood WSLg's GUI pipe.
+        if step_i % 10 == 0:
+            env.sync_viewer()
 
         force_mag = float(np.linalg.norm(obs.wrist_ft[:3]))
         peak_force = max(peak_force, force_mag)
