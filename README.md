@@ -25,6 +25,13 @@ the one-time setup** from this directory:
 ./scripts/setup.sh --dev    # the above plus dev tooling (pytest/ruff/mypy) + docs
 ```
 
+On Windows (e.g. a run-only copy for the native-camera interactive viewer), use the
+PowerShell sibling instead:
+
+```powershell
+.\scripts\setup.ps1         # -Dev for the dev tooling + docs
+```
+
 That creates the `.venv`, installs the package + extras, enables the git hooks,
 and puts a `kvn` launcher on your PATH. The default installs the full **runtime**
 stack (policy train/eval, stereo webcam teleop via `stereo-input`, recording, scene
