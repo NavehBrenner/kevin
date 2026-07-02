@@ -96,7 +96,7 @@ class _ReplayInput:
         )
 
 
-def _resolve_record_path(out: str) -> Path:
+def _resolve_record_path(out: str | None) -> Path:
     """Return the episode.npz path for --record; auto-number when out is empty."""
     if out:
         return Path(out) / "episode.npz"
@@ -244,6 +244,9 @@ def build_config(args: argparse.Namespace) -> EpisodeConfig:
     if args.input == "vision" and not args.stereo_calib:
         log.error("--input vision requires --stereo-calib PATH.")
         raise SystemExit(2)
+    if args.record_out is not None and args.record is None:
+        log.error("--record-out needs --record (nothing is written without a record mode).")
+        raise SystemExit(2)
 
     render_mode = "headless" if args.headless else "viewer"
     return EpisodeConfig(args, render_mode, replay_columns, replay_meta)
@@ -263,7 +266,7 @@ def build_env(config: EpisodeConfig) -> tuple[SimEnv, Observation, Controller, P
         return _rebuild_for_replay(config.replay_meta, config.render_mode)
 
     scene_path = resolve_scene_path(
-        generated=args.generated_wall,
+        generated=args.wall_seed is not None,
         wall_seed=args.wall_seed,
         distractors=args.distractors,
     )
@@ -274,7 +277,7 @@ def build_env(config: EpisodeConfig) -> tuple[SimEnv, Observation, Controller, P
     env = SimEnv(
         str(scene_path),
         render_mode=config.render_mode,
-        config=EnvConfig(wall_seed=args.wall_seed if args.generated_wall else None),
+        config=EnvConfig(wall_seed=args.wall_seed),
     )
     observation = env.reset()
     # --input vision wants responsive, mirror-like tracking, not the slew-limited
@@ -343,8 +346,8 @@ def build_input(
 
         tracker = StereoHandSource(
             args.stereo_calib,
-            left=_camera_source(args.left),
-            right=_camera_source(args.right),
+            left=_camera_source(args.cameras[0]),
+            right=_camera_source(args.cameras[1]),
             show_window=not args.no_cam_window,
             max_fps=args.max_fps if args.max_fps is not None else "cam",
         )
@@ -406,6 +409,7 @@ def build_step_callback(
     controller: Controller,
     observation: Observation,
     target_hole_index: int,
+    environment: SimEnv,
 ) -> tuple[EpisodeLogger | TerminationProbe | None, EpisodeLogger | None, Path | None]:
     """Build the run's step_callback + record bookkeeping.
 
@@ -420,18 +424,28 @@ def build_step_callback(
     """
     args = config.args
     if args.record is not None:
-        record_path = _resolve_record_path(args.record)
-        logger = EpisodeLogger(
+        record_commands = args.record in ("commands", "all")
+        record_images = args.record in ("images", "all")
+        record_path = _resolve_record_path(args.record_out)
+        imgs_dir: Path | None = None
+        if record_images:
+            imgs_dir = record_path.parent / "imgs"
+            imgs_dir.mkdir(parents=True, exist_ok=True)
+        episode_logger = EpisodeLogger(
             observation.wrist_ft.copy(),  # ft_bias
             controller,
             target_hole_index=target_hole_index,
             success_depth=DEFAULT_SUCCESS_DEPTH,
             lateral_tolerance=DEFAULT_LATERAL_TOLERANCE,
             force_cap=DEFAULT_FORCE_CAP,
-            render_fn=None,  # vision (M7) frames aren't recorded from the run CLI
+            render_fn=environment.render_wrist_camera if record_images else None,
+            imgs_dir=imgs_dir,
+            render_every=args.render_every,
         )
-        log.info("Recording to: %s", record_path)
-        return logger, logger, record_path
+        log.info("Recording (%s) to: %s", args.record, record_path)
+        # The logger always drives termination + frame rendering; main only writes the
+        # .npz when commands are recorded (images-only leaves just imgs/).
+        return episode_logger, (episode_logger if record_commands else None), record_path
     if args.input != "vision":
         probe = TerminationProbe(
             controller,
@@ -514,12 +528,26 @@ def add_run_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         "--record",
-        nargs="?",
-        const="",
+        choices=["commands", "images", "all"],
+        default=None,
+        help="Record the episode (off by default). 'commands' saves the trajectory to "
+        "episode.npz; 'images' saves wrist-camera PNG frames to an imgs/ folder (the vision "
+        "stream the M7 policy is fed); 'all' saves both. Stops automatically on a successful "
+        "insertion. Output dir is --record-out.",
+    )
+    group.add_argument(
+        "--record-out",
         default=None,
         metavar="OUT",
-        help="Record the trajectory to OUT/episode.npz (auto-numbered under data/recorded/ "
-        "if OUT is omitted). Stops automatically on a successful insertion.",
+        help="Output dir for --record (episode.npz and/or imgs/). Auto-numbered under "
+        "data/recorded/ if omitted.",
+    )
+    group.add_argument(
+        "--render-every",
+        type=int,
+        default=1,
+        metavar="N",
+        help="With --record images/all, save a frame every N recorded steps (cadence knob).",
     )
 
 
@@ -527,13 +555,18 @@ def add_scene_args(parser: argparse.ArgumentParser) -> None:
     """Scene selection: static task wall vs a freshly generated procedural wall."""
     group = parser.add_argument_group("scene", "Which wall/scene the episode runs on.")
     group.add_argument(
-        "--generated-wall",
-        action="store_true",
-        help="Run on a freshly generated procedural wall instead of the static scene.",
+        "--wall-seed",
+        type=int,
+        default=None,
+        metavar="SEED",
+        help="Run on a freshly generated procedural wall from this seed. Omit for the static "
+        "task scene.",
     )
-    group.add_argument("--wall-seed", type=int, default=7, help="Seed for --generated-wall.")
     group.add_argument(
-        "--distractors", type=int, default=None, help="Distractor-hole count for --generated-wall."
+        "--distractors",
+        type=int,
+        default=None,
+        help="Distractor-hole count when --wall-seed generates a wall.",
     )
 
 
@@ -552,17 +585,15 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
         "--stereo-calib",
         default=None,
         help="Path to a stereohand stereo_calib.json (required for --input vision). Camera "
-        "sources are --left / --right.",
+        "sources are --cameras.",
     )
     group.add_argument(
-        "--left",
-        default="0",
-        help="Left-camera source for --input vision: device index or stream URL.",
-    )
-    group.add_argument(
-        "--right",
-        default="2",
-        help="Right-camera source for --input vision: device index or stream URL.",
+        "--cameras",
+        nargs=2,
+        default=["0", "2"],
+        metavar=("LEFT", "RIGHT"),
+        help="Left and right camera sources for --input vision: device indices or stream URLs "
+        "(default: 0 2).",
     )
     group.add_argument(
         "--no-cam-window",
@@ -691,7 +722,7 @@ def main() -> int:
     )
 
     step_callback, logger, record_path = build_step_callback(
-        config, controller, observation, target_hole_index
+        config, controller, observation, target_hole_index, env
     )
 
     # Pacing: unbounded headless, real time in the viewer, unless --time-factor overrides.
@@ -735,8 +766,8 @@ def main() -> int:
                 "policy": args.policy,
                 "seed": args.seed,
                 "target_hole_index": target_hole_index,
-                "generated_wall": args.generated_wall,
-                "wall_seed": args.wall_seed if args.generated_wall else None,
+                "generated_wall": args.wall_seed is not None,
+                "wall_seed": args.wall_seed,
                 "distractors": args.distractors,
                 "scene": scene_path.name,
                 "max_dpos": controller.max_dpos_per_step,

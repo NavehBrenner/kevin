@@ -109,25 +109,26 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | `--input {scripted,vision,PATH}` | `scripted` | Base command source: scripted noisy human, **two-webcam stereo** hand tracking (metric 3D + 6-DoF via the [stereohand](https://github.com/NavehBrenner/stereohand) package; needs the viewer, the `stereo-input` extra, and `--stereo-calib`), or a **path to a recorded episode** (folder / `episode.npz`) to replay its commands verbatim. On replay the scene + controller are rebuilt from the episode's own metadata, so it reproduces that episode to the step. |
 | `--policy {noassist,expert,tf,vision}` | `noassist` | Correction layer applied on top of the base commands: raw operator (`noassist`), analytical `expert` residual, `tf` trained residual (needs `--checkpoint`), or `vision` Phase-2 vision-conditioned residual (not implemented yet). A recorded episode can be replayed under any policy. |
 | `--checkpoint PATH` | — | Trained residual `.pt` for `--policy tf` (e.g. `runs/train/<run>/checkpoint.pt`). |
-| `--stereo-calib PATH` | — | **Required** for `--input vision`: a stereohand `stereo_calib.json` (one-time ChArUco calibration). Camera sources are `--left` / `--right`. |
-| `--left SRC` | `0` | Left-camera source for `--input vision`: a device index (e.g. `0`) or a stream URL (e.g. `http://<host>:8080/0`). Use URLs on WSL2 — stream both cameras from Windows with the stereohand bridge. |
-| `--right SRC` | `2` | Right-camera source for `--input vision`: device index or stream URL. |
+| `--stereo-calib PATH` | — | **Required** for `--input vision`: a stereohand `stereo_calib.json` (one-time ChArUco calibration). Camera sources are `--cameras`. |
+| `--cameras LEFT RIGHT` | `0 2` | Left and right camera sources for `--input vision`: device indices (e.g. `0`) or stream URLs (e.g. `http://<host>:8080/0`). Use URLs on WSL2 — stream both cameras from Windows with the stereohand bridge. |
 | `--no-cam-window` | off | Hide the live stereo camera + 3D-skeleton window (`--input vision`; shown by default). |
 | `--gain G` | `1.0` | Vision input gain (`--input vision`): higher = the arm follows hand motion more aggressively (scales the mapped position). |
 | `--seed N` | `0` | Seed for the scripted human's noise (the scene seed is `--wall-seed`). |
 | `--max-steps N` | recorded length on replay, else script default | Episode step budget (one step = one 2 ms sim tick). Defaults to the recorded length when `--input` is an episode path (so a replay reproduces it to the step). **`0` = no limit** — run until you close the viewer or Ctrl-C (free-play). |
-| `--generated-wall` | off | Run on a freshly generated procedural wall instead of the static scene. |
+| `--wall-seed N` | — | Run on a freshly generated procedural wall from this seed. Omit for the static task scene. |
 | `--wrist-cam` | off | Open the viewer locked to the Panda's wrist camera (robot's-eye POV) instead of the free camera; viewer keys still switch cameras live. |
-| `--wall-seed N` | `7` | Seed for `--generated-wall`. |
-| `--distractors N` | — | Distractor-hole count for `--generated-wall`. |
+| `--distractors N` | — | Distractor-hole count when `--wall-seed` generates a wall. |
+| `--record {commands,images,all}` | off | Record the episode: `commands` → trajectory `episode.npz`; `images` → wrist-camera PNG frames in `imgs/` (the vision stream the M7 policy is fed); `all` → both. Stops on a successful insertion. |
+| `--record-out DIR` | auto-numbered under `data/recorded/` | Output dir for `--record` (`episode.npz` and/or `imgs/`). |
+| `--render-every N` | `1` | With `--record images`/`all`, save a frame every N recorded steps. |
 | `--max-dpos M` | `0.025` (`0.08` for vision) | Controller command clamp in m/step. Larger = the arm springs toward the target faster (responsive mirror); smaller = the slew-limited careful-insertion feel. `--input vision` also lowers joint damping for responsive tracking. |
 
 ```bash
 uv run kvn episode                                  # interactive viewer
 uv run kvn episode --headless --seed 7 --max-steps 1500
-uv run kvn episode --headless --generated-wall --wall-seed 3 --distractors 4
+uv run kvn episode --headless --wall-seed 3 --distractors 4   # generated wall
 uv run kvn episode --input vision --max-steps 0     # webcam free-play, no step limit
-uv run kvn episode --headless --record runs/ep0     # record a fresh episode
+uv run kvn episode --headless --record all --record-out runs/ep0  # record trajectory + frames
 uv run kvn episode --headless --input runs/ep0      # replay it (reproduces to the step)
 uv run kvn episode --headless --input runs/ep0 --policy expert  # replay under the expert
 ```

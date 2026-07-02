@@ -73,16 +73,18 @@ def main() -> int:
         help="Regenerate even if a cached episode with a matching fingerprint exists.",
     )
     parser.add_argument(
-        "--render-images",
-        action="store_true",
-        help="Render the wrist camera and save PNG frames into each episode's imgs/ "
-        "folder (opt-in M7/vision plumbing; off by default — M5 is F/T-only).",
+        "--record",
+        choices=["commands", "all"],
+        default="commands",
+        help="What to record per episode: 'commands' saves the trajectory episode.npz only "
+        "(F/T-only M5 corpus, default); 'all' also renders the wrist camera into each "
+        "episode's imgs/ folder (opt-in M7/vision plumbing).",
     )
     parser.add_argument(
         "--render-every",
         type=int,
         default=1,
-        help="With --render-images, save a frame every N recorded steps (cadence knob).",
+        help="With --record all, save a frame every N recorded steps (cadence knob).",
     )
     parser.add_argument(
         "--from-metadata",
@@ -124,7 +126,7 @@ def main() -> int:
         expert_d_far=args.expert_d_far,
         cache=not args.force,
         baseline=not args.no_baseline,
-        render_images=args.render_images,
+        render_images=args.record == "all",
         render_every=args.render_every,
         progress=True,
     )

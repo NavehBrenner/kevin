@@ -20,7 +20,7 @@ data/dataset_<seed>/
         episode_00000/
             episode.npz        # per-episode trajectory — the BC corpus
             imgs/              # per-step wrist-cam frames; empty unless
-                               # generated with --render-images (vision is M7)
+                               # generated with --record all (vision is M7)
         episode_00001/
             episode.npz
             imgs/

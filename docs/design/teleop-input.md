@@ -100,7 +100,7 @@ out of `StereoHandTracker`). kevin consumes them via:
   remap, forward axis sign-flipped (metric depth grows *away* from the camera). The CLI
   enables `track_orientation=True` for the 6-DoF payoff and `recenter=True` for the
   open-palm re-anchor gesture.
-- `kvn episode --input vision --stereo-calib <path> --left <L> --right <R>` — `--stereo-calib`
+- `kvn episode --input vision --stereo-calib <path> --cameras <L> <R>` — `--stereo-calib`
   is required; there is no single-camera mode.
 
 Packaging note: the `stereo-input` extra pulls stereohand, which brings a modern MediaPipe
