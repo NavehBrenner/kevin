@@ -90,7 +90,7 @@ def tiny_dataset(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _summaries(dataset_dir: Path) -> list:
-    return json.loads((dataset_dir / "metadata.json").read_text())["episodes"]
+    return json.loads((dataset_dir / "metadata.json").read_text(encoding="utf-8"))["episodes"]
 
 
 def _make_episode(episode_index: int, length: int) -> Episode:

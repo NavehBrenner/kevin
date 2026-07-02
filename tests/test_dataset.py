@@ -124,7 +124,7 @@ def test_generate_dataset_writes_layout_and_metadata(tmp_path):
 
     meta_path = tmp_path / "metadata.json"
     assert meta_path.exists()
-    summary = json.loads(meta_path.read_text())
+    summary = json.loads(meta_path.read_text(encoding="utf-8"))
     assert summary["master_seed"] == 0
     assert summary["n_episodes"] == 2
     assert summary["schema_version"] == SCHEMA_VERSION
@@ -151,7 +151,7 @@ def test_generate_dataset_no_baseline_omits_baseline_stats(tmp_path):
     generate_dataset(
         tmp_path, n_episodes=1, seed=0, max_steps=80, baseline=False, generated_walls=False
     )
-    summary = json.loads((tmp_path / "metadata.json").read_text())
+    summary = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
     assert "baseline_no_assist" not in summary
     assert "expert_lift" not in summary
 
@@ -182,8 +182,8 @@ def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
             np.testing.assert_array_equal(cols_orig[column], cols_regen[column])
 
     # The regenerated dataset carries the same fingerprint as the source metadata.
-    src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text())
-    regen_meta = json.loads((tmp_path / "regen" / "metadata.json").read_text())
+    src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text(encoding="utf-8"))
+    regen_meta = json.loads((tmp_path / "regen" / "metadata.json").read_text(encoding="utf-8"))
     assert regen_meta["fingerprint"] == src_meta["fingerprint"]
 
 

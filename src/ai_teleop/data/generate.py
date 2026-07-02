@@ -458,7 +458,7 @@ def regenerate_from_metadata(
     ``metadata.json`` reproduces the original statistics (modulo ``generated_at``).
     """
     metadata_path = Path(metadata_path)
-    metadata: ResBCDatasetMetadata = json.loads(metadata_path.read_text())
+    metadata: ResBCDatasetMetadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     config = metadata["config"]
 
     # Walls are reproduced from their seeds, not loaded from disk: the `scene`

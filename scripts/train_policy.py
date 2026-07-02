@@ -261,7 +261,7 @@ def _default_run_name(config: PolicyConfig) -> str:
 
 def _dataset_stats(dataset_dir: Path, train_loader: DataLoader, val_loader: DataLoader) -> dict:
     """Provenance about the corpus this run trained on (for the run metadata)."""
-    manifest = json.loads((dataset_dir / "metadata.json").read_text())
+    manifest = json.loads((dataset_dir / "metadata.json").read_text(encoding="utf-8"))
     return {
         "dir": str(dataset_dir),
         "master_seed": manifest.get("master_seed"),

@@ -175,7 +175,7 @@ def test_domain_has_no_sim_import():
 
     domain_dir = pathlib.Path(domain_pkg.__file__).parent
     for python_file in domain_dir.rglob("*.py"):
-        source = python_file.read_text()
+        source = python_file.read_text(encoding="utf-8")
         import re
 
         sim_imports = re.findall(r"^\s*(import|from)\s+ai_teleop\.sim", source, re.MULTILINE)
