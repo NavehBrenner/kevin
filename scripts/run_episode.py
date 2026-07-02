@@ -64,7 +64,7 @@ from ai_teleop.input import (  # noqa: E402
     calibrate_neutral,
 )
 from ai_teleop.sim.config import EnvConfig  # noqa: E402
-from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode  # noqa: E402
+from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, SIM_DT, run_episode  # noqa: E402
 from ai_teleop.sim.scene import SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
 
@@ -361,6 +361,7 @@ def build_input(
             calibration=WorkspaceCalibration(),
             track_orientation=args.orientation,  # opt-in 6-DoF mirroring (off by default)
             initial_anchor=neutral,
+            dropout_grace_s=args.dropout_grace,
         )
         log.info(
             "Driving the arm via STEREO hand tracking (metric 3D, 6-DoF). Lift your hand "
@@ -505,6 +506,13 @@ def add_run_args(parser: argparse.ArgumentParser) -> None:
         "Use this to rule the watchdog in/out while debugging.",
     )
     group.add_argument(
+        "--profile",
+        action="store_true",
+        help="Log a per-phase wall-time breakdown of the loop at the end (input / control / "
+        "step / render / sleep, ...). To see the true per-step cost run with --time-factor max "
+        "so pacing doesn't hide saturation in 'sleep'.",
+    )
+    group.add_argument(
         "--record",
         nargs="?",
         const="",
@@ -575,6 +583,15 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
         help="Enable 6-DoF orientation mirroring (--input vision): mirror the hand's "
         "roll/pitch/yaw too. Off by default — position-only is a calmer, round-peg baseline.",
     )
+    group.add_argument(
+        "--dropout-grace",
+        type=float,
+        default=0.2,
+        metavar="SECONDS",
+        help="Seconds the hand may vanish before the clutch releases (--input vision). The "
+        "arm holds the last command through drops shorter than this; raise it (e.g. 0.4) if a "
+        "flaky sensor keeps freezing the arm mid-motion. Default 0.2.",
+    )
 
 
 def add_policy_args(parser: argparse.ArgumentParser) -> None:
@@ -606,6 +623,37 @@ def build_parser() -> argparse.ArgumentParser:
     add_policy_args(parser)
     add_logging_arguments(parser)
     return parser
+
+
+def _log_profile(result) -> None:
+    """Log the per-phase wall-time breakdown from a run (--profile).
+
+    Reports each phase's share and per-step cost, plus the achieved loop rate vs the 500 Hz
+    physics target. A big 'sleep' share means the loop is keeping up (pacing is idling it) —
+    run with --time-factor max to squeeze it out and see the real per-step cost.
+    """
+    timings = result.step_timings
+    total = sum(timings.values())
+    if total <= 0:
+        return
+    steps = result.n_steps
+    lines = [
+        f"  {phase:9s} {secs:7.3f}s  {secs / total * 100:5.1f}%  {secs / steps * 1e3:6.3f} ms/step"
+        for phase, secs in sorted(timings.items(), key=lambda kv: -kv[1])
+    ]
+    realtime = (steps * SIM_DT) / total
+    viewer_fps = result.render_count / total
+    log.info(
+        "Profile (%d steps, %.2fs wall, %.0f Hz loop, %.2fx real-time, "
+        "viewer %.1f fps over %d frames):\n%s",
+        steps,
+        total,
+        steps / total,
+        realtime,
+        viewer_fps,
+        result.render_count,
+        "\n".join(lines),
+    )
 
 
 def main() -> int:
@@ -718,6 +766,8 @@ def main() -> int:
             start_dist * 1000,
             final_dist * 1000,
         )
+        if args.profile and result.n_steps > 0:
+            _log_profile(result)
     # ponytail: tearing down the MuJoCo viewer / offscreen renderer GL context
     # under WSLg blocks ~10s after the run is already done. Everything durable
     # (the .npz, the logs) is flushed above, so hard-exit instead of waiting on

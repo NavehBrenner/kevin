@@ -241,6 +241,14 @@ class StereoHandSource:
         calibration = StereoCalibration.load(calibration_path)
         self._show_window = show_window
         self._last_pump = 0.0  # wall-clock of the last cv2 window pump (see read())
+        # Sensor-health counters (logged on close). The control loop polls read() far faster
+        # than the cameras produce frames, so what matters for teleop feel is the *effective*
+        # rate: how often a genuinely new landmark arrives, and how often the hand drops out.
+        self._reads = 0
+        self._absent = 0
+        self._fresh = 0
+        self._prev_landmarks: np.ndarray | None = None
+        self._first_read = 0.0
         # recenter=True only drives the renderer's open-palm countdown HUD, a handy visual
         # while the operator holds the startup-centering pose; kevin times the hold itself in
         # calibrate_neutral, and the renderer's origin offset is a no-op for us.
@@ -272,8 +280,19 @@ class StereoHandSource:
                 self._tracker.render_step()
                 self._tracker.poll()
         reading = self._tracker.read()
+        if self._reads == 0:
+            self._first_read = time.monotonic()
+        self._reads += 1
         if not reading.present:
+            self._absent += 1
             return _ABSENT
+        # A genuinely new frame changed the landmarks; identical arrays = the background
+        # thread hasn't produced a new pair yet (we polled faster than the cameras run).
+        if self._prev_landmarks is None or not np.array_equal(
+            reading.landmarks, self._prev_landmarks
+        ):
+            self._fresh += 1
+            self._prev_landmarks = reading.landmarks
         return reading_from_landmarks(reading.landmarks)
 
     def set_renderer_origin(self, origin: np.ndarray) -> None:
@@ -290,6 +309,17 @@ class StereoHandSource:
             ))
 
     def close(self) -> None:
+        if self._reads > 0:
+            elapsed = time.monotonic() - self._first_read
+            effective_fps = self._fresh / elapsed if elapsed > 0 else 0.0
+            log.info(
+                "sensor health: %d reads over %.1fs — %.1f fresh fps (new landmarks), "
+                "%.0f%% drop-out. Teleop tracks the hand at the fresh-fps rate, not the loop rate.",
+                self._reads,
+                elapsed,
+                effective_fps,
+                100.0 * self._absent / self._reads,
+            )
         self._tracker.close()
         log.info("stereo hand tracker stopped")
 
