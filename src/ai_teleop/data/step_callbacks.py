@@ -80,15 +80,18 @@ def episode_terminal_reason(
     return None
 
 
+_JPEG_QUALITY = 90  # visually near-lossless at 224x224 for this scene; ~55% of PNG size.
+
+
 def _save_frame(imgs_dir: Path, step: int, frame: np.ndarray) -> None:
-    """Write one wrist-camera frame as ``imgs/step_NNNNN.png``.
+    """Write one wrist-camera frame as ``imgs/step_NNNNN.jpg``.
 
     PIL is imported lazily so the default (no-render) path needs nothing beyond
     numpy; only ``render_images`` pulls in the imaging stack.
     """
     from PIL import Image
 
-    Image.fromarray(frame).save(imgs_dir / f"step_{step:05d}.png")
+    Image.fromarray(frame).save(imgs_dir / f"step_{step:05d}.jpg", quality=_JPEG_QUALITY)
 
 
 class EpisodeLogger:

@@ -53,7 +53,7 @@ Four **independent** sensor streams. "Independent" is load-bearing: none is deri
 1. **Command history** — the operator's recent commanded poses/deltas (last `H_c ≈ 50` steps, ~0.5 s). This is the channel of **intent**: where the operator is trying to go. A single instantaneous command is a local nudge, not a destination — the *coarse goal* only emerges from watching the trajectory of commands over time. Phase 1 and Phase 2.
 2. **Force/torque history** — the 6-axis wrist wrench (3 force + 3 torque), gravity-bias-subtracted, last `H_f ≈ 20` steps. This is the channel of **contact reality**: what the environment is doing back to the peg ("where is it catching?"). It carries *zero* position information in free space. Phase 1 and Phase 2.
 3. **Proprioception** — actual EE pose (position + 6D rotation), joint angles (7), joint velocities (7), gripper width (1). This is the channel of **actual state**: where the arm really is *now*. Phase 1 and Phase 2.
-4. **Wrist camera image** — current RGB frame (optionally a short stack), e.g. 128×128×3. This is the channel of **where the world is**: it locates the target hole during approach. **Phase 2 only.**
+4. **Wrist camera image** — current RGB frame (optionally a short stack), e.g. 224×224×3. This is the channel of **where the world is**: it locates the target hole during approach. **Phase 2 only.**
 
 ### Why no single stream substitutes for another
 
