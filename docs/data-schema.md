@@ -167,8 +167,48 @@ M5 loader). Aggregates the run:
 A `success_rate` is `null` if any episode is missing that outcome (e.g. a cached
 dataset generated before the baseline existed, re-summarized with baseline on).
 
+## Wrist-camera frames (M7 load side)
+
+Rendered frames (LAB-80) live beside the trajectory at
+`runs/episode_NNNNN/imgs/step_NNNNN.jpg` — 224×224 JPEG q90, one file per
+*rendered* step, decimated by `--render-every` (so this is normally a strict
+subset of the episode's `T` steps, not one frame per step). Populated only when
+generation runs with `--record all` (or `run_episode.py --record images`);
+otherwise `imgs/` stays empty.
+
+The M5 loader (`OfflineResidualBCDataset(..., load_images=True)`,
+`ai_teleop.data.images.load_frame_stream`) reads these into a **compact**
+per-episode pair rather than a dense per-step tensor — a dense
+`(T, 3, 224, 224)` tensor would be ~900 MB for a single undecimated 6000-step
+episode:
+
+- `images`: `(F, 3, 224, 224)` — the `F` rendered frames, decoded once each,
+  ImageNet-normalized (matching the pretrained CNN backbone,
+  `docs/design/policy-model.md` Decision B).
+- `image_frame_index`: `(T,)` long — for each step, the index into `images` of
+  the most recent rendered frame at or before it (forward-fill; steps before
+  the first frame use frame 0). This matches how the policy actually consumes
+  vision (`docs/design/policy-model.md`: the image branch "runs once per new
+  frame", holding the same embedding between frames).
+
+`collate_episodes` only populates `EpisodeBatch.images`/`image_frame_index`
+when every episode in the batch has them; both stay `None` for the F/T-only
+(Phase-1) path, which is unaffected.
+
+Rendering is the throughput bottleneck (offscreen render ≈ 500× a physics
+step — `project-wiki/entities/mujoco.md`); `generate_dataset` logs an
+aggregate `rendered N frames in Xs (Y frames/s)` line when `--record all` is
+used, so the full-corpus render cost is predictable.
+
+**On-the-fly re-rendering at train time** (replaying recorded state through
+`scripts/run_episode.py --input <ep>`'s replay machinery instead of loading a
+stored JPEG) was considered as a storage-optimization alternative but is
+**deferred** — at ~500× render cost with no GPU offscreen path currently
+available, it's unlikely to pay off per training epoch, versus ~4 GB of stored
+JPEGs for 200 undecimated episodes. Revisit if storage becomes the binding
+constraint.
+
 ## Anti-scope
 
-- **Wrist-camera frames** are not in the schema — image rendering + decimation
-  into the corpus is **M7** (Phase 2). Phase-1 training uses F/T + proprioception
-  + command only.
+- Phase-1 training (M5) uses F/T + proprioception + command only —
+  `load_images=False` (the default) leaves `imgs/` unread.

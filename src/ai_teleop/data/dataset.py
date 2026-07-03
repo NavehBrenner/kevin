@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import torch
@@ -24,13 +25,14 @@ from torch.utils.data import DataLoader, Dataset
 from ai_teleop.common.log import get_logger
 from ai_teleop.common.utils.rotations import quat_to_6d
 from ai_teleop.data.generate import regenerate_from_metadata
+from ai_teleop.data.images import load_frame_stream
 from ai_teleop.data.schema import (
     EpisodeColumns,
     EpisodeMetadata,
     EpisodeSummary,
     ResBCDatasetMetadata,
 )
-from ai_teleop.data.trajectory import load_episode
+from ai_teleop.data.trajectory import episode_imgs_dir, load_episode
 
 log = get_logger("dataset")
 
@@ -39,9 +41,12 @@ log = get_logger("dataset")
 class Episode:
     """One loaded episode-sequence — the item ``__getitem__`` returns.
 
-    ``images`` is populated only when the dataset is
-    built with ``load_images=True`` *and* the episode has rendered frames on disk
-    (vision is M7 — normally ``None``).
+    ``images``/``image_frame_index`` are populated only when the dataset is built with
+    ``load_images=True`` (otherwise both are ``None``). They are a **compact** pair, not a
+    dense per-step tensor: ``images`` holds only the episode's rendered (decimated) frames,
+    and ``image_frame_index`` maps each of the ``T`` steps to the frame it should use. A
+    dense ``(T, 3, 224, 224)`` tensor would be ~900 MB for a single undecimated 6000-step
+    episode — see ``ai_teleop.data.images.load_frame_stream``.
     """
 
     episode_index: int
@@ -49,7 +54,8 @@ class Episode:
     force_torque: Tensor  # (T, 6)  wrist_ft, bias-subtracted               — input
     proprioception: Tensor  # (T, 24) ee_pos(3)+ee_6D(6)+joints(7)+joint_vel(7)+grip(1) — input
     delta: Tensor  # (T, 7)  delta_position(3)+orientation(3)+grip(1)       — BC target
-    images: Tensor | None = None  # (T, H, W, 3) uint8 wrist-cam frames, or None
+    images: Tensor | None = None  # (F, 3, 224, 224) normalized wrist-cam frames, or None
+    image_frame_index: Tensor | None = None  # (T,) long, step -> images index, or None
 
 
 INPUT_STREAMS: tuple[str, ...] = ("command", "force_torque", "proprioception")
@@ -73,7 +79,9 @@ class EpisodeBatch:
 
     Streams are zero-padded to the batch's longest episode ``T_max`` (batch-first);
     ``lengths`` holds each episode's true step count so the train loop can pack or
-    mask the padded tail.
+    mask the padded tail. ``images``/``image_frame_index`` are ``None`` unless the
+    dataset was built with ``load_images=True`` — see ``Episode`` for their compact
+    (frames, per-step index) shape.
     """
 
     command: Tensor  # (B, T_max, 9)
@@ -81,6 +89,8 @@ class EpisodeBatch:
     proprioception: Tensor  # (B, T_max, 24)
     delta: Tensor  # (B, T_max, 7)
     lengths: Tensor  # (B,) long — true episode lengths
+    images: Tensor | None = None  # (B, F_max, 3, 224, 224)
+    image_frame_index: Tensor | None = None  # (B, T_max) long
 
 
 def split_episodes(
@@ -125,14 +135,24 @@ def _quaternions_to_6d(quaternions: np.ndarray) -> np.ndarray:
     return np.stack([quat_to_6d(quaternion) for quaternion in quaternions])
 
 
-def extract_training_episode(full_episode: tuple[EpisodeColumns, EpisodeMetadata]) -> Episode:
+def extract_training_episode(
+    full_episode: tuple[EpisodeColumns, EpisodeMetadata], *, imgs_dir: Path | None = None
+) -> Episode:
     """Assemble one **raw** (un-normalized) ``Episode`` from loaded npz columns.
 
     Orientations (command + the EE pose in proprio) are mapped to the continuous
     6D rep; scalar columns (gripper width, Δgrip) get a trailing axis before the
     per-step feature concat. Normalization is applied later, by the dataset.
+
+    When ``imgs_dir`` is given, the episode's rendered wrist-cam frames are loaded
+    alongside the trajectory (see ``ai_teleop.data.images.load_frame_stream``).
     """
     columns, metadata = full_episode
+    images, image_frame_index = (
+        load_frame_stream(imgs_dir, n_steps=len(columns["step"]))
+        if imgs_dir is not None
+        else (None, None)
+    )
 
     command = np.concatenate(
         [columns["cmd_position"], _quaternions_to_6d(columns["cmd_quaternion"])], axis=1
@@ -159,6 +179,8 @@ def extract_training_episode(full_episode: tuple[EpisodeColumns, EpisodeMetadata
         force_torque=torch.tensor(force_torque, dtype=torch.float32),
         proprioception=torch.tensor(proprioception, dtype=torch.float32),
         delta=torch.tensor(delta, dtype=torch.float32),
+        images=images,
+        image_frame_index=image_frame_index,
     )
 
 
@@ -231,18 +253,19 @@ class OfflineResidualBCDataset(Dataset):
             log.info("Missing %d episodes. Regenerating from metadata...", len(missing_episodes))
             regenerate_from_metadata(self.metadata_path)
 
-        if load_images:
-            # Images come from rendered frames; the offline corpus has none (vision is M7).
-            log.warning(
-                "load_images=True is not supported by the offline dataset yet (vision is M7)."
-            )
-
         train_episodes, val_episodes = split_episodes(
             self.metadata["episodes"], val_fraction=val_fraction, seed=seed
         )
         episode_summaries = train_episodes if train else val_episodes
         raw_episodes = [
-            extract_training_episode(load_episode(self.dataset_dir / summary["file"]))
+            extract_training_episode(
+                load_episode(self.dataset_dir / summary["file"]),
+                imgs_dir=(
+                    episode_imgs_dir(self.dataset_dir / "runs", summary["episode_index"])
+                    if load_images
+                    else None
+                ),
+            )
             for summary in episode_summaries
         ]
 
@@ -264,8 +287,18 @@ def collate_episodes(batch: list[Episode]) -> EpisodeBatch:
     """Pad a list of variable-length episodes to ``T_max`` (batch-first) for a DataLoader.
 
     Each stream is zero-padded; ``lengths`` records the true per-episode step count
-    so the train loop can pack/mask the padded tail. Phase-1 ignores ``images``.
+    so the train loop can pack/mask the padded tail. ``images``/``image_frame_index``
+    are only assembled when every episode in the batch has them (``load_images=True``);
+    otherwise both stay ``None``, matching the F/T-only (Phase-1) path.
     """
+    has_images = all(episode.images is not None for episode in batch)
+    images: Tensor | None = None
+    image_frame_index: Tensor | None = None
+    if has_images:
+        images = pad_sequence([cast(Tensor, e.images) for e in batch], batch_first=True)
+        image_frame_index = pad_sequence(
+            [cast(Tensor, e.image_frame_index) for e in batch], batch_first=True
+        )
     return EpisodeBatch(
         command=pad_sequence([episode.command for episode in batch], batch_first=True),
         force_torque=pad_sequence([episode.force_torque for episode in batch], batch_first=True),
@@ -274,6 +307,8 @@ def collate_episodes(batch: list[Episode]) -> EpisodeBatch:
         ),
         delta=pad_sequence([episode.delta for episode in batch], batch_first=True),
         lengths=torch.tensor([episode.command.shape[0] for episode in batch], dtype=torch.long),
+        images=images,
+        image_frame_index=image_frame_index,
     )
 
 
@@ -284,6 +319,7 @@ def build_dataloaders(
     val_fraction: float = 0.2,
     seed: int = 0,
     download: bool = True,
+    load_images: bool = False,
     num_workers: int = 0,
 ) -> tuple[DataLoader, DataLoader, NormStats]:
     """Build train + val ``DataLoader``s over an M4 dataset directory.
@@ -291,11 +327,17 @@ def build_dataloaders(
     The episode-level split is taken once with the given ``val_fraction``/``seed``,
     and the val dataset reuses the train-computed ``norm_stats`` so both splits —
     and, later, inference — share one normalization. The train loader is shuffled
-    (episodes are the i.i.d. unit), the val loader is not. Returns
+    (episodes are the i.i.d. unit), the val loader is not. ``load_images`` requires
+    the dataset was generated with ``--record all``/``--record images``. Returns
     ``(train_loader, val_loader, norm_stats)``.
     """
     train_dataset = OfflineResidualBCDataset(
-        dataset_dir, download=download, train=True, val_fraction=val_fraction, seed=seed
+        dataset_dir,
+        download=download,
+        train=True,
+        val_fraction=val_fraction,
+        seed=seed,
+        load_images=load_images,
     )
     val_dataset = OfflineResidualBCDataset(
         dataset_dir,
@@ -303,6 +345,7 @@ def build_dataloaders(
         train=False,
         val_fraction=val_fraction,
         seed=seed,
+        load_images=load_images,
         norm_stats=train_dataset.norm_stats,
     )
     train_loader = DataLoader(
