@@ -62,8 +62,15 @@ class SamplingRanges:
     # Regular-polygon circumradius (m) and vertex count.
     polygon_radius: tuple[float, float] = (0.008, 0.020)
     polygon_sides: tuple[int, int] = (3, 8)
-    # Rim chamfer width (m). The primary difficulty knob.
-    chamfer: tuple[float, float] = (0.001, 0.004)
+    # Rim chamfer width (m). The primary difficulty knob. LAB-77 calibration: swept
+    # 1-9mm fixed values against the LAB-37 harness; epsilon_lateral/d_far/advance_per_step
+    # (expert/expert.py) showed zero effect (failures are geometrically unwinnable
+    # timeouts, not alignment/authority-limited) while chamfer alone moved expert
+    # success 35%->93% (1->7mm) with baseline following more slowly up to 7mm
+    # (5%->47%) then catching up fast past it (60% at 8mm) -- 7mm is the sweet spot,
+    # landing baseline near the real recorded human's honest ~44% deployment baseline
+    # (project-wiki/synthesis/scripted-vs-real-operator.md). Widened from (1,4)mm.
+    chamfer: tuple[float, float] = (0.005, 0.009)
     # Clear margin (m) kept between any hole's bounding circle and the wall edge.
     edge_margin: float = 0.015
     # Minimum gap (m) between the bounding circles of any two holes.

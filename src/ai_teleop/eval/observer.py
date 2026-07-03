@@ -60,7 +60,7 @@ __all__ = ["PEG_HALF_LENGTH", "TrialObserver"]
 # thing it meant when the BC corpus was scored; LAB-37 calibrates the operating
 # point (these are the knobs it sweeps).
 DEFAULT_SUCCESS_DEPTH = 0.015  # penetration past the hole entry → seated (m)
-DEFAULT_LATERAL_TOLERANCE = 0.006  # max lateral tip error for a seated peg (m)
+DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral tip error for a seated peg (m); LAB-77 calibration
 DEFAULT_FORCE_CAP = 50.0  # contact-force magnitude that aborts the trial (N)
 DEFAULT_SUSTAINED_DURATION = 0.05  # seating must hold this long to count (s)
 
