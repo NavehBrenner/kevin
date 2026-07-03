@@ -84,3 +84,25 @@ def test_deterministic_for_same_seed_and_observations():
         cmd_b = actor_b.get_command(obs)
         np.testing.assert_array_equal(cmd_a.target_position, cmd_b.target_position)
         np.testing.assert_array_equal(cmd_a.target_quaternion, cmd_b.target_quaternion)
+
+
+def test_approach_decelerates_near_goal():
+    # LAB-91: real operators slow down before contact; the command should too —
+    # per-tick speed should shrink once near the (fixed) goal, not hold
+    # max_approach_speed until the literal last tick (the old bang-bang model,
+    # which gave a flat near-field speed distribution — see
+    # project-wiki/synthesis/scripted-vs-real-operator.md).
+    obs = _make_observation(np.array([0.5, 0.0, 0.3]))
+    actor = _make_actor(seed=3)
+    max_step = MAX_APPROACH_SPEED / CONTROL_HZ
+
+    first = actor.get_command(obs).target_position
+    second = actor.get_command(obs).target_position
+    far_field_step = np.linalg.norm(second - first)
+    # Far from the goal (~400 mm out), still at (or very near) the rate cap.
+    assert far_field_step > 0.9 * max_step
+
+    positions = [actor.get_command(obs).target_position for _ in range(3000)]
+    near_field_steps = np.linalg.norm(np.diff(positions[-50:], axis=0), axis=1)
+    # Once converged near the goal, per-tick moves are well below the far-field cap.
+    assert near_field_steps.mean() < 0.5 * max_step

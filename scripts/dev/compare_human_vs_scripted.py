@@ -14,12 +14,13 @@ Insertion axis = hole local +x; peg long axis = peg local +z, tip at
 +PEG_HALF_LENGTH (matches common/seating.py). Orientation is position-only in
 this rig, so we do not analyze command orientation.
 
-Run: uv run python scripts/dev/compare_human_vs_scripted.py
+Run: uv run python scripts/dev/compare_human_vs_scripted.py [--scripted data/dataset_2]
 Writes outputs/human_vs_scripted.png
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import matplotlib
@@ -114,26 +115,36 @@ def col(label: str, a: np.ndarray) -> str:
 
 
 def main() -> None:
-    rec_paths = sorted((ROOT / "data" / "recorded" / "runs").glob("episode_*/episode.npz"))
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--recorded",
+        default=str(ROOT / "data" / "recorded" / "runs"),
+        help="Dir holding episode_*/episode.npz (real recorded episodes).",
+    )
+    ap.add_argument(
+        "--scripted",
+        default=str(ROOT / "data" / "dataset_2"),
+        help="Scripted dataset dir (holds runs/); dataset_1's runs/ is gone and it "
+        "predates LAB-78, so it's no longer a valid comparison corpus.",
+    )
+    args = ap.parse_args()
+
+    rec_paths = sorted(Path(args.recorded).glob("episode_*/episode.npz"))
     # Current generator writes episode_NNNNN/episode.npz folders; older sets were
     # flat episode_NNNNN.npz. Accept whichever the regenerated scripted set uses.
-    scr_runs = ROOT / "data" / "dataset_1" / "runs"
+    scr_runs = Path(args.scripted) / "runs"
     scr_paths = sorted(scr_runs.glob("episode_*/episode.npz")) or sorted(
         scr_runs.glob("episode_*.npz")
     )
     rec = aggregate(rec_paths)
-    rec_old = aggregate(rec_paths[:8])  # original batch — rig-consistency check
-    rec_new = aggregate(rec_paths[8:])
     scr = aggregate(scr_paths)
 
     keys = sorted(rec)
-    print(
-        f"\nRecorded: {len(rec_paths)} ({len(rec_paths) - 8} new + 8 original)   Scripted: {len(scr_paths)}\n"
-    )
-    print(f"{'metric':<24}{'RECORDED new':<24}{'RECORDED orig-8':<24}{'SCRIPTED':<24}")
-    print("-" * 96)
+    print(f"\nRecorded: {len(rec_paths)}   Scripted: {len(scr_paths)}\n")
+    print(f"{'metric':<24}{'RECORDED':<24}{'SCRIPTED':<24}")
+    print("-" * 72)
     for k in keys:
-        print(f"{k:<24}{col(k, rec_new[k]):<24}{col(k, rec_old[k]):<24}{col(k, scr[k]):<24}")
+        print(f"{k:<24}{col(k, rec[k]):<24}{col(k, scr[k]):<24}")
 
     print("\n--- decision-relevant fractions ---")
     for tag, d in [("recorded(all)", rec), ("scripted", scr)]:
