@@ -82,7 +82,7 @@ _GENERATED_SCENE_LABEL = "generated"
 
 DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
-DEFAULT_LATERAL_TOLERANCE = 0.006  # max lateral error for a "seated" peg (m)
+DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral error for a "seated" peg (m); LAB-77 calibration
 DEFAULT_FORCE_CAP = 50.0  # wrist force magnitude that aborts the episode (N)
 DEFAULT_MAX_DPOS = 0.025  # controller command clamp (m/step); approach-speed knob
 DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
