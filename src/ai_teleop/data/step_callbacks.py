@@ -21,6 +21,7 @@ structural cause of replays not matching their generated episode).
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -80,15 +81,18 @@ def episode_terminal_reason(
     return None
 
 
+_JPEG_QUALITY = 90  # visually near-lossless at 224x224 for this scene; ~55% of PNG size.
+
+
 def _save_frame(imgs_dir: Path, step: int, frame: np.ndarray) -> None:
-    """Write one wrist-camera frame as ``imgs/step_NNNNN.png``.
+    """Write one wrist-camera frame as ``imgs/step_NNNNN.jpg``.
 
     PIL is imported lazily so the default (no-render) path needs nothing beyond
     numpy; only ``render_images`` pulls in the imaging stack.
     """
     from PIL import Image
 
-    Image.fromarray(frame).save(imgs_dir / f"step_{step:05d}.png")
+    Image.fromarray(frame).save(imgs_dir / f"step_{step:05d}.jpg", quality=_JPEG_QUALITY)
 
 
 class EpisodeLogger:
@@ -125,6 +129,11 @@ class EpisodeLogger:
         self._render_fn = render_fn
         self._imgs_dir = imgs_dir
         self._render_every = render_every
+        # Render throughput — offscreen rendering is ~500x a physics step
+        # (project-wiki/entities/mujoco.md), so the full-corpus render cost is worth
+        # tracking explicitly rather than inferred from total episode wall-time.
+        self.frames_rendered = 0
+        self.render_wall_time = 0.0
 
     def __call__(
         self,
@@ -150,7 +159,10 @@ class EpisodeLogger:
             and self._imgs_dir is not None
             and step % self._render_every == 0
         ):
+            render_start = time.perf_counter()
             _save_frame(self._imgs_dir, step, self._render_fn())
+            self.render_wall_time += time.perf_counter() - render_start
+            self.frames_rendered += 1
 
         self.recorder.add(
             step=step,
