@@ -20,6 +20,17 @@ the clamp to manufacture the approach; that left the command stream — a live
 policy input via the command-history GRU — structurally unlike a real
 operator's, which bit M7 vision specifically.)
 
+Near the goal, the approach **decelerates proportionally to distance** (LAB-91)
+instead of holding the rate cap until the literal last tick: real operators
+visually servo and slow down before contact, which a bang-bang rate cap can't
+reproduce (measured: recorded near-field command speed has a heavy tail, p90:
+median ratio ~2.5x, vs a flat ~1.1x for the old bang-bang model — see
+`project-wiki/synthesis/scripted-vs-real-operator.md`). Within
+``decel_radius`` of the (drifting) goal the per-tick step is scaled by
+``distance / decel_radius``, a simple proportional/critically-damped approach;
+outside it the actor is still rate-capped at ``max_approach_speed`` exactly as
+before, so LAB-78's far-field aim/travel calibration is untouched.
+
 Composition, fully determined by the constructor `seed` (plus the arm's
 deterministic reset pose, read once from the first observation):
 
@@ -72,6 +83,12 @@ DEFAULT_DRIFT_POSITION_STD: float = 0.005
 # implies, so the actor — not the clamp — owns the approach.
 DEFAULT_MAX_APPROACH_SPEED: float = 0.35
 
+# Radius (m) around the drifting goal within which the approach decelerates
+# proportionally to distance instead of holding max_approach_speed — the LAB-91
+# fit target for the near-field command-speed distribution (real operators slow
+# down before contact; placeholder, calibrated against `data/recorded`).
+DEFAULT_DECEL_RADIUS: float = 0.016
+
 
 def _axis_angle_to_quat(axis_angle: np.ndarray) -> np.ndarray:
     """Convert a (3,) axis-angle vector to a (w,x,y,z) unit quaternion."""
@@ -108,6 +125,10 @@ class ScriptedNoisyHuman:
     max_approach_speed:
         Cap on the command sweep toward the goal, in m/s. Larger ⇒ faster
         approach. See :data:`DEFAULT_MAX_APPROACH_SPEED`.
+    decel_radius:
+        Distance (m) to the drifting goal inside which the approach speed
+        scales down proportionally to distance, instead of holding
+        ``max_approach_speed``. See :data:`DEFAULT_DECEL_RADIUS`.
     control_hz:
         Control-loop rate (one ``get_command`` call per tick). Sets the per-tick
         drift step ``dt = 1 / control_hz`` and the per-tick approach cap.
@@ -127,6 +148,7 @@ class ScriptedNoisyHuman:
         drift_tau: float = 0.3,
         tremor_std: float = 0.0,
         max_approach_speed: float = DEFAULT_MAX_APPROACH_SPEED,
+        decel_radius: float = DEFAULT_DECEL_RADIUS,
         control_hz: float = 500.0,
         seed: int = 0,
     ) -> None:
@@ -142,6 +164,7 @@ class ScriptedNoisyHuman:
         self._tremor_std = tremor_std
         self._dt_control = 1.0 / control_hz
         self._max_step = max_approach_speed * self._dt_control  # per-tick cap, metres
+        self._decel_radius = decel_radius
 
         # Per-tick OU decay; stationary std preserved via the sqrt(1 - beta^2)
         # innovation scaling, so the drift's stationary σ is independent of dt.
@@ -187,13 +210,23 @@ class ScriptedNoisyHuman:
 
         self._advance_drift()
 
-        # Capped-rate move of the command toward the drifting biased goal,
-        # decelerating proportionally inside the last step.
+        # Capped-rate move of the command toward the drifting biased goal. The rate
+        # cap (LAB-91) scales with distance to the *fixed* goal (large-scale "am I
+        # still approaching or have I arrived", not the per-tick drift wobble) —
+        # using the drifting target itself here would reset the reference every
+        # tick, so the tracking error (and therefore speed) would settle at a
+        # narrow near-constant value instead of the observed heavy-tailed
+        # near-field speed (real operators cruise in from ~400 mm, then slow over
+        # the final approach). Outside decel_radius this is the LAB-78 bang-bang
+        # cap (unchanged); inside it the cap decays proportionally to distance.
         target = self._goal_position + self._drift_position
         step = target - self._command_position
         distance = float(np.linalg.norm(step))
+        distance_to_goal = float(np.linalg.norm(self._command_position - self._goal_position))
+        speed_scale = min(1.0, distance_to_goal / self._decel_radius)
+        effective_max_step = self._max_step * speed_scale
         self._command_position = self._command_position + step * min(
-            1.0, self._max_step / (distance + 1e-9)
+            1.0, effective_max_step / (distance + 1e-9)
         )
 
         position = self._command_position
