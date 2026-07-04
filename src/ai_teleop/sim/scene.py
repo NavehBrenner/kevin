@@ -94,8 +94,8 @@ class SimEnv:
         scene_path: str | Path,
         render_mode: RenderMode = "headless",
         *,
-        camera_height: int = 128,
-        camera_width: int = 128,
+        camera_height: int = 224,
+        camera_width: int = 224,
         config: EnvConfig | None = None,
     ) -> None:
         # MuJoCo resolves mesh paths relative to the cwd, not the XML file —

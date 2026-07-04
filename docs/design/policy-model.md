@@ -25,7 +25,7 @@ From [problem-structure.md](problem-structure.md), the observation `o_t` is four
 | Command | `7` (pose/delta) | 1 & 2 | normalize → concat |
 | F/T | `6` (bias-subtracted wrench) | 1 & 2 | normalize → concat |
 | Proprioception | `~24` (EE pose 3+6D, joints 7, joint vel 7, grip 1) | 1 & 2 | normalize → concat |
-| Wrist image | `128×128×3` (current frame, opt. short stack) | 2 only | **CNN encoder (pretrained-init, fine-tuned)** → `e_img` → concat |
+| Wrist image | `224×224×3` (current frame, opt. short stack) | 2 only | **CNN encoder (pretrained-init, fine-tuned)** → `e_img` → concat |
 
 The vector streams get **no learned per-stream encoder** — they are already low-dimensional physical features, and the GRU's input-to-hidden matrix is itself the learned mixing projection (see *Overall architecture*). Only fixed, non-learned transforms are applied to them: per-channel **normalization** (fixed train-set stats, stored for inference) and the quaternion→**6D** map for orientations. The image is the sole exception — pixels need a learned CNN encoder. Image resolution/stack depth and the GRU hidden size/layers are hyperparameters calibrated against validation curves. The hidden state is reset to zero at episode start (the model must tolerate a cold start — itself realistic).
 

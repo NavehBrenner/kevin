@@ -30,8 +30,8 @@ def make_env(
     config: EnvConfig,
     *,
     render_mode: RenderMode = "headless",
-    camera_height: int = 128,
-    camera_width: int = 128,
+    camera_height: int = 224,
+    camera_width: int = 224,
 ) -> SimEnv:
     """Build a runnable :class:`SimEnv` from an :class:`EnvConfig`.
 
@@ -65,8 +65,8 @@ def make_wall_task_env(
     wall_size: tuple[float, float, float] | None = None,
     wall_dir: str | Path | None = None,
     render_mode: RenderMode = "headless",
-    camera_height: int = 128,
-    camera_width: int = 128,
+    camera_height: int = 224,
+    camera_width: int = 224,
 ) -> SimEnv:
     """Generate (or reuse) a procedural wall and return a SimEnv on the task scene.
 

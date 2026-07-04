@@ -228,6 +228,8 @@ def generate_dataset(
 
     written: list[Path] = []
     summaries: list[dict[str, object]] = []
+    frames_rendered = 0
+    render_wall_time = 0.0
     for episode_index in range(n_episodes):
         path = episode_npz_path(runs_dir, episode_index)
         if cache and _cached_matches(path, fingerprint):
@@ -269,6 +271,8 @@ def generate_dataset(
         run_episode(
             environment, controller, human, expert, max_steps=max_steps, step_callback=logger
         )
+        frames_rendered += logger.frames_rendered
+        render_wall_time += logger.render_wall_time
 
         baseline_reason: TerminalReason | None = None
         baseline_n_steps: int | None = None
@@ -341,6 +345,13 @@ def generate_dataset(
     _write_dataset_metadata(
         out_dir, summaries, seed=seed, fingerprint=fingerprint, baseline=baseline, config=config
     )
+    if render_images and frames_rendered:
+        log.info(
+            "rendered %d frames in %.1fs (%.1f frames/s)",
+            frames_rendered,
+            render_wall_time,
+            frames_rendered / render_wall_time,
+        )
     return written
 
 
