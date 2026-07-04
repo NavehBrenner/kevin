@@ -118,7 +118,7 @@ uv run kvn smoke --no-viewer    # headless (CI)
 | `--wall-seed N` | — | Run on a freshly generated procedural wall from this seed. Omit for the static task scene. |
 | `--wrist-cam` | off | Open the viewer locked to the Panda's wrist camera (robot's-eye POV) instead of the free camera; viewer keys still switch cameras live. |
 | `--distractors N` | — | Distractor-hole count when `--wall-seed` generates a wall. |
-| `--record {commands,images,all}` | off | Record the episode: `commands` → trajectory `episode.npz`; `images` → wrist-camera PNG frames in `imgs/` (the vision stream the M7 policy is fed); `all` → both. Stops on a successful insertion. |
+| `--record {commands,images,all}` | off | Record the episode: `commands` → trajectory `episode.npz`; `images` → wrist-camera JPEG frames (224×224, q90) in `imgs/` (the vision stream the M7 policy is fed); `all` → both. Stops on a successful insertion. |
 | `--record-out DIR` | auto-numbered under `data/recorded/` | Output dir for `--record` (`episode.npz` and/or `imgs/`). |
 | `--render-every N` | `1` | With `--record images`/`all`, save a frame every N recorded steps. |
 | `--max-dpos M` | `0.025` (`0.08` for vision) | Controller command clamp in m/step. Larger = the arm springs toward the target faster (responsive mirror); smaller = the slew-limited careful-insertion feel. `--input vision` also lowers joint damping for responsive tracking. |
