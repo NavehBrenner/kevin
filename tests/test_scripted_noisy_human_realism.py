@@ -31,13 +31,14 @@ def _make_observation(ee_position: np.ndarray) -> Observation:
     )
 
 
-def _make_actor(seed: int = 0) -> ScriptedNoisyHuman:
+def _make_actor(seed: int = 0, **kwargs) -> ScriptedNoisyHuman:
     goal = np.array([0.9, 0.0, 0.3])  # ~400 mm from the arm start below
     return ScriptedNoisyHuman(
         np.concatenate([goal, [1.0, 0.0, 0.0, 0.0]]),
         max_approach_speed=MAX_APPROACH_SPEED,
         control_hz=CONTROL_HZ,
         seed=seed,
+        **kwargs,
     )
 
 
@@ -106,3 +107,45 @@ def test_approach_decelerates_near_goal():
     near_field_steps = np.linalg.norm(np.diff(positions[-50:], axis=0), axis=1)
     # Once converged near the goal, per-tick moves are well below the far-field cap.
     assert near_field_steps.mean() < 0.5 * max_step
+
+
+def test_careless_probability_zero_is_a_true_no_op():
+    # LAB-92: careless_probability defaults to 0, and must not perturb the RNG
+    # stream at all (it's only drawn from when > 0) -- so passing it explicitly
+    # as 0.0 must reproduce the exact same command stream as not passing it, for
+    # every existing caller/seeded dataset.
+    obs = _make_observation(np.array([0.5, 0.0, 0.3]))
+    default_actor = _make_actor(seed=5)
+    explicit_zero_actor = _make_actor(seed=5, careless_probability=0.0)
+
+    for _ in range(500):
+        default_cmd = default_actor.get_command(obs)
+        zero_cmd = explicit_zero_actor.get_command(obs)
+        np.testing.assert_array_equal(default_cmd.target_position, zero_cmd.target_position)
+        np.testing.assert_array_equal(default_cmd.target_quaternion, zero_cmd.target_quaternion)
+
+
+def test_careless_episode_never_decelerates():
+    # LAB-92: a careless-drawn episode (careless_probability=1.0 forces the draw)
+    # skips the LAB-91 deceleration and keeps sweeping at the far-field rate cap
+    # all the way to contact, unlike a normal (non-careless) episode.
+    obs = _make_observation(np.array([0.5, 0.0, 0.3]))
+    actor = _make_actor(seed=3, careless_probability=1.0)
+    assert actor._careless is True  # noqa: SLF001 — test pins the guaranteed draw
+    max_step = MAX_APPROACH_SPEED / CONTROL_HZ
+
+    positions = [actor.get_command(obs).target_position for _ in range(3000)]
+    near_field_steps = np.linalg.norm(np.diff(positions[-50:], axis=0), axis=1)
+    # Unlike test_approach_decelerates_near_goal's non-careless case, near-goal
+    # steps stay at (or very near) the far-field cap -- no deceleration at all.
+    assert near_field_steps.mean() > 0.9 * max_step
+
+
+def test_careless_draw_depends_on_seed():
+    # A mid-range probability should yield both outcomes across a handful of
+    # seeds -- guards against a bug that ignores the draw (always/never careless).
+    outcomes = {
+        _make_actor(seed=s, careless_probability=0.5)._careless  # noqa: SLF001
+        for s in range(20)
+    }
+    assert outcomes == {True, False}
