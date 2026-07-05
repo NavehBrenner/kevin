@@ -35,7 +35,7 @@ from ai_teleop.sim.scene import SimEnv
 # base command + one controller recompute + one mj_step per iteration. This is what makes a
 # replay reproduce its recording tick-for-tick — no wall-clock-dependent substepping.
 SIM_DT = 0.002
-DEFAULT_MAX_STEPS = 2000  # ~4 s of sim time — a full M3 episode budget.
+DEFAULT_MAX_STEPS = 5000  # ~10 s of sim time — a full M3 episode budget.
 DEFAULT_RENDER_FPS = 30.0  # target viewer frames per *sim* second when there's spare time.
 DEFAULT_MIN_RENDER_FPS = 15.0  # floor — render at least this often even if it costs wall-time.
 
