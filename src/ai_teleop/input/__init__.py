@@ -12,6 +12,8 @@ To be populated as needed across Milestones 3-5.
 
 from ai_teleop.input.scripted_noisy_human import (
     DEFAULT_MAX_APPROACH_SPEED,
+    DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+    DEFAULT_SPEED_LOGNORMAL_SIGMA,
     ScriptedNoisyHuman,
     bore_aligned_grasp,
 )
@@ -27,6 +29,8 @@ from ai_teleop.input.vision_input import (
 
 __all__ = [
     "DEFAULT_MAX_APPROACH_SPEED",
+    "DEFAULT_SPEED_LOGNORMAL_MEDIAN",
+    "DEFAULT_SPEED_LOGNORMAL_SIGMA",
     "NeutralAnchor",
     "ScriptedNoisyHuman",
     "VisionInput",

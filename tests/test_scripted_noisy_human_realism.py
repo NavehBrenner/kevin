@@ -149,3 +149,58 @@ def test_careless_draw_depends_on_seed():
         for s in range(20)
     }
     assert outcomes == {True, False}
+
+
+def test_speed_lognormal_zero_is_a_true_no_op():
+    # LAB-96: speed_lognormal_median defaults to 0, and must not perturb the RNG
+    # stream at all (only drawn when > 0) -- so passing it explicitly as 0.0 must
+    # reproduce the exact same command stream as not passing it, keeping every
+    # existing seeded dataset reproducible.
+    obs = _make_observation(np.array([0.5, 0.0, 0.3]))
+    default_actor = _make_actor(seed=5)
+    explicit_zero_actor = _make_actor(seed=5, speed_lognormal_median=0.0)
+
+    assert default_actor.max_approach_speed == MAX_APPROACH_SPEED
+    for _ in range(500):
+        default_cmd = default_actor.get_command(obs)
+        zero_cmd = explicit_zero_actor.get_command(obs)
+        np.testing.assert_array_equal(default_cmd.target_position, zero_cmd.target_position)
+        np.testing.assert_array_equal(default_cmd.target_quaternion, zero_cmd.target_quaternion)
+
+
+def test_speed_lognormal_draw_replaces_the_fixed_cap():
+    # sigma=0 collapses the lognormal to its median exactly, so the drawn speed
+    # (and the far-field per-tick step it implies) is deterministic and must
+    # override the fixed max_approach_speed passed alongside it.
+    obs = _make_observation(np.array([0.5, 0.0, 0.3]))
+    median = 0.09
+    actor = _make_actor(seed=4, speed_lognormal_median=median, speed_lognormal_sigma=0.0)
+    assert actor.max_approach_speed == median
+
+    first = actor.get_command(obs).target_position
+    second = actor.get_command(obs).target_position
+    far_field_step = np.linalg.norm(second - first)
+    assert far_field_step <= median / CONTROL_HZ + 1e-9
+    assert far_field_step > 0.9 * median / CONTROL_HZ
+
+
+def test_speed_lognormal_draw_depends_on_seed_and_is_reproducible():
+    # The draw comes from the operator's own seeded RNG: same seed => same
+    # speed (what replay-as-baseline relies on), different seeds => an actual
+    # episode-level spread (guards against a bug that ignores the draw).
+    speeds = {
+        _make_actor(seed=s, speed_lognormal_median=0.09).max_approach_speed for s in range(20)
+    }
+    assert len(speeds) == 20
+    actor_a = _make_actor(seed=6, speed_lognormal_median=0.09)
+    actor_b = _make_actor(seed=6, speed_lognormal_median=0.09)
+    assert actor_a.max_approach_speed == actor_b.max_approach_speed
+
+
+def test_speed_lognormal_draw_leaves_bias_draws_untouched():
+    # The speed draw happens after the bias/careless draws, so enabling it must
+    # not shift the per-episode aim (the LAB-77/78 calibration) for a given seed.
+    plain = _make_actor(seed=8)
+    drawn = _make_actor(seed=8, speed_lognormal_median=0.09)
+    np.testing.assert_array_equal(plain.position_bias, drawn.position_bias)
+    np.testing.assert_array_equal(plain.orientation_bias, drawn.orientation_bias)

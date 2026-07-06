@@ -116,6 +116,8 @@ loader's responsibility, not M4's.
 | `human_seed` | concrete int seeding the scripted operator (derived from the key) |
 | `fingerprint` | hash of all trajectory-determining inputs (used for the regen cache) |
 | `max_dpos`, `expert_d_far` | controller clamp / expert engagement distance used |
+| `joint_damping` | controller joint-space kd used (LAB-96: data-gen defaults to the deployment/teleop config, kd=1.5 + clamp 0.3) |
+| `speed_lognormal_median`, `speed_lognormal_sigma` | operator per-episode `max_approach_speed` lognormal draw (LAB-96); median 0 = draw disabled. Absent on pre-LAB-96 episodes |
 | `target_hole_index` | which hole was the active target |
 | `terminal_reason` | `success` \| `force_abort` \| `timeout` (combined human **+** expert) |
 | `episode_success` | bool (`terminal_reason == success`) |
@@ -158,7 +160,7 @@ M5 loader). Aggregates the run:
 | `schema_version`, `master_seed`, `n_episodes` | dataset identity |
 | `generated_at` | UTC ISO-8601 timestamp |
 | `fingerprint` | shared trajectory fingerprint for this config |
-| `config` | `max_steps`, `max_dpos`, `expert_d_far`, the thresholds, and `scene` |
+| `config` | `max_steps`, `max_dpos`, `joint_damping`, `expert_d_far`, `speed_lognormal_*`, the thresholds, and `scene` |
 | `expert` | `{counts: {reason: n}, success_rate}` — the combined human+expert system |
 | `baseline_no_assist` | *(if baseline ran)* same shape — the human-only rate |
 | `expert_lift` | *(if baseline ran)* `expert.success_rate − baseline.success_rate` |

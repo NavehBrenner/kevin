@@ -42,6 +42,20 @@ scripted force-abort and success motion stayed ~3% apart regardless of
 ``decel_radius``. Default 0 disables the mode, reproducing LAB-91 behavior
 exactly (including its RNG stream — see the constructor).
 
+A per-episode **lognormal draw on ``max_approach_speed``** (LAB-95/96,
+``speed_lognormal_median``/``speed_lognormal_sigma``) supersedes that discrete
+carelessness draw as the episode-level speed lever: the recorded corpus'
+realized contact speed spreads ~4x across episodes, and that spread — not any
+within-episode profile — is what separates force-abort episodes from successes
+(aborts arrive ~+41% faster). Neither LAB-91's deceleration nor LAB-92's
+carelessness could express it under the old data-gen controller config
+(kd=4 pinned realized speed at ~55 mm/s regardless of the command); under the
+deployment config (kd=1.5, the config `data/recorded` was captured under) the
+lognormal draw reproduces the recorded force-abort rate, motion-tail ratio,
+and contact-speed differential simultaneously — see
+`project-wiki/synthesis/scripted-vs-real-operator.md` (LAB-95 section).
+Default 0 disables the draw (fixed ``max_approach_speed``, RNG untouched).
+
 Composition, fully determined by the constructor `seed` (plus the arm's
 deterministic reset pose, read once from the first observation):
 
@@ -108,6 +122,17 @@ DEFAULT_DECEL_RADIUS: float = 0.016
 # reproducing LAB-91 behavior (and its RNG stream) exactly.
 DEFAULT_CARELESS_PROBABILITY: float = 0.0
 
+# Per-episode lognormal draw on max_approach_speed (LAB-95/96): a real operator's
+# realized contact speed spreads ~4x across episodes (26-105 mm/s p10-p90 in
+# `data/recorded`), and that episode-level careful-vs-hasty spectrum IS the
+# force-abort signature (fast episodes abort). A lognormal fitted to the recorded
+# near-field command speeds reproduces it: p90/median ~2.7 => sigma = 0.76;
+# median 0.09-0.12 m/s brackets the recorded stats under the deployment
+# controller config. Median 0 (default) disables the draw — the fixed
+# max_approach_speed applies, and the RNG stream is untouched (LAB-92 pattern).
+DEFAULT_SPEED_LOGNORMAL_MEDIAN: float = 0.0
+DEFAULT_SPEED_LOGNORMAL_SIGMA: float = 0.76
+
 
 def _axis_angle_to_quat(axis_angle: np.ndarray) -> np.ndarray:
     """Convert a (3,) axis-angle vector to a (w,x,y,z) unit quaternion."""
@@ -155,6 +180,17 @@ class ScriptedNoisyHuman:
         orientation bias. Only consumes RNG state when > 0, so the default
         (0) reproduces the pre-LAB-92 RNG stream exactly. See
         :data:`DEFAULT_CARELESS_PROBABILITY`.
+    speed_lognormal_median:
+        Median (m/s) of a per-episode lognormal draw that *replaces* the fixed
+        ``max_approach_speed`` — the careful-vs-hasty episode spectrum
+        (LAB-95/96). Drawn once at construction; the realized value is exposed
+        as :attr:`max_approach_speed`. Only consumes RNG state when > 0, so
+        the default (0, disabled) reproduces the pre-LAB-96 RNG stream
+        exactly. See :data:`DEFAULT_SPEED_LOGNORMAL_MEDIAN`.
+    speed_lognormal_sigma:
+        Log-space sigma of that draw (p90/median = exp(1.2817·sigma); the
+        default 0.76 gives the recorded corpus' ~2.7). Ignored while the
+        median is 0. See :data:`DEFAULT_SPEED_LOGNORMAL_SIGMA`.
     control_hz:
         Control-loop rate (one ``get_command`` call per tick). Sets the per-tick
         drift step ``dt = 1 / control_hz`` and the per-tick approach cap.
@@ -176,6 +212,8 @@ class ScriptedNoisyHuman:
         max_approach_speed: float = DEFAULT_MAX_APPROACH_SPEED,
         decel_radius: float = DEFAULT_DECEL_RADIUS,
         careless_probability: float = DEFAULT_CARELESS_PROBABILITY,
+        speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+        speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
         control_hz: float = 500.0,
         seed: int = 0,
     ) -> None:
@@ -190,7 +228,6 @@ class ScriptedNoisyHuman:
         self._drift_orientation_std = drift_orientation_std
         self._tremor_std = tremor_std
         self._dt_control = 1.0 / control_hz
-        self._max_step = max_approach_speed * self._dt_control  # per-tick cap, metres
         self._decel_radius = decel_radius
 
         # Per-tick OU decay; stationary std preserved via the sqrt(1 - beta^2)
@@ -210,6 +247,19 @@ class ScriptedNoisyHuman:
         self._careless = bool(
             careless_probability > 0.0 and self._rng.random() < careless_probability
         )
+
+        # Per-episode approach-speed draw (LAB-95/96) — a lognormal on
+        # max_approach_speed models the careful-vs-hasty episode spectrum the
+        # recorded corpus shows. Only consumes the RNG when enabled, so
+        # speed_lognormal_median=0.0 (default) leaves the RNG stream identical
+        # to pre-LAB-96 code and every existing seeded trajectory stays
+        # reproducible.
+        if speed_lognormal_median > 0.0:
+            max_approach_speed = float(
+                speed_lognormal_median * np.exp(speed_lognormal_sigma * self._rng.normal())
+            )
+        self.max_approach_speed: float = float(max_approach_speed)
+        self._max_step = self.max_approach_speed * self._dt_control  # per-tick cap, metres
 
         self._goal_position = self._target_position + self.position_bias
         bias_quat = _axis_angle_to_quat(self.orientation_bias)

@@ -101,17 +101,17 @@ def run_one(
         # Per-episode approach-speed draw: the recorded operator's realized
         # contact speed varies ~4x across episodes (26-105 mm/s p10-p90), and
         # that variance IS the force-abort signature (fast episodes abort).
-        # A lognormal on max_approach_speed reproduces an episode-level
-        # careful-vs-hasty spectrum; drawn from its own RNG stream so the
-        # operator's bias/drift streams stay untouched.
-        human_kwargs: dict = {}
-        if speed_lognorm_median > 0.0:
-            speed_rng = np.random.default_rng(_human_seed(master_seed, episode_index) ^ 0x5B33D)
-            human_kwargs["max_approach_speed"] = float(
-                speed_lognorm_median * np.exp(speed_lognorm_sigma * speed_rng.normal())
-            )
+        # Post-LAB-96 the lognormal draw is productized inside the operator
+        # itself (drawn from its seeded RNG, after the bias/careless draws), so
+        # the probe routes through the shipped code path — n>=40 runs verify the
+        # corpus recipe, not a simulation of it. (The original LAB-95 probe drew
+        # externally from a separate RNG stream, so per-seed numbers shift
+        # slightly vs the RESULT above; the statistics are the same recipe.)
         human = ScriptedNoisyHuman(
-            target_pose, seed=_human_seed(master_seed, episode_index), **human_kwargs
+            target_pose,
+            seed=_human_seed(master_seed, episode_index),
+            speed_lognormal_median=speed_lognorm_median,
+            speed_lognormal_sigma=speed_lognorm_sigma,
         )
         probe = TerminationProbe(
             controller,

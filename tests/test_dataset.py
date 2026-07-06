@@ -134,10 +134,21 @@ def test_generate_dataset_writes_layout_and_metadata(tmp_path):
     assert "expert_lift" in summary
     assert len(summary["episodes"]) == 2
 
+    # The corpus config (incl. the LAB-96 deployment-controller + speed-draw
+    # knobs) is echoed into metadata.json so the dataset regenerates from it.
+    config = summary["config"]
+    assert config["max_dpos"] == 0.3 and config["joint_damping"] == 1.5
+    assert config["speed_lognormal_median"] == pytest.approx(0.09)
+    assert config["speed_lognormal_sigma"] == pytest.approx(0.76)
+
     # Per-episode trajectory metadata carries the paired baseline outcome...
     _, ep_meta = load_episode(paths[0])
     assert "baseline_terminal_reason" in ep_meta
     assert isinstance(ep_meta["baseline_success"], bool)
+    # ...the controller/operator config replay rebuilds from (LAB-96)...
+    assert ep_meta["joint_damping"] == 1.5
+    assert ep_meta["speed_lognormal_median"] == pytest.approx(0.09)
+    assert ep_meta["speed_lognormal_sigma"] == pytest.approx(0.76)
     # ...and the seeds the episode was generated with.
     assert ep_meta["scene_seed"] == [0, 0]  # [master_seed, episode_index]
     assert isinstance(ep_meta["human_seed"], int)
@@ -185,6 +196,41 @@ def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
     src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text(encoding="utf-8"))
     regen_meta = json.loads((tmp_path / "regen" / "metadata.json").read_text(encoding="utf-8"))
     assert regen_meta["fingerprint"] == src_meta["fingerprint"]
+
+
+def test_fingerprint_of_legacy_config_is_unchanged():
+    # Pre-LAB-96 metadata carries no joint_damping / speed_lognormal_* keys, and
+    # its committed fingerprint was hashed over the old five-field payload. The
+    # legacy config (kd=4.0, speed draw disabled) must keep producing that exact
+    # hash, or every committed pre-LAB-96 manifest would spuriously mismatch on
+    # regeneration. Pinned to data/dataset_6's committed fingerprint.
+    from ai_teleop.data.generate import _episode_fingerprint
+
+    legacy = _episode_fingerprint(
+        seed=6,
+        max_steps=6000,
+        max_dpos=0.025,
+        expert_d_far=0.1,
+        generated_walls=True,
+        joint_damping=4.0,
+        speed_lognormal_median=0.0,
+        speed_lognormal_sigma=0.76,
+    )
+    assert legacy == "b8dafbe9171f768f"
+    # And the LAB-96 knobs do enter the hash once they leave the legacy config.
+    assert (
+        _episode_fingerprint(
+            seed=6,
+            max_steps=6000,
+            max_dpos=0.025,
+            expert_d_far=0.1,
+            generated_walls=True,
+            joint_damping=1.5,
+            speed_lognormal_median=0.09,
+            speed_lognormal_sigma=0.76,
+        )
+        != legacy
+    )
 
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")

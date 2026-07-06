@@ -50,7 +50,6 @@ from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_FORCE_CAP,
     DEFAULT_LATERAL_TOLERANCE,
-    DEFAULT_MAX_DPOS,
     DEFAULT_SUCCESS_DEPTH,
 )
 from ai_teleop.data.step_callbacks import EpisodeLogger, TerminationProbe  # noqa: E402
@@ -58,6 +57,7 @@ from ai_teleop.data.trajectory import TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
+    DEFAULT_SPEED_LOGNORMAL_SIGMA,
     ScriptedNoisyHuman,
     VisionInput,
     WorkspaceCalibration,
@@ -183,12 +183,21 @@ def _rebuild_for_replay(meta: EpisodeMetadata, render_mode):
     )
     observation = env.reset()
 
-    controller_kwargs: dict[str, float] = {
-        "max_dpos_per_step": float(meta.get("max_dpos", DEFAULT_MAX_DPOS))
-    }
+    # Episodes old enough to omit max_dpos predate LAB-96's deployment-config
+    # data-gen default (0.3), so the right fallback is the careful-insertion
+    # clamp they actually ran under — not data.generate's current default.
+    controller_kwargs: dict[str, float] = {"max_dpos_per_step": float(meta.get("max_dpos", 0.025))}
     if "joint_damping" in meta:
         controller_kwargs["joint_damping"] = float(meta["joint_damping"])
-    if "force_cap" in meta:  # stored None means the watchdog was off (--no-force-cap)
+    # `force_cap` means two different things depending on who stamped it. Live
+    # recordings (this script) stamp the controller *watchdog* (None ⇒ off,
+    # --no-force-cap). Datagen episodes — recognizable by their `fingerprint` —
+    # stamp the 50 N *episode-terminal* threshold under the same key; their
+    # controller always ran the default watchdog. Mapping the 50 N threshold
+    # onto the watchdog let a replayed arm sail past the 30 N transients the
+    # original run locked on (surfaced by LAB-96's corpus, where ~half the
+    # baselines lock).
+    if "force_cap" in meta and "fingerprint" not in meta:
         force_cap = meta["force_cap"]
         controller_kwargs["force_cap_n"] = math.inf if force_cap is None else float(force_cap)
     controller = Controller(env, **controller_kwargs)
@@ -354,7 +363,17 @@ def build_input(
             seed,
         )
         target_pose = np.concatenate([target_position, home_quaternion])
-        return ScriptedNoisyHuman(target_pose, seed=seed), None
+        # Rebuild the operator's speed-draw config too (LAB-96): the drawn
+        # max_approach_speed comes from the operator's own seeded RNG, so seed +
+        # config reproduce it; pre-LAB-96 episodes carry no keys ⇒ draw disabled.
+        return ScriptedNoisyHuman(
+            target_pose,
+            seed=seed,
+            speed_lognormal_median=float(config.replay_meta.get("speed_lognormal_median", 0.0)),
+            speed_lognormal_sigma=float(
+                config.replay_meta.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
+            ),
+        ), None
     if config.is_replay:
         assert config.replay_columns is not None
         return _ReplayInput(config.replay_columns), None
@@ -400,23 +419,44 @@ def build_input(
     return ScriptedNoisyHuman(target_pose, seed=args.seed), None
 
 
+def _terminal_callback_extra(recorded_reason: object) -> int:
+    """1 if the recorded outcome was probe-fired (success/force_abort), else 0.
+
+    ``run_episode`` evaluates the step_callback *before* each iteration's
+    control+physics, so an episode that terminated via the probe ran its firing
+    callback on the iteration *after* its last physics step. A replay budgeted
+    to exactly the recorded step count never reaches that callback and would
+    report every probe-terminated episode as TIMEOUT (surfaced by LAB-96's
+    corpus, where ~half the baselines force-abort). The extra iteration only
+    runs the callback — the probe fires before any extra physics, so the step
+    count and trajectory are untouched. Timeout recordings get no extra
+    callback: their generation run never evaluated one past the budget either.
+    """
+    return 0 if recorded_reason in (None, TerminalReason.TIMEOUT.value) else 1
+
+
 def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
     """Resolve the step budget, returning ``(max_steps, budget_label)``.
 
     A replay plays back exactly the recorded commands, so it runs for the recorded length;
     a regenerated baseline (see ``replay_as_baseline``) runs for the recorded baseline length
     so it reproduces the scored human-only rollout; live input falls back to DEFAULT_MAX_STEPS.
-    Explicit 0/negative => run effectively forever (``range()`` is lazy, so ``sys.maxsize``
-    costs nothing).
+    Probe-terminated recordings get one extra iteration — see
+    :func:`_terminal_callback_extra`. Explicit 0/negative => run effectively forever
+    (``range()`` is lazy, so ``sys.maxsize`` costs nothing).
     """
     args = config.args
     if args.max_steps is not None:
         requested_steps = args.max_steps
     elif config.replay_as_baseline:
-        requested_steps = int(config.replay_meta["baseline_n_steps"])
+        requested_steps = int(config.replay_meta["baseline_n_steps"]) + _terminal_callback_extra(
+            config.replay_meta.get("baseline_terminal_reason")
+        )
     elif config.is_replay:
         assert config.replay_columns is not None
-        requested_steps = len(config.replay_columns["step"])
+        requested_steps = len(config.replay_columns["step"]) + _terminal_callback_extra(
+            config.replay_meta.get("terminal_reason")
+        )
     else:
         requested_steps = DEFAULT_MAX_STEPS
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
