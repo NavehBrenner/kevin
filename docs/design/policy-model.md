@@ -14,7 +14,7 @@ This document specifies `π_θ`: the network that, every control step, maps the 
 
 ## Output
 
-`Δ = (Δposition ∈ ℝ³, Δorientation ∈ ℝ³ axis-angle, Δgrip ∈ ℝ¹)` — 7 numbers, identical signature to the expert. The clamp (`±2 cm / ±10° / ±5 N` per step) is applied **outside** the network, before the controller, so the policy is safe-by-construction even if it emits garbage. The network itself can output unbounded reals; we may add a `tanh`-scaled head to keep raw outputs near the clamp range and ease training, but the hard safety bound is the external clamp, not the activation.
+`Δ = (Δposition ∈ ℝ³, Δorientation ∈ ℝ³ axis-angle, Δgrip ∈ ℝ¹)` — 7 numbers, identical signature to the expert. The clamp (`±3 cm / ±10° / ±5 N` per step) is applied **outside** the network, before the controller, so the policy is safe-by-construction even if it emits garbage. The network itself can output unbounded reals; we may add a `tanh`-scaled head to keep raw outputs near the clamp range and ease training, but the hard safety bound is the external clamp, not the activation.
 
 ## Inputs — the four streams (recap)
 

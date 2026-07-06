@@ -84,7 +84,7 @@ def test_get_delta_returns_clamped_delta():
     assert delta.delta_position.shape == (3,)
     assert delta.delta_orientation.shape == (3,)
     # Within the seam's per-step Δ bounds (the wrapper clamps on the way out).
-    assert np.linalg.norm(delta.delta_position) <= 0.02 + 1e-9
+    assert np.linalg.norm(delta.delta_position) <= 0.03 + 1e-9
     assert np.linalg.norm(delta.delta_orientation) <= np.deg2rad(10.0) + 1e-9
     assert abs(delta.delta_grip_force) <= 5.0 + 1e-9
 
@@ -264,7 +264,7 @@ def test_learned_residual_runs_in_run_episode_unchanged():
     assert result.n_steps == 60
     assert len(applied_deltas) == 60
     for delta in applied_deltas:
-        assert np.linalg.norm(delta.delta_position) <= 0.02 + 1e-9
+        assert np.linalg.norm(delta.delta_position) <= 0.03 + 1e-9
         assert np.linalg.norm(delta.delta_orientation) <= np.deg2rad(10.0) + 1e-9
         # apply_delta must accept it without error (the seam combine step).
         apply_delta(human.get_command(observation), delta)

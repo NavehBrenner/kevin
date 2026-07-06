@@ -7,7 +7,7 @@ Per-tick combine step:
     command      = apply_delta(base_command, delta)   # → Controller.compute
 
 Per-step Δ bounds (distinct from the controller's command clamp added in M2):
-    |Δposition| ≤ 2 cm, |Δorientation| ≤ 10°, |Δgrip| ≤ 5 N.
+    |Δposition| ≤ 3 cm, |Δorientation| ≤ 10°, |Δgrip| ≤ 5 N.
 
 Quaternion composition uses MuJoCo helpers for consistency with the rest of
 the stack. Δorientation is a world-frame rotation (left-multiply).
@@ -23,7 +23,13 @@ import numpy as np
 from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 
-_MAX_DELTA_POSITION: float = 0.02
+# Raised 0.02 → 0.03 by LAB-100: under the deployment controller config the
+# ±2 cm bound was the binding constraint on the expert's approach-speed brake
+# (LAB-98's saturated residual aborts). 3 cm is the smallest bound that stops
+# the clamp saturating on success episodes and matches 4 cm's measured ceiling
+# on both sweep seed families. Corpora record their own bound (`delta_clamp`
+# in metadata), so pre-LAB-100 datasets regenerate at their original ±2 cm.
+_MAX_DELTA_POSITION: float = 0.03
 _MAX_DELTA_ORIENTATION: float = float(np.deg2rad(10.0))
 _MAX_DELTA_GRIP_FORCE: float = 5.0
 
@@ -38,12 +44,20 @@ class Delta:
 ZERO_DELTA: Delta = Delta(np.zeros(3), np.zeros(3), 0.0)
 
 
-def clamp_delta(delta: Delta) -> Delta:
-    """Clamp delta to the per-step Δ bounds from the residual-policy interface."""
+def clamp_delta(delta: Delta, *, max_delta_position: float | None = None) -> Delta:
+    """Clamp delta to the per-step Δ bounds from the residual-policy interface.
+
+    ``max_delta_position`` overrides the position bound for callers that carry a
+    per-corpus bound (data generation regenerating a legacy dataset must clamp
+    the expert at the bound the corpus was recorded under — see
+    ``data.generate``). ``None`` (the default, and the deployed-policy path)
+    uses the module bound.
+    """
+    position_bound = _MAX_DELTA_POSITION if max_delta_position is None else max_delta_position
     position = delta.delta_position
     position_norm = float(np.linalg.norm(position))
-    if position_norm > _MAX_DELTA_POSITION:
-        position = position * (_MAX_DELTA_POSITION / position_norm)
+    if position_norm > position_bound:
+        position = position * (position_bound / position_norm)
 
     orientation = delta.delta_orientation
     orientation_norm = float(np.linalg.norm(orientation))

@@ -63,11 +63,12 @@ _TARGET_HOLE_INDEX = 0
 # reachable per-trial via the ``max_dpos`` argument.
 DEFAULT_MAX_DPOS = _DATAGEN_MAX_DPOS
 
-# Per-episode step budget for an insertion trial (~12 s of sim @ 500 Hz). The M5
-# corpus was generated at this budget (see data/dataset_*/metadata.json → config.max_steps
-# = 6000); insertion needs ~12 s, so the runner's generic 2000-step default times out
-# 100+ mm short and every config reads 0%. Eval must use the same task budget as data-gen.
-INSERTION_MAX_STEPS = 6000
+# Per-episode step budget for an insertion trial (~18 s of sim @ 500 Hz). Moves in
+# lockstep with data.generate.DEFAULT_MAX_STEPS (6000 → 9000 by LAB-100: the operator
+# speed draw's slow tail needs the extra clock to finish seating); eval must use the
+# same task budget as data-gen or timeout rates measure the budget, not the policy.
+# Pre-LAB-100 corpora (dataset_8 and earlier) were generated at 6000.
+INSERTION_MAX_STEPS = 9000
 
 # Difficulty knob for the LAB-53 pin: a multiplier on the scripted operator's lateral
 # error (per-episode bias + OU drift) relative to the M5 training distribution.

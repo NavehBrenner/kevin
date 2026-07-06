@@ -42,7 +42,7 @@ command*_t = c_t ⊕ Δ            # operator command + correction
 → impedance controller → MuJoCo step
 ```
 
-Clamp bounds (from the scope's safety envelope): `Δposition ≤ 2 cm/step`, `Δorientation ≤ 10°/step`, `Δgrip ≤ 5 N/step`. Setting `Δ = 0` recovers the unassisted operator exactly — that is the "human-only" baseline for free.
+Clamp bounds (from the scope's safety envelope): `Δposition ≤ 3 cm/step` (±2 cm before the LAB-100 recalibration), `Δorientation ≤ 10°/step`, `Δgrip ≤ 5 N/step`. Setting `Δ = 0` recovers the unassisted operator exactly — that is the "human-only" baseline for free.
 
 This is a **residual** formulation: the policy never commands an absolute pose. It only nudges. The stable backbone (impedance control + passive chamfer alignment) does the heavy lifting; the policy supplies the last-millimeter intent the operator's coarse command lacks.
 

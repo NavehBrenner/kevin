@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import mujoco
 import numpy as np
+import pytest
 
 from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
@@ -205,9 +206,23 @@ def test_brake_stays_zero_far_from_hole():
 def test_delta_respects_clamp_bounds():
     expert = Expert(d_near=0.05, d_far=0.5)
     hole = np.array([0.79, 0.0, 0.45])
-    # A large lateral error would over-shoot the 2 cm clamp pre-clamp.
+    # A large lateral error would over-shoot the 3 cm clamp pre-clamp.
     tip = hole - np.array([0.03, 0.0, 0.0]) + np.array([0.0, 0.1, 0.0])
     delta = expert.get_delta(_make_observation(tip_position=tip), _dummy_command())
-    assert np.linalg.norm(delta.delta_position) <= 0.02 + 1e-9
+    assert np.linalg.norm(delta.delta_position) <= 0.03 + 1e-9
     assert np.linalg.norm(delta.delta_orientation) <= np.deg2rad(10.0) + 1e-9
     assert abs(delta.delta_grip_force) <= 5.0 + 1e-9
+
+
+def test_delta_respects_explicit_max_delta_position():
+    # Data generation passes the fingerprinted per-corpus bound (LAB-100): the
+    # same saturating state must clamp exactly at whichever bound is supplied,
+    # so regenerating a legacy corpus reproduces its recorded ±2 cm labels
+    # whatever the module-wide deployed bound is.
+    hole = np.array([0.79, 0.0, 0.45])
+    tip = hole - np.array([0.03, 0.0, 0.0]) + np.array([0.0, 0.1, 0.0])
+    observation = _make_observation(tip_position=tip)
+    for bound in (0.02, 0.04):
+        expert = Expert(d_near=0.05, d_far=0.5, max_delta_position=bound)
+        delta = expert.get_delta(observation, _dummy_command())
+        assert np.linalg.norm(delta.delta_position) == pytest.approx(bound)

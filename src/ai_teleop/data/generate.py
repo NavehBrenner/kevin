@@ -80,7 +80,15 @@ _TARGET_HOLE_INDEX = 0
 # actual scene-file name instead.
 _GENERATED_SCENE_LABEL = "generated"
 
-DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
+# ~18 s @ 500 Hz. Raised 6000 → 9000 by LAB-100: under the operator speed
+# draw's slow tail the peg arrives late and the expert timeouts run out of
+# clock mid-seating (LAB-100 probe: every dataset_8-config timeout had already
+# entered the expert's d_far band — late arrivals, not non-arrivals). The
+# extra 6 s converts most of them (timeouts 20% → 8% at n=40, aborts
+# unchanged) without disturbing the LAB-95/96 realism anchor (baseline
+# force-aborts hold at ~50%). Comparability caveat: the recorded reference
+# sessions ran 5000 steps (10 s).
+DEFAULT_MAX_STEPS = 9000
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
 DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral error for a "seated" peg (m); LAB-77 calibration
 DEFAULT_FORCE_CAP = 50.0  # wrist force magnitude that aborts the episode (N)
@@ -120,6 +128,16 @@ DEFAULT_SPEED_LOGNORMAL_SIGMA = 0.76
 DEFAULT_EXPERT_BRAKE_GAIN = 1.0
 DEFAULT_EXPERT_BRAKE_LEAD_FLOOR = 0.008
 
+# Shared expert/policy per-step Δ-position bound for the corpus (LAB-100). The
+# expert clamps its label to this, and it is what bounds the brake's authority
+# — the structural residual LAB-98 measured (operator sweeps faster than the
+# clamp can absorb still crash). Raised 0.02 → 0.03 by the LAB-100 sweep
+# (n=40 × two seed families, 9000-step budget): expert aborts 22% → 15% on
+# the corpus family with success-episode clamp saturation at zero; 0.04
+# measured the same ceiling within noise, so the smaller bound is kept.
+# Matches domain.delta._MAX_DELTA_POSITION (the deployed bound).
+DEFAULT_DELTA_CLAMP = 0.03
+
 # The pre-LAB-96 corpus config (the Controller's careful-insertion defaults, no
 # per-episode speed draw). Fingerprints and `regenerate_from_metadata` treat this
 # as the implicit config of metadata written before these knobs existed, so
@@ -128,6 +146,9 @@ _LEGACY_JOINT_DAMPING = 4.0
 _LEGACY_SPEED_LOGNORMAL_MEDIAN = 0.0
 # Pre-LAB-98: no expert brake (gain 0 disables it inside `Expert`).
 _LEGACY_EXPERT_BRAKE_GAIN = 0.0
+# Pre-LAB-100: the ±2 cm Δ-position bound every earlier corpus was clamped at
+# (the `domain.delta` module bound of the time).
+_LEGACY_DELTA_CLAMP = 0.02
 
 
 def _episode_fingerprint(
@@ -142,6 +163,7 @@ def _episode_fingerprint(
     speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     expert_brake_gain: float = _LEGACY_EXPERT_BRAKE_GAIN,
     expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
+    delta_clamp: float = _LEGACY_DELTA_CLAMP,
 ) -> str:
     """Stable hash of every input that determines an episode's trajectory.
 
@@ -155,7 +177,8 @@ def _episode_fingerprint(
     (kd=4.0, no speed draw — behavior-identical to pre-LAB-96 code, RNG
     included), so a legacy dataset's committed fingerprint still matches its
     regeneration. The LAB-98 expert-brake knobs follow the same pattern (gain 0
-    == the brake-free pre-LAB-98 expert, bit-exact).
+    == the brake-free pre-LAB-98 expert, bit-exact), as does the LAB-100
+    Δ-clamp (the legacy ±2 cm bound == pre-LAB-100 behavior, bit-exact).
     """
     import hashlib
 
@@ -164,6 +187,8 @@ def _episode_fingerprint(
         payload += f"|{joint_damping:.6f}|{speed_lognormal_median:.6f}|{speed_lognormal_sigma:.6f}"
     if expert_brake_gain > 0.0:
         payload += f"|{expert_brake_gain:.6f}|{expert_brake_lead_floor:.6f}"
+    if delta_clamp != _LEGACY_DELTA_CLAMP:
+        payload += f"|clamp{delta_clamp:.6f}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -254,6 +279,7 @@ def generate_dataset(
     expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
     speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
     speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
+    delta_clamp: float = DEFAULT_DELTA_CLAMP,
     generated_walls: bool = True,
     cache: bool = True,
     baseline: bool = True,
@@ -303,6 +329,10 @@ def generate_dataset(
         brake_gain=expert_brake_gain,
         brake_lead_floor=expert_brake_lead_floor,
         target_hole_index=_TARGET_HOLE_INDEX,
+        # Explicit per-corpus bound (not the module default): regenerating a
+        # legacy dataset must clamp the expert at the bound it was recorded
+        # under, whatever the deployed bound is today (LAB-100).
+        max_delta_position=delta_clamp,
     )
     thresholds = dict(
         success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
@@ -318,6 +348,7 @@ def generate_dataset(
         speed_lognormal_sigma=speed_lognormal_sigma,
         expert_brake_gain=expert_brake_gain,
         expert_brake_lead_floor=expert_brake_lead_floor,
+        delta_clamp=delta_clamp,
     )
 
     written: list[Path] = []
@@ -417,6 +448,7 @@ def generate_dataset(
             "expert_d_far": expert_d_far,
             "expert_brake_gain": expert_brake_gain,
             "expert_brake_lead_floor": expert_brake_lead_floor,
+            "delta_clamp": delta_clamp,
             "target_hole_index": _TARGET_HOLE_INDEX,
             "generated_wall": generated_walls,
             "wall_seed": wall_seed,
@@ -453,6 +485,7 @@ def generate_dataset(
         "expert_brake_lead_floor": expert_brake_lead_floor,
         "speed_lognormal_median": speed_lognormal_median,
         "speed_lognormal_sigma": speed_lognormal_sigma,
+        "delta_clamp": delta_clamp,
         "success_depth": success_depth,
         "lateral_tolerance": lateral_tolerance,
         "force_cap": force_cap,
@@ -601,6 +634,8 @@ def regenerate_from_metadata(
     speed_lognormal_sigma = config.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
     expert_brake_gain = config.get("expert_brake_gain", _LEGACY_EXPERT_BRAKE_GAIN)
     expert_brake_lead_floor = config.get("expert_brake_lead_floor", DEFAULT_EXPERT_BRAKE_LEAD_FLOOR)
+    # Absent ⇒ pre-LAB-100 corpus, clamped at the legacy ±2 cm bound.
+    delta_clamp = config.get("delta_clamp", _LEGACY_DELTA_CLAMP)
 
     target = Path(out_dir) if out_dir is not None else metadata_path.parent
     written = generate_dataset(
@@ -618,6 +653,7 @@ def regenerate_from_metadata(
         expert_brake_lead_floor=expert_brake_lead_floor,
         speed_lognormal_median=speed_lognormal_median,
         speed_lognormal_sigma=speed_lognormal_sigma,
+        delta_clamp=delta_clamp,
         generated_walls=generated_walls,
         cache=not force,
         baseline="baseline_no_assist" in metadata,
@@ -636,6 +672,7 @@ def regenerate_from_metadata(
         speed_lognormal_sigma=speed_lognormal_sigma,
         expert_brake_gain=expert_brake_gain,
         expert_brake_lead_floor=expert_brake_lead_floor,
+        delta_clamp=delta_clamp,
     )
     if expected is not None and actual != expected:
         log.warning(
