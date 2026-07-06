@@ -84,12 +84,42 @@ DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
 DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral error for a "seated" peg (m); LAB-77 calibration
 DEFAULT_FORCE_CAP = 50.0  # wrist force magnitude that aborts the episode (N)
-DEFAULT_MAX_DPOS = 0.025  # controller command clamp (m/step); approach-speed knob
 DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
+
+# Controller config for the corpus (LAB-95/96): the DEPLOYMENT (teleop) config —
+# what `run_episode.py --input vision` runs and what `data/recorded` was captured
+# under — NOT the Controller's own careful-insertion defaults (kd=4.0, clamp
+# 0.025). Training data must match the contact dynamics the policy deploys into:
+# under kd=4 the free-space slew pins at ~0.05 m/s, erasing the episode-to-episode
+# speed variance that IS the recorded force-abort signature (LAB-95 root cause).
+DEFAULT_MAX_DPOS = 0.3  # controller command clamp (m/step)
+DEFAULT_JOINT_DAMPING = 1.5  # flat joint-space kd (N·m·s/rad)
+
+# Per-episode lognormal draw on the operator's max_approach_speed (LAB-95/96):
+# median calibrated against `data/recorded` under the deployment controller
+# config (0.09 m/s landed 47.5% force-aborts / 2.77x motion tail at 40 seeds);
+# sigma 0.76 fits the recorded near-field command-speed spread (p90/median ~2.7).
+DEFAULT_SPEED_LOGNORMAL_MEDIAN = 0.09
+DEFAULT_SPEED_LOGNORMAL_SIGMA = 0.76
+
+# The pre-LAB-96 corpus config (the Controller's careful-insertion defaults, no
+# per-episode speed draw). Fingerprints and `regenerate_from_metadata` treat this
+# as the implicit config of metadata written before these knobs existed, so
+# legacy datasets keep regenerating byte-identical with matching fingerprints.
+_LEGACY_JOINT_DAMPING = 4.0
+_LEGACY_SPEED_LOGNORMAL_MEDIAN = 0.0
 
 
 def _episode_fingerprint(
-    *, seed: int, max_steps: int, max_dpos: float, expert_d_far: float, generated_walls: bool
+    *,
+    seed: int,
+    max_steps: int,
+    max_dpos: float,
+    expert_d_far: float,
+    generated_walls: bool,
+    joint_damping: float = _LEGACY_JOINT_DAMPING,
+    speed_lognormal_median: float = _LEGACY_SPEED_LOGNORMAL_MEDIAN,
+    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
 ) -> str:
     """Stable hash of every input that determines an episode's trajectory.
 
@@ -98,10 +128,17 @@ def _episode_fingerprint(
     The per-episode wall is derived deterministically from ``(seed, episode_index)``,
     so ``seed`` (hashed here) + the episode index (in the file path) already pin it;
     only the wall *mode* (``generated_walls``) needs to enter the hash.
+
+    The LAB-96 knobs extend the payload only when they leave the legacy config
+    (kd=4.0, no speed draw — behavior-identical to pre-LAB-96 code, RNG
+    included), so a legacy dataset's committed fingerprint still matches its
+    regeneration.
     """
     import hashlib
 
     payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{generated_walls}"
+    if joint_damping != _LEGACY_JOINT_DAMPING or speed_lognormal_median > 0.0:
+        payload += f"|{joint_damping:.6f}|{speed_lognormal_median:.6f}|{speed_lognormal_sigma:.6f}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -127,14 +164,23 @@ def _human_seed(seed: int, episode_index: int) -> int:
 
 
 def _make_human(
-    target_position: np.ndarray, home_quaternion: np.ndarray, *, seed: int, episode_index: int
+    target_position: np.ndarray,
+    home_quaternion: np.ndarray,
+    *,
+    seed: int,
+    episode_index: int,
+    speed_lognormal_median: float,
+    speed_lognormal_sigma: float,
 ) -> ScriptedNoisyHuman:
-    """Build the per-episode operator. ``(seed, episode_index)`` fully determines
-    its command stream, so a fresh instance reproduces the same operator — what
-    the paired expert/baseline runs rely on."""
+    """Build the per-episode operator. ``(seed, episode_index)`` plus the speed-
+    draw config fully determine its command stream (the per-episode approach-speed
+    draw comes from the operator's own seeded RNG), so a fresh instance reproduces
+    the same operator — what the paired expert/baseline runs rely on."""
     return ScriptedNoisyHuman(
         np.concatenate([target_position, home_quaternion]),
         seed=_human_seed(seed, episode_index),
+        speed_lognormal_median=speed_lognormal_median,
+        speed_lognormal_sigma=speed_lognormal_sigma,
     )
 
 
@@ -177,7 +223,10 @@ def generate_dataset(
     lateral_tolerance: float = DEFAULT_LATERAL_TOLERANCE,
     force_cap: float = DEFAULT_FORCE_CAP,
     max_dpos: float = DEFAULT_MAX_DPOS,
+    joint_damping: float = DEFAULT_JOINT_DAMPING,
     expert_d_far: float = DEFAULT_EXPERT_D_FAR,
+    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     generated_walls: bool = True,
     cache: bool = True,
     baseline: bool = True,
@@ -192,7 +241,15 @@ def generate_dataset(
     ``out_dir/metadata.json`` (dataset-level statistics). Keeps every episode
     (success or failure). Each is reproducible from ``(seed, episode_index)``
     plus the controller/expert config: the per-episode wall and the noisy human
-    both derive from the seed. When ``cache`` is set, an existing episode file
+    both derive from the seed.
+
+    The controller runs the **deployment (teleop) config** by default
+    (``joint_damping=1.5, max_dpos=0.3`` — what live vision teleop and the
+    ``data/recorded`` reference corpus run), not the Controller's own
+    careful-insertion defaults, and the operator draws a per-episode
+    ``max_approach_speed`` from a lognormal (``speed_lognormal_*``) — the
+    LAB-95/96 recipe that closes the scripted-vs-recorded force-abort and
+    motion-tail gaps. All of these are fingerprinted corpus parameters. When ``cache`` is set, an existing episode file
     whose stored ``fingerprint`` matches the current config is reused instead of
     being re-simulated.
 
@@ -224,6 +281,9 @@ def generate_dataset(
         max_dpos=max_dpos,
         expert_d_far=expert_d_far,
         generated_walls=generated_walls,
+        joint_damping=joint_damping,
+        speed_lognormal_median=speed_lognormal_median,
+        speed_lognormal_sigma=speed_lognormal_sigma,
     )
 
     written: list[Path] = []
@@ -244,7 +304,9 @@ def generate_dataset(
         # time). The env owns physics only; reset() restores its home state.
         wall_seed = episode_wall_seed(seed, episode_index) if generated_walls else None
         environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
-        controller = Controller(environment, max_dpos_per_step=max_dpos)
+        controller = Controller(
+            environment, max_dpos_per_step=max_dpos, joint_damping=joint_damping
+        )
         home_quaternion = controller.home_pose[3:]
         observation = environment.reset()
         target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
@@ -257,7 +319,12 @@ def generate_dataset(
         imgs_dir.mkdir(parents=True, exist_ok=True)
 
         human = _make_human(
-            target_position, home_quaternion, seed=seed, episode_index=episode_index
+            target_position,
+            home_quaternion,
+            seed=seed,
+            episode_index=episode_index,
+            speed_lognormal_median=speed_lognormal_median,
+            speed_lognormal_sigma=speed_lognormal_sigma,
         )
         logger = EpisodeLogger(
             ft_bias,
@@ -282,7 +349,12 @@ def generate_dataset(
                 controller,
                 # fresh operator with the same seed ⇒ identical command stream
                 _make_human(
-                    target_position, home_quaternion, seed=seed, episode_index=episode_index
+                    target_position,
+                    home_quaternion,
+                    seed=seed,
+                    episode_index=episode_index,
+                    speed_lognormal_median=speed_lognormal_median,
+                    speed_lognormal_sigma=speed_lognormal_sigma,
                 ),
                 target_hole_index=_TARGET_HOLE_INDEX,
                 max_steps=max_steps,
@@ -305,6 +377,9 @@ def generate_dataset(
             "human_seed": _human_seed(seed, episode_index),
             "fingerprint": fingerprint,
             "max_dpos": max_dpos,
+            "joint_damping": joint_damping,
+            "speed_lognormal_median": speed_lognormal_median,
+            "speed_lognormal_sigma": speed_lognormal_sigma,
             "expert_d_far": expert_d_far,
             "target_hole_index": _TARGET_HOLE_INDEX,
             "generated_wall": generated_walls,
@@ -336,7 +411,10 @@ def generate_dataset(
     config: DatasetConfig = {
         "max_steps": max_steps,
         "max_dpos": max_dpos,
+        "joint_damping": joint_damping,
         "expert_d_far": expert_d_far,
+        "speed_lognormal_median": speed_lognormal_median,
+        "speed_lognormal_sigma": speed_lognormal_sigma,
         "success_depth": success_depth,
         "lateral_tolerance": lateral_tolerance,
         "force_cap": force_cap,
@@ -477,6 +555,12 @@ def regenerate_from_metadata(
     # static one. Anything other than the static scene-file name means generated.
     generated_walls = config["scene"] != SCENE_PATH.name
 
+    # Metadata written before LAB-96 carries no controller/speed-draw keys — it
+    # was generated under the legacy config, so regenerate under it.
+    joint_damping = config.get("joint_damping", _LEGACY_JOINT_DAMPING)
+    speed_lognormal_median = config.get("speed_lognormal_median", _LEGACY_SPEED_LOGNORMAL_MEDIAN)
+    speed_lognormal_sigma = config.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
+
     target = Path(out_dir) if out_dir is not None else metadata_path.parent
     written = generate_dataset(
         target,
@@ -487,7 +571,10 @@ def regenerate_from_metadata(
         lateral_tolerance=config["lateral_tolerance"],
         force_cap=config["force_cap"],
         max_dpos=config["max_dpos"],
+        joint_damping=joint_damping,
         expert_d_far=config["expert_d_far"],
+        speed_lognormal_median=speed_lognormal_median,
+        speed_lognormal_sigma=speed_lognormal_sigma,
         generated_walls=generated_walls,
         cache=not force,
         baseline="baseline_no_assist" in metadata,
@@ -501,6 +588,9 @@ def regenerate_from_metadata(
         max_dpos=config["max_dpos"],
         expert_d_far=config["expert_d_far"],
         generated_walls=generated_walls,
+        joint_damping=joint_damping,
+        speed_lognormal_median=speed_lognormal_median,
+        speed_lognormal_sigma=speed_lognormal_sigma,
     )
     if expected is not None and actual != expected:
         log.warning(

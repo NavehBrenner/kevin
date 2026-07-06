@@ -13,15 +13,14 @@ per-episode-folder layout stay in ``trajectory.py``.
 These are the Python equivalent of a TypeScript ``interface`` over JSON: a
 ``TypedDict`` is a plain ``dict`` at runtime (no validation, no cost) but lets the
 type checker know which keys exist and their types — exactly the structural
-contract a TS interface gives you. Optional keys (the paired ``baseline_*``
-fields, present only when the human-only baseline was run) use the inheritance +
-``total=False`` pattern, since ``typing.NotRequired`` is 3.11+ and the project
-targets 3.10.
+contract a TS interface gives you. Optional keys use ``typing.NotRequired``
+(the project targets 3.12); the paired ``baseline_*`` fields predate that and
+keep the older inheritance + ``total=False`` pattern.
 """
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 
@@ -61,6 +60,9 @@ class DatasetConfig(TypedDict):
 
     Every trajectory-determining input lives here, so the dataset is
     reproducible from the metadata file alone (see ``regenerate_from_metadata``).
+    The ``NotRequired`` keys were added by LAB-96; metadata written earlier
+    omits them, which readers treat as the legacy config (kd=4.0, no per-episode
+    speed draw).
     """
 
     max_steps: int
@@ -70,6 +72,9 @@ class DatasetConfig(TypedDict):
     lateral_tolerance: float
     force_cap: float
     scene: str  # scene-file *name* (resolved against the mjcf assets dir)
+    joint_damping: NotRequired[float]  # controller joint-space kd (LAB-96)
+    speed_lognormal_median: NotRequired[float]  # operator per-episode speed draw; 0 = off
+    speed_lognormal_sigma: NotRequired[float]
 
 
 class _EpisodeMetadataBase(TypedDict):
@@ -112,6 +117,12 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     distractors: int | None
     joint_damping: float
     scene: str  # scene-file name
+
+    # Operator per-episode approach-speed draw (LAB-96). Stamped by data
+    # generation so replay-as-baseline rebuilds the identical operator; absent
+    # on pre-LAB-96 episodes (⇒ draw disabled, fixed max_approach_speed).
+    speed_lognormal_median: float
+    speed_lognormal_sigma: float
 
 
 class _EpisodeSummaryBase(TypedDict):

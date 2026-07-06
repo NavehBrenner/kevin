@@ -79,8 +79,13 @@ def test_replay_reproduces_recorded_trajectory(tmp_path):
 
         # Rebuild the exact scene from the stored wall_seed (the part that was broken —
         # it used to come from CLI args). Arg-less reset() lands on the same wall.
+        # The controller config is part of the episode's spec too (LAB-96).
         env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
-        controller = Controller(env, max_dpos_per_step=float(meta["max_dpos"]))
+        controller = Controller(
+            env,
+            max_dpos_per_step=float(meta["max_dpos"]),
+            joint_damping=float(meta["joint_damping"]),
+        )
 
         # Replay the recorded commands + deltas verbatim; the realized peg trajectory
         # must match the recording tick-for-tick (would diverge if the scene were wrong).
@@ -111,11 +116,20 @@ def test_regenerated_baseline_matches_the_scored_baseline(tmp_path):
     # Rebuild the operator exactly as run_episode.py's replay-as-baseline path does:
     # ScriptedNoisyHuman(target ⊕ home_quat, seed=human_seed) on the same wall + reset.
     env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
-    controller = Controller(env, max_dpos_per_step=float(meta["max_dpos"]))
+    controller = Controller(
+        env,
+        max_dpos_per_step=float(meta["max_dpos"]),
+        joint_damping=float(meta["joint_damping"]),
+    )
     observation = env.reset()
     hole_index = int(meta["target_hole_index"])
     target_pose = np.concatenate([observation.hole_poses[hole_index][:3], controller.home_pose[3:]])
-    human = ScriptedNoisyHuman(target_pose, seed=int(meta["human_seed"]))
+    human = ScriptedNoisyHuman(
+        target_pose,
+        seed=int(meta["human_seed"]),
+        speed_lognormal_median=float(meta["speed_lognormal_median"]),
+        speed_lognormal_sigma=float(meta["speed_lognormal_sigma"]),
+    )
     probe = TerminationProbe(
         controller,
         target_hole_index=hole_index,
@@ -140,7 +154,11 @@ def test_replay_is_faithful_under_finite_time_factor(tmp_path):
     columns, meta = load_episode(path)
 
     env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
-    controller = Controller(env, max_dpos_per_step=float(meta["max_dpos"]))
+    controller = Controller(
+        env,
+        max_dpos_per_step=float(meta["max_dpos"]),
+        joint_damping=float(meta["joint_damping"]),
+    )
     recorder = _PegRecorder()
     run_episode(
         env,

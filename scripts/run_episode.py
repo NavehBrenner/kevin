@@ -50,7 +50,6 @@ from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data.generate import (  # noqa: E402
     DEFAULT_FORCE_CAP,
     DEFAULT_LATERAL_TOLERANCE,
-    DEFAULT_MAX_DPOS,
     DEFAULT_SUCCESS_DEPTH,
 )
 from ai_teleop.data.step_callbacks import EpisodeLogger, TerminationProbe  # noqa: E402
@@ -58,6 +57,7 @@ from ai_teleop.data.trajectory import TerminalReason, load_episode  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy  # noqa: E402
 from ai_teleop.input import (  # noqa: E402
+    DEFAULT_SPEED_LOGNORMAL_SIGMA,
     ScriptedNoisyHuman,
     VisionInput,
     WorkspaceCalibration,
@@ -183,9 +183,10 @@ def _rebuild_for_replay(meta: EpisodeMetadata, render_mode):
     )
     observation = env.reset()
 
-    controller_kwargs: dict[str, float] = {
-        "max_dpos_per_step": float(meta.get("max_dpos", DEFAULT_MAX_DPOS))
-    }
+    # Episodes old enough to omit max_dpos predate LAB-96's deployment-config
+    # data-gen default (0.3), so the right fallback is the careful-insertion
+    # clamp they actually ran under — not data.generate's current default.
+    controller_kwargs: dict[str, float] = {"max_dpos_per_step": float(meta.get("max_dpos", 0.025))}
     if "joint_damping" in meta:
         controller_kwargs["joint_damping"] = float(meta["joint_damping"])
     if "force_cap" in meta:  # stored None means the watchdog was off (--no-force-cap)
@@ -354,7 +355,17 @@ def build_input(
             seed,
         )
         target_pose = np.concatenate([target_position, home_quaternion])
-        return ScriptedNoisyHuman(target_pose, seed=seed), None
+        # Rebuild the operator's speed-draw config too (LAB-96): the drawn
+        # max_approach_speed comes from the operator's own seeded RNG, so seed +
+        # config reproduce it; pre-LAB-96 episodes carry no keys ⇒ draw disabled.
+        return ScriptedNoisyHuman(
+            target_pose,
+            seed=seed,
+            speed_lognormal_median=float(config.replay_meta.get("speed_lognormal_median", 0.0)),
+            speed_lognormal_sigma=float(
+                config.replay_meta.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
+            ),
+        ), None
     if config.is_replay:
         assert config.replay_columns is not None
         return _ReplayInput(config.replay_columns), None
