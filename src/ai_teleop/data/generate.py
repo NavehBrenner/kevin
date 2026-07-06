@@ -84,7 +84,13 @@ DEFAULT_MAX_STEPS = 6000  # ~12 s — enough to approach and seat the peg.
 DEFAULT_SUCCESS_DEPTH = 0.015  # insertion past the hole entry → success (m)
 DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral error for a "seated" peg (m); LAB-77 calibration
 DEFAULT_FORCE_CAP = 50.0  # wrist force magnitude that aborts the episode (N)
-DEFAULT_EXPERT_D_FAR = 0.10  # distance (m) at which the expert starts engaging
+# Distance (m) at which the expert starts engaging. Widened 0.10 → 0.15 by
+# LAB-98: under the deployment controller config the extra 5 cm is braking
+# window (aborts 8% → 5%, success 72% → 75% at n=40; 0.20 adds nothing).
+# Under kd=4 this knob was byte-identical 0.10–0.20 (LAB-77) — the effect is
+# specific to the responsive controller. Kept as small as achieves the ceiling:
+# d_far bounds the region where Phase-1 labels are non-zero.
+DEFAULT_EXPERT_D_FAR = 0.15
 
 # Controller config for the corpus (LAB-95/96): the DEPLOYMENT (teleop) config —
 # what `run_episode.py --input vision` runs and what `data/recorded` was captured
@@ -107,10 +113,11 @@ DEFAULT_SPEED_LOGNORMAL_SIGMA = 0.76
 # wall at its drawn sweep speed — the kd=4-tuned expert corrected aim but not
 # approach speed (dataset_7: expert force-aborts 5% → 28%). The brake retracts
 # the command's axial lead beyond `gain * distance + floor`, decelerating the
-# approach. Values calibrated by the LAB-98 sweep (scripts/dev/
-# lab98_expert_recalibration_sweep.py) against the same paired seeds LAB-95/96
-# used.
-DEFAULT_EXPERT_BRAKE_GAIN = 0.5
+# approach. Calibrated by the LAB-98 sweep (scripts/dev/
+# lab98_expert_recalibration_sweep.py, n=40, master_seed 950): gain is monotone
+# 0 → 1.0 (aborts 28% → 8%) and degrades by 1.5 (brake too weak); floor 8 mm
+# beat 5/12 mm. Together with the widened d_far (below): expert 75% / aborts 5%.
+DEFAULT_EXPERT_BRAKE_GAIN = 1.0
 DEFAULT_EXPERT_BRAKE_LEAD_FLOOR = 0.008
 
 # The pre-LAB-96 corpus config (the Controller's careful-insertion defaults, no

@@ -147,6 +147,7 @@ def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
         from ai_teleop.data.generate import (
             DEFAULT_EXPERT_BRAKE_GAIN,
             DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
+            DEFAULT_EXPERT_D_FAR,
         )
         from ai_teleop.expert import Expert
 
@@ -155,6 +156,7 @@ def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
         # the behavior the policy is trained to clone (and the assist actually
         # prevents wall-slams under the deployment controller config).
         return Expert(
+            d_far=DEFAULT_EXPERT_D_FAR,
             brake_gain=DEFAULT_EXPERT_BRAKE_GAIN,
             brake_lead_floor=DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
         )

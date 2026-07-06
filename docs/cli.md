@@ -165,6 +165,11 @@ fingerprint. On-disk schema: [`docs/data-schema.md`](data-schema.md).
 | `--max-steps N` | script default | Per-episode step cap. |
 | `--max-dpos M` | script default | Controller command clamp in m/step. |
 | `--expert-d-far M` | script default | Distance (m) at which the expert starts engaging. |
+| `--expert-brake-gain G` | script default | Expert approach-speed brake (LAB-98): allowed command lead is `G·distance + floor`; 0 disables. |
+| `--expert-brake-lead-floor M` | script default | Minimum allowed command lead (m) for the brake. |
+| `--joint-damping KD` | script default | Controller joint-space kd (deployment config by default, LAB-96). |
+| `--speed-lognormal-median M` | script default | Operator per-episode approach-speed draw median (m/s); 0 disables. |
+| `--speed-lognormal-sigma S` | script default | Log-space sigma of that draw. |
 | `--force` | off | Regenerate even if a cached episode with a matching fingerprint exists. |
 
 ```bash
