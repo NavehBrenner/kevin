@@ -31,6 +31,17 @@ median ratio ~2.5x, vs a flat ~1.1x for the old bang-bang model — see
 outside it the actor is still rate-capped at ``max_approach_speed`` exactly as
 before, so LAB-78's far-field aim/travel calibration is untouched.
 
+A per-episode ``careless_probability`` (LAB-92) draws whether *this* episode
+skips that deceleration entirely — modeling an inattentive/overconfident
+operator who sweeps in at ``max_approach_speed`` all the way to contact. This
+targets a gap LAB-91's continuous per-tick deceleration couldn't close: real
+force-abort episodes move ~45% faster/step than real successes (a distinct
+"careless fast approach" failure mode), while a continuously-tuned deceleration
+profile applies the same near-goal slowdown to every episode alike, so
+scripted force-abort and success motion stayed ~3% apart regardless of
+``decel_radius``. Default 0 disables the mode, reproducing LAB-91 behavior
+exactly (including its RNG stream — see the constructor).
+
 Composition, fully determined by the constructor `seed` (plus the arm's
 deterministic reset pose, read once from the first observation):
 
@@ -89,6 +100,14 @@ DEFAULT_MAX_APPROACH_SPEED: float = 0.35
 # down before contact; placeholder, calibrated against `data/recorded`).
 DEFAULT_DECEL_RADIUS: float = 0.016
 
+# Per-episode probability the operator is "careless" (LAB-92): skips the
+# decel_radius deceleration entirely for that episode, sweeping in at
+# max_approach_speed all the way through contact. Models operator
+# inattention/overconfidence — a discrete, episode-level failure mode distinct
+# from decel_radius's continuous per-tick profile. 0 (default) disables it,
+# reproducing LAB-91 behavior (and its RNG stream) exactly.
+DEFAULT_CARELESS_PROBABILITY: float = 0.0
+
 
 def _axis_angle_to_quat(axis_angle: np.ndarray) -> np.ndarray:
     """Convert a (3,) axis-angle vector to a (w,x,y,z) unit quaternion."""
@@ -129,6 +148,13 @@ class ScriptedNoisyHuman:
         Distance (m) to the drifting goal inside which the approach speed
         scales down proportionally to distance, instead of holding
         ``max_approach_speed``. See :data:`DEFAULT_DECEL_RADIUS`.
+    careless_probability:
+        Per-episode probability the operator skips ``decel_radius``'s
+        deceleration entirely, sweeping in at ``max_approach_speed`` all the
+        way to contact. Drawn once at construction, alongside the position/
+        orientation bias. Only consumes RNG state when > 0, so the default
+        (0) reproduces the pre-LAB-92 RNG stream exactly. See
+        :data:`DEFAULT_CARELESS_PROBABILITY`.
     control_hz:
         Control-loop rate (one ``get_command`` call per tick). Sets the per-tick
         drift step ``dt = 1 / control_hz`` and the per-tick approach cap.
@@ -149,6 +175,7 @@ class ScriptedNoisyHuman:
         tremor_std: float = 0.0,
         max_approach_speed: float = DEFAULT_MAX_APPROACH_SPEED,
         decel_radius: float = DEFAULT_DECEL_RADIUS,
+        careless_probability: float = DEFAULT_CARELESS_PROBABILITY,
         control_hz: float = 500.0,
         seed: int = 0,
     ) -> None:
@@ -176,6 +203,14 @@ class ScriptedNoisyHuman:
         # Per-episode constant bias — drawn ONCE, never resampled.
         self.position_bias: np.ndarray = self._rng.normal(0.0, position_bias_std, size=3)
         self.orientation_bias: np.ndarray = self._rng.normal(0.0, orientation_bias_std, size=3)
+
+        # Per-episode "carelessness" draw (LAB-92) — only consumes the RNG when enabled,
+        # so careless_probability=0.0 (default) leaves the RNG stream identical to
+        # pre-LAB-92 code and every existing seeded trajectory stays reproducible.
+        self._careless = bool(
+            careless_probability > 0.0 and self._rng.random() < careless_probability
+        )
+
         self._goal_position = self._target_position + self.position_bias
         bias_quat = _axis_angle_to_quat(self.orientation_bias)
         self._goal_quaternion = np.zeros(4)
@@ -223,7 +258,9 @@ class ScriptedNoisyHuman:
         step = target - self._command_position
         distance = float(np.linalg.norm(step))
         distance_to_goal = float(np.linalg.norm(self._command_position - self._goal_position))
-        speed_scale = min(1.0, distance_to_goal / self._decel_radius)
+        # A careless-drawn episode (LAB-92) never decelerates — it holds the far-field
+        # rate cap all the way to contact, unlike the LAB-91 proportional ramp below.
+        speed_scale = 1.0 if self._careless else min(1.0, distance_to_goal / self._decel_radius)
         effective_max_step = self._max_step * speed_scale
         self._command_position = self._command_position + step * min(
             1.0, effective_max_step / (distance + 1e-9)
