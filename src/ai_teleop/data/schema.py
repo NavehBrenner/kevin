@@ -75,6 +75,8 @@ class DatasetConfig(TypedDict):
     joint_damping: NotRequired[float]  # controller joint-space kd (LAB-96)
     speed_lognormal_median: NotRequired[float]  # operator per-episode speed draw; 0 = off
     speed_lognormal_sigma: NotRequired[float]
+    expert_brake_gain: NotRequired[float]  # expert approach-speed brake (LAB-98); 0 = off
+    expert_brake_lead_floor: NotRequired[float]
 
 
 class _EpisodeMetadataBase(TypedDict):
@@ -123,6 +125,11 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     # on pre-LAB-96 episodes (⇒ draw disabled, fixed max_approach_speed).
     speed_lognormal_median: float
     speed_lognormal_sigma: float
+
+    # Expert approach-speed brake (LAB-98). Stamped by data generation; absent
+    # on pre-LAB-98 episodes (⇒ brake off, the aim-only expert).
+    expert_brake_gain: float
+    expert_brake_lead_floor: float
 
 
 class _EpisodeSummaryBase(TypedDict):

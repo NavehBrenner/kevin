@@ -28,6 +28,8 @@ from ai_teleop.common.log import (  # noqa: E402
     get_logger,
 )
 from ai_teleop.data.generate import (  # noqa: E402
+    DEFAULT_EXPERT_BRAKE_GAIN,
+    DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
     DEFAULT_EXPERT_D_FAR,
     DEFAULT_JOINT_DAMPING,
     DEFAULT_MAX_DPOS,
@@ -78,6 +80,19 @@ def main() -> int:
         type=float,
         default=DEFAULT_EXPERT_D_FAR,
         help="Distance (m) at which the expert starts engaging.",
+    )
+    parser.add_argument(
+        "--expert-brake-gain",
+        type=float,
+        default=DEFAULT_EXPERT_BRAKE_GAIN,
+        help="Expert approach-speed brake gain (LAB-98): allowed command lead is "
+        "gain * distance + floor; 0 disables the brake (pre-LAB-98 aim-only expert).",
+    )
+    parser.add_argument(
+        "--expert-brake-lead-floor",
+        type=float,
+        default=DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
+        help="Expert brake lead floor (m) — the minimum allowed command lead.",
     )
     parser.add_argument(
         "--speed-lognormal-median",
@@ -150,6 +165,8 @@ def main() -> int:
         max_dpos=args.max_dpos,
         joint_damping=args.joint_damping,
         expert_d_far=args.expert_d_far,
+        expert_brake_gain=args.expert_brake_gain,
+        expert_brake_lead_floor=args.expert_brake_lead_floor,
         speed_lognormal_median=args.speed_lognormal_median,
         speed_lognormal_sigma=args.speed_lognormal_sigma,
         cache=not args.force,

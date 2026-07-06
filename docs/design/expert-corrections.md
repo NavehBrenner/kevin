@@ -30,7 +30,17 @@ The expert enforces the natural peg-in-hole order — **align laterally and angu
 1. **Lateral alignment.** Drive `e_lat → 0`: desired lateral position shift `= e_lat` (move the tip onto the hole axis line).
 2. **Angular alignment.** Compute `R_align` so the peg axis `a` maps onto the hole axis `n` (smallest rotation taking `a` to `n`; off-axis pitch/roll only — yaw is irrelevant for a round peg). Desired orientation `R_des = R_align · R_cmd`.
 3. **Axial advance — gated by alignment.** Advance along `−n` (into the hole) at a capped speed, but **only when lateral and angular error are within tolerance** (`‖e_lat‖ < ε_lat` and angular error `< ε_ang`). Until then, axial advance is suppressed so the peg doesn't drive into the rim. The chamfer + lateral compliance of the backbone handle the final rim-guided seating physically; the expert just keeps the peg aligned and feeds it in.
-4. **Grip.** Hold the baseline grip force by default; **reduce** grip on a detected jam signature (so a slightly-angled peg can slip into alignment — the grip-modulation behavior the scope wants the policy to learn). Increase back to baseline once seated.
+4. **Approach-speed braking (LAB-98).** Under the deployment controller config (`joint_damping=1.5`, the config the corpus is generated under since LAB-96) the arm tracks the operator's command tightly, so a hasty episode meets the wall at its drawn sweep speed and trips the 30 N watchdog — a failure mode the kd=4 data-gen controller used to suppress *inside the controller* (which is why the pre-LAB-98 expert never needed this term). The expert therefore also governs the command's **axial lead** — how far past the arm the command sits along the bore:
+
+   ```
+   lead      = (c_t.position − p_ee) · n          # command's lead ahead of the arm, along the bore
+   allowed   = brake_gain · d + brake_lead_floor  # distance-proportional allowance
+   Δ_brake   = −max(0, lead − allowed) · n
+   ```
+
+   The effective target the impedance law chases becomes a controlled "carrot" at most `allowed` ahead of the arm, so approach speed (∝ lead under an impedance law) decays with distance — deceleration before contact, the "assist stops you slamming the wall" behavior. Two properties worth noting: the brake reads only `c_t − p_ee` — **non-privileged** streams, so unlike the aim correction this component is fully inferable by the deployed policy; and its authority is structurally bounded by the ±2 cm Δ-clamp, so operator sweeps faster than the clamp can absorb still crash (the honest-ceiling residual, measured in the LAB-98 sweep). `brake_gain = 0` disables the term (the pre-LAB-98 aim-only expert, bit-exact).
+
+5. **Grip.** Hold the baseline grip force by default; **reduce** grip on a detected jam signature (so a slightly-angled peg can slip into alignment — the grip-modulation behavior the scope wants the policy to learn). Increase back to baseline once seated.
 
 This yields a **desired pose** `pose_des = (p_tip + desired position shift, R_des)` and a desired grip.
 

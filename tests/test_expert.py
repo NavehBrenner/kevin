@@ -27,9 +27,11 @@ _PEG_HALF_LENGTH = 0.030
 
 
 def _peg_quat_pointing_x() -> np.ndarray:
-    # Rotate local +z onto world +x: 90° about world -y.
+    # Rotate local +z onto world +x: 90° about world +y (R_y(π/2): z ↦ +x).
+    # (LAB-98 correction: this used -y, which maps z ↦ -x — the peg pointed 180°
+    # AWAY from the bore, so `aligned` could never fire in these fixtures.)
     quat = np.zeros(4)
-    mujoco.mju_axisAngle2Quat(quat, np.array([0.0, -1.0, 0.0]), np.pi / 2)
+    mujoco.mju_axisAngle2Quat(quat, np.array([0.0, 1.0, 0.0]), np.pi / 2)
     return quat
 
 
@@ -137,6 +139,62 @@ def test_orientation_delta_rotates_peg_axis_toward_bore():
     angle_after = np.arccos(np.clip(peg_axis_after @ _INSERTION_AXIS, -1.0, 1.0))
 
     assert angle_after < angle_before
+
+
+# ---------------------------------------------------------------------------
+# Approach-speed brake (LAB-98)
+# ---------------------------------------------------------------------------
+
+
+def _deep_command() -> Command:
+    # A command sitting far past the arm along the bore (+x) — the hasty-operator
+    # situation the brake exists for (the operator aims the TCP at the hole, which
+    # puts the command's target deep past where the wall will stop the arm).
+    return Command(np.array([0.85, 0.0, 0.45]), np.array([1.0, 0.0, 0.0, 0.0]))
+
+
+def test_brake_retracts_deep_command_lead():
+    hole = np.array([0.79, 0.0, 0.45])
+    tip = hole - np.array([0.03, 0.0, 0.0])  # 3 cm out, on-axis (full gate below)
+    observation = _make_observation(tip_position=tip)
+
+    braked = Expert(d_near=0.05, d_far=0.2, brake_gain=0.5, brake_lead_floor=0.008)
+    delta = braked.get_delta(observation, _deep_command())
+    # Command lead (~12 cm) far exceeds the allowance (0.5*0.03 + 0.008 = 2.3 cm):
+    # the axial correction must pull the command BACK along the bore (-x), even
+    # though the aligned advance term alone would push it forward.
+    assert delta.delta_position[0] < 0.0
+
+    unbraked = Expert(d_near=0.05, d_far=0.2)
+    delta_default = unbraked.get_delta(observation, _deep_command())
+    # Default (brake_gain=0) is the pre-LAB-98 law: aligned advance pushes +x.
+    assert delta_default.delta_position[0] > 0.0
+
+
+def test_brake_inactive_when_lead_within_allowance():
+    hole = np.array([0.79, 0.0, 0.45])
+    tip = hole - np.array([0.03, 0.0, 0.0])
+    observation = _make_observation(tip_position=tip)
+    # ee sits at tip - 0.03 (body origin); a command only ~1 cm ahead of the ee
+    # stays under the allowance (0.5*0.03 + 0.008 = 2.3 cm) => no brake, and the
+    # delta equals the unbraked expert's.
+    near_command = Command(np.array([0.74, 0.0, 0.45]), np.array([1.0, 0.0, 0.0, 0.0]))
+    braked = Expert(d_near=0.05, d_far=0.2, brake_gain=0.5, brake_lead_floor=0.008)
+    unbraked = Expert(d_near=0.05, d_far=0.2)
+    np.testing.assert_array_equal(
+        braked.get_delta(observation, near_command).delta_position,
+        unbraked.get_delta(observation, near_command).delta_position,
+    )
+
+
+def test_brake_stays_zero_far_from_hole():
+    # The headline far-field-zero property must survive the brake: beyond d_far
+    # the gate is structurally zero however deep the command leads.
+    expert = Expert(d_far=0.08, brake_gain=0.5, brake_lead_floor=0.008)
+    hole = np.array([0.79, 0.0, 0.45])
+    tip = hole - np.array([0.15, 0.0, 0.0])
+    delta = expert.get_delta(_make_observation(tip_position=tip), _deep_command())
+    np.testing.assert_array_equal(delta.delta_position, np.zeros(3))
 
 
 # ---------------------------------------------------------------------------

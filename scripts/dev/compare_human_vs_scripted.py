@@ -14,7 +14,7 @@ Insertion axis = hole local +x; peg long axis = peg local +z, tip at
 +PEG_HALF_LENGTH (matches common/seating.py). Orientation is position-only in
 this rig, so we do not analyze command orientation.
 
-Run: uv run python scripts/dev/compare_human_vs_scripted.py [--scripted data/dataset_7]
+Run: uv run python scripts/dev/compare_human_vs_scripted.py [--scripted data/dataset_8]
 Writes outputs/human_vs_scripted.png
 """
 
@@ -123,7 +123,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--scripted",
-        default=str(ROOT / "data" / "dataset_7"),
+        default=str(ROOT / "data" / "dataset_8"),
         help="Scripted dataset dir (holds runs/); dataset_1's runs/ is gone and it "
         "predates LAB-78, so it's no longer a valid comparison corpus.",
     )
