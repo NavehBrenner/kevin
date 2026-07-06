@@ -33,6 +33,7 @@ from ai_teleop.common.log import (  # noqa: E402
     configure_from_args,
     get_logger,
 )
+from ai_teleop.data.generate import DEFAULT_JOINT_DAMPING  # noqa: E402
 from ai_teleop.eval.ablation import (  # noqa: E402
     DEFAULT_MAX_DPOS,
     HUMAN_ONLY,
@@ -78,6 +79,7 @@ def _run_pair(args: argparse.Namespace) -> int:
             out_dir=out_dir / "traces",
             max_steps=args.max_steps,
             max_dpos=args.max_dpos,
+            joint_damping=args.joint_damping,
         )
         for kpis in results.values():
             rows.append(kpis.to_dict())
@@ -143,7 +145,15 @@ def main() -> int:
         "--max-dpos",
         type=float,
         default=DEFAULT_MAX_DPOS,
-        help="Controller command clamp (m/step).",
+        help="Controller command clamp (m/step). Default is the deployment (teleop) "
+        "config the corpus is generated under (LAB-98 re-anchor).",
+    )
+    pair.add_argument(
+        "--joint-damping",
+        type=float,
+        default=DEFAULT_JOINT_DAMPING,
+        help="Controller joint-space velocity damping kd. Default is the deployment "
+        "(teleop) config (LAB-98 re-anchor), not the Controller's careful-insertion 4.0.",
     )
     pair.add_argument(
         "--residual-checkpoint",

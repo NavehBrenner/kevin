@@ -144,9 +144,20 @@ def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
     if policy == "noassist":
         return NoAssist()
     if policy == "expert":
+        from ai_teleop.data.generate import (
+            DEFAULT_EXPERT_BRAKE_GAIN,
+            DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
+        )
         from ai_teleop.expert import Expert
 
-        return Expert()
+        # The corpus operating point (LAB-98): live/replay expert runs brake the
+        # approach exactly like the data-gen expert, so "--policy expert" shows
+        # the behavior the policy is trained to clone (and the assist actually
+        # prevents wall-slams under the deployment controller config).
+        return Expert(
+            brake_gain=DEFAULT_EXPERT_BRAKE_GAIN,
+            brake_lead_floor=DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
+        )
     if policy == "tf":
         if not checkpoint:
             raise SystemExit("--policy tf requires --checkpoint PATH (a trained residual .pt).")

@@ -102,12 +102,25 @@ DEFAULT_JOINT_DAMPING = 1.5  # flat joint-space kd (N·m·s/rad)
 DEFAULT_SPEED_LOGNORMAL_MEDIAN = 0.09
 DEFAULT_SPEED_LOGNORMAL_SIGMA = 0.76
 
+# Expert approach-speed brake (LAB-98): under the deployment controller config
+# the arm tracks the operator's command tightly, so a hasty episode slams the
+# wall at its drawn sweep speed — the kd=4-tuned expert corrected aim but not
+# approach speed (dataset_7: expert force-aborts 5% → 28%). The brake retracts
+# the command's axial lead beyond `gain * distance + floor`, decelerating the
+# approach. Values calibrated by the LAB-98 sweep (scripts/dev/
+# lab98_expert_recalibration_sweep.py) against the same paired seeds LAB-95/96
+# used.
+DEFAULT_EXPERT_BRAKE_GAIN = 0.5
+DEFAULT_EXPERT_BRAKE_LEAD_FLOOR = 0.008
+
 # The pre-LAB-96 corpus config (the Controller's careful-insertion defaults, no
 # per-episode speed draw). Fingerprints and `regenerate_from_metadata` treat this
 # as the implicit config of metadata written before these knobs existed, so
 # legacy datasets keep regenerating byte-identical with matching fingerprints.
 _LEGACY_JOINT_DAMPING = 4.0
 _LEGACY_SPEED_LOGNORMAL_MEDIAN = 0.0
+# Pre-LAB-98: no expert brake (gain 0 disables it inside `Expert`).
+_LEGACY_EXPERT_BRAKE_GAIN = 0.0
 
 
 def _episode_fingerprint(
@@ -120,6 +133,8 @@ def _episode_fingerprint(
     joint_damping: float = _LEGACY_JOINT_DAMPING,
     speed_lognormal_median: float = _LEGACY_SPEED_LOGNORMAL_MEDIAN,
     speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
+    expert_brake_gain: float = _LEGACY_EXPERT_BRAKE_GAIN,
+    expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
 ) -> str:
     """Stable hash of every input that determines an episode's trajectory.
 
@@ -132,13 +147,16 @@ def _episode_fingerprint(
     The LAB-96 knobs extend the payload only when they leave the legacy config
     (kd=4.0, no speed draw — behavior-identical to pre-LAB-96 code, RNG
     included), so a legacy dataset's committed fingerprint still matches its
-    regeneration.
+    regeneration. The LAB-98 expert-brake knobs follow the same pattern (gain 0
+    == the brake-free pre-LAB-98 expert, bit-exact).
     """
     import hashlib
 
     payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{generated_walls}"
     if joint_damping != _LEGACY_JOINT_DAMPING or speed_lognormal_median > 0.0:
         payload += f"|{joint_damping:.6f}|{speed_lognormal_median:.6f}|{speed_lognormal_sigma:.6f}"
+    if expert_brake_gain > 0.0:
+        payload += f"|{expert_brake_gain:.6f}|{expert_brake_lead_floor:.6f}"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -225,6 +243,8 @@ def generate_dataset(
     max_dpos: float = DEFAULT_MAX_DPOS,
     joint_damping: float = DEFAULT_JOINT_DAMPING,
     expert_d_far: float = DEFAULT_EXPERT_D_FAR,
+    expert_brake_gain: float = DEFAULT_EXPERT_BRAKE_GAIN,
+    expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
     speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
     speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     generated_walls: bool = True,
@@ -271,7 +291,12 @@ def generate_dataset(
     """
     out_dir = Path(out_dir)
     runs_dir = out_dir / "runs"
-    expert = Expert(d_far=expert_d_far, target_hole_index=_TARGET_HOLE_INDEX)
+    expert = Expert(
+        d_far=expert_d_far,
+        brake_gain=expert_brake_gain,
+        brake_lead_floor=expert_brake_lead_floor,
+        target_hole_index=_TARGET_HOLE_INDEX,
+    )
     thresholds = dict(
         success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
     )
@@ -284,6 +309,8 @@ def generate_dataset(
         joint_damping=joint_damping,
         speed_lognormal_median=speed_lognormal_median,
         speed_lognormal_sigma=speed_lognormal_sigma,
+        expert_brake_gain=expert_brake_gain,
+        expert_brake_lead_floor=expert_brake_lead_floor,
     )
 
     written: list[Path] = []
@@ -381,6 +408,8 @@ def generate_dataset(
             "speed_lognormal_median": speed_lognormal_median,
             "speed_lognormal_sigma": speed_lognormal_sigma,
             "expert_d_far": expert_d_far,
+            "expert_brake_gain": expert_brake_gain,
+            "expert_brake_lead_floor": expert_brake_lead_floor,
             "target_hole_index": _TARGET_HOLE_INDEX,
             "generated_wall": generated_walls,
             "wall_seed": wall_seed,
@@ -413,6 +442,8 @@ def generate_dataset(
         "max_dpos": max_dpos,
         "joint_damping": joint_damping,
         "expert_d_far": expert_d_far,
+        "expert_brake_gain": expert_brake_gain,
+        "expert_brake_lead_floor": expert_brake_lead_floor,
         "speed_lognormal_median": speed_lognormal_median,
         "speed_lognormal_sigma": speed_lognormal_sigma,
         "success_depth": success_depth,
@@ -556,10 +587,13 @@ def regenerate_from_metadata(
     generated_walls = config["scene"] != SCENE_PATH.name
 
     # Metadata written before LAB-96 carries no controller/speed-draw keys — it
-    # was generated under the legacy config, so regenerate under it.
+    # was generated under the legacy config, so regenerate under it. Same for
+    # the LAB-98 expert-brake keys (absent ⇒ brake off).
     joint_damping = config.get("joint_damping", _LEGACY_JOINT_DAMPING)
     speed_lognormal_median = config.get("speed_lognormal_median", _LEGACY_SPEED_LOGNORMAL_MEDIAN)
     speed_lognormal_sigma = config.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
+    expert_brake_gain = config.get("expert_brake_gain", _LEGACY_EXPERT_BRAKE_GAIN)
+    expert_brake_lead_floor = config.get("expert_brake_lead_floor", DEFAULT_EXPERT_BRAKE_LEAD_FLOOR)
 
     target = Path(out_dir) if out_dir is not None else metadata_path.parent
     written = generate_dataset(
@@ -573,6 +607,8 @@ def regenerate_from_metadata(
         max_dpos=config["max_dpos"],
         joint_damping=joint_damping,
         expert_d_far=config["expert_d_far"],
+        expert_brake_gain=expert_brake_gain,
+        expert_brake_lead_floor=expert_brake_lead_floor,
         speed_lognormal_median=speed_lognormal_median,
         speed_lognormal_sigma=speed_lognormal_sigma,
         generated_walls=generated_walls,
@@ -591,6 +627,8 @@ def regenerate_from_metadata(
         joint_damping=joint_damping,
         speed_lognormal_median=speed_lognormal_median,
         speed_lognormal_sigma=speed_lognormal_sigma,
+        expert_brake_gain=expert_brake_gain,
+        expert_brake_lead_floor=expert_brake_lead_floor,
     )
     if expected is not None and actual != expected:
         log.warning(

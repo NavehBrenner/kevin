@@ -31,6 +31,12 @@ from typing import Any
 import numpy as np
 
 from ai_teleop.control import Controller
+from ai_teleop.data.generate import (
+    DEFAULT_JOINT_DAMPING,
+    DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+    DEFAULT_SPEED_LOGNORMAL_SIGMA,
+)
+from ai_teleop.data.generate import DEFAULT_MAX_DPOS as _DATAGEN_MAX_DPOS
 from ai_teleop.domain import NoAssist
 from ai_teleop.domain.interfaces import AssistProvider
 from ai_teleop.eval.observer import DEFAULT_FORCE_CAP, TrialObserver
@@ -49,9 +55,13 @@ from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode
 # expert/observer/operator are all aimed there (the env stays target-agnostic).
 _TARGET_HOLE_INDEX = 0
 
-# Controller command clamp (m/step). Matches the run_episode / data-gen default;
-# it is a difficulty knob the calibration sweep may vary.
-DEFAULT_MAX_DPOS = 0.025
+# Controller command clamp (m/step). Re-anchored to the data-gen / deployment
+# (teleop) config by LAB-98: eval trials must sample the same contact dynamics
+# and operator distribution the corpus trains on, or the difficulty pin measures
+# a different task than the policy learned (LAB-96 moved the corpus; the pin
+# follows). The Controller's own careful-insertion default (0.025) is still
+# reachable per-trial via the ``max_dpos`` argument.
+DEFAULT_MAX_DPOS = _DATAGEN_MAX_DPOS
 
 # Per-episode step budget for an insertion trial (~12 s of sim @ 500 Hz). The M5
 # corpus was generated at this budget (see data/dataset_*/metadata.json → config.max_steps
@@ -97,7 +107,10 @@ def run_trial(
     generated_walls: bool = True,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
+    joint_damping: float = DEFAULT_JOINT_DAMPING,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
+    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     force_cap: float = DEFAULT_FORCE_CAP,
     trace_path: str | Path | None = None,
     **observer_kwargs: Any,
@@ -107,7 +120,11 @@ def run_trial(
     Mirrors data generation: with ``generated_walls`` (the default) the trial runs
     on its own procedural wall seeded from ``(master_seed, episode_index)``, so eval
     matches the per-episode-wall training distribution; ``generated_walls=False`` runs
-    on the static wall instead (no ``scenegen``/CadQuery — for fast tests).
+    on the static wall instead (no ``scenegen``/CadQuery — for fast tests). The
+    controller config (``max_dpos``, ``joint_damping``) and the operator's
+    per-episode approach-speed draw (``speed_lognormal_*``) default to the
+    data-gen deployment config (LAB-96/98), so eval trials sample the same task
+    distribution the corpus trains on.
 
     ``operator_error_scale`` multiplies the scripted operator's lateral-error σ's
     (bias + drift) off their training defaults — the difficulty knob the LAB-53 pin
@@ -121,7 +138,12 @@ def run_trial(
     wall_seed = episode_wall_seed(master_seed, episode_index) if generated_walls else None
     environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
     try:
-        controller = Controller(environment, max_dpos_per_step=max_dpos, force_cap_n=force_cap)
+        controller = Controller(
+            environment,
+            max_dpos_per_step=max_dpos,
+            joint_damping=joint_damping,
+            force_cap_n=force_cap,
+        )
         observation = environment.reset()
         target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
         home_quaternion = controller.home_pose[3:]
@@ -130,6 +152,8 @@ def run_trial(
             target_pose,
             position_bias_std=DEFAULT_POSITION_BIAS_STD * operator_error_scale,
             drift_position_std=DEFAULT_DRIFT_POSITION_STD * operator_error_scale,
+            speed_lognormal_median=speed_lognormal_median,
+            speed_lognormal_sigma=speed_lognormal_sigma,
             seed=_human_seed(master_seed, episode_index),
         )
         assist = config.assist_factory()
@@ -184,7 +208,10 @@ def run_paired(
     generated_walls: bool = True,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
+    joint_damping: float = DEFAULT_JOINT_DAMPING,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
+    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     force_cap: float = DEFAULT_FORCE_CAP,
     **observer_kwargs: Any,
 ) -> dict[str, TrialKPIs]:
@@ -207,7 +234,10 @@ def run_paired(
             generated_walls=generated_walls,
             max_steps=max_steps,
             max_dpos=max_dpos,
+            joint_damping=joint_damping,
             operator_error_scale=operator_error_scale,
+            speed_lognormal_median=speed_lognormal_median,
+            speed_lognormal_sigma=speed_lognormal_sigma,
             force_cap=force_cap,
             trace_path=trace_path,
             **observer_kwargs,
