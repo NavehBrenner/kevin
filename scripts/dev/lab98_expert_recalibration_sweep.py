@@ -27,6 +27,19 @@ Run (diagnosis, current expert):
 Run (brake sweep):
     uv run python scripts/dev/lab98_expert_recalibration_sweep.py --seeds 40 \
         --brake-gain 0.25,0.5 --brake-lead-floor-mm 5,10
+
+LAB-100 additions — the ceiling levers this probe can now open, one value per
+process each (like --chamfer-mm):
+    --max-steps       episode step budget (default 6000, the pre-LAB-100
+                      data-gen value; LAB-100 pinned data-gen at 9000);
+                      converts the slow-transit timeout tail.
+    --delta-clamp-cm  monkeypatches domain.delta._MAX_DELTA_POSITION for the
+                      whole process (seam + expert clamp alike — both read the
+                      module global at call time); more brake authority for the
+                      fast tail. Saturation diagnostics follow the patched value.
+Plus a transit diagnostic: per-row min peg-tip→hole distance, and for timeouts
+whether the tip ever entered the expert's d_far band at all (never-engaged
+timeouts are step-budget-bound, not expert-bound).
 """
 
 from __future__ import annotations
@@ -45,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np  # noqa: E402
 from lab95_recorded_forensics import contact_forensics, print_forensics_table  # noqa: E402
 
+import ai_teleop.domain.delta as delta_module  # noqa: E402
 import ai_teleop.sim.scenegen.config as scenegen_config  # noqa: E402
 from ai_teleop.common.log import (  # noqa: E402
     add_logging_arguments,
@@ -65,12 +79,13 @@ from ai_teleop.sim.runner import run_episode  # noqa: E402
 log = get_logger("lab98_sweep")
 
 _TARGET_HOLE_INDEX = 0
-_MAX_STEPS = 6000  # matches data-gen (~12 s @ 500 Hz)
+_DEFAULT_MAX_STEPS = 6000  # pre-LAB-100 data-gen budget (~12 s); sweeps override via --max-steps
 _SUCCESS_DEPTH = 0.015
 _LATERAL_TOLERANCE = 0.010  # data.generate.DEFAULT_LATERAL_TOLERANCE (LAB-77)
 _FORCE_CAP = 50.0  # probe-level raw-force abort; the controller's own 30 N watchdog trips first
-_DELTA_CLAMP = 0.02  # domain.delta._MAX_DELTA_POSITION — the expert's per-tick authority
 _LEAD_WINDOW_TICKS = 25  # ~50 ms tail over which end-of-episode command lead is averaged
+_PEG_HALF_LENGTH = 0.030  # Expert default — peg tip offset along the peg's local +z
+_ENGAGE_BAND = 0.15  # data.generate.DEFAULT_EXPERT_D_FAR — "never engaged" threshold for timeouts
 
 
 def _human_seed(master_seed: int, episode_index: int) -> int:
@@ -95,6 +110,7 @@ def run_one(
     max_dpos: float,
     speed_lognorm_median: float,
     speed_lognorm_sigma: float,
+    max_steps: int,
 ) -> dict:
     """One episode; returns a contact-forensics row + expert diagnostics."""
     wall_seed = episode_wall_seed(master_seed, episode_index)
@@ -126,6 +142,8 @@ def run_one(
         effective_cmd_track: list[np.ndarray] = []
         force_track: list[float] = []
         delta_norm_track: list[float] = []
+        tip_distance_track: list[float] = []
+        hole_position = hole_pose[:3]
 
         def step_callback(step, obs, base_command, delta, command) -> bool:
             ee_track.append(obs.ee_pose[:3].copy())
@@ -133,6 +151,9 @@ def run_one(
             effective_cmd_track.append(command.target_position.copy())
             force_track.append(float(np.linalg.norm(obs.wrist_ft[:3])))
             delta_norm_track.append(float(np.linalg.norm(delta.delta_position)))
+            peg_axis = axis_from_quat(obs.peg_pose[3:], 2)
+            peg_tip = obs.peg_pose[:3] + _PEG_HALF_LENGTH * peg_axis
+            tip_distance_track.append(float(np.linalg.norm(hole_position - peg_tip)))
             return probe(step, obs, base_command, delta, command)
 
         run_episode(
@@ -140,7 +161,7 @@ def run_one(
             controller,
             human,
             assist_factory(),
-            max_steps=_MAX_STEPS,
+            max_steps=max_steps,
             step_callback=step_callback,
         )
 
@@ -173,9 +194,13 @@ def run_one(
         )
         delta_norms = np.array(delta_norm_track)
         engaged = delta_norms > 1e-6
+        delta_clamp = delta_module._MAX_DELTA_POSITION  # follows any --delta-clamp-cm patch
         row["delta_engaged_frac"] = float(np.mean(engaged)) if len(delta_norms) else 0.0
         row["delta_saturated_frac"] = (
-            float(np.mean(delta_norms[engaged] >= 0.995 * _DELTA_CLAMP)) if engaged.any() else 0.0
+            float(np.mean(delta_norms[engaged] >= 0.995 * delta_clamp)) if engaged.any() else 0.0
+        )
+        row["min_tip_distance_mm"] = (
+            float(np.min(tip_distance_track) * 1e3) if tip_distance_track else float("nan")
         )
         return row
     finally:
@@ -198,12 +223,22 @@ def _summarize(label: str, rows: list[dict]) -> None:
         f"drawn approach speed (m/s): median={np.median(drawn):.3f} "
         f"p90={np.percentile(drawn, 90):.3f} max={np.max(drawn):.3f}"
     )
+    timeouts = [row for row in rows if row["outcome"] == "timeout"]
+    if timeouts:
+        never_engaged = sum(
+            1 for row in timeouts if row["min_tip_distance_mm"] > _ENGAGE_BAND * 1e3
+        )
+        print(
+            f"timeouts never entering the {_ENGAGE_BAND * 1e3:.0f}mm band: "
+            f"{never_engaged}/{len(timeouts)} (step-budget-bound, not expert-bound)"
+        )
     for key, fmt in (
         ("peak_force", "{:.1f}N"),
         ("base_lead_end_mm", "{:.1f}mm"),
         ("effective_lead_end_mm", "{:.1f}mm"),
         ("delta_engaged_frac", "{:.2f}"),
         ("delta_saturated_frac", "{:.2f}"),
+        ("min_tip_distance_mm", "{:.1f}mm"),
     ):
         by_outcome = {}
         for row in rows:
@@ -229,6 +264,14 @@ def main() -> None:
     ap.add_argument("--speed-lognorm-sigma", type=float, default=0.76)
     # Optional chamfer pin (mm). One value per process — see module docstring.
     ap.add_argument("--chamfer-mm", type=float, default=None)
+    # LAB-100 ceiling levers — one value per process each (see module docstring).
+    ap.add_argument("--max-steps", type=int, default=_DEFAULT_MAX_STEPS)
+    ap.add_argument(
+        "--delta-clamp-cm",
+        type=float,
+        default=None,
+        help="Patch domain.delta._MAX_DELTA_POSITION (cm) for this process.",
+    )
     # Expert grid (comma-separated lists; the grid is their product).
     ap.add_argument("--d-far-mm", default="100")
     ap.add_argument("--epsilon-lateral-mm", default="3")
@@ -242,17 +285,23 @@ def main() -> None:
 
     if args.chamfer_mm is not None:
         _set_chamfer(args.chamfer_mm / 1000)
+    if args.delta_clamp_cm is not None:
+        # Seam (apply_delta) and expert (clamp_delta) both read this module
+        # global at call time, so one patch moves the shared action bound.
+        delta_module._MAX_DELTA_POSITION = args.delta_clamp_cm / 100
 
     rollout_config = dict(
         joint_damping=args.joint_damping,
         max_dpos=args.max_dpos,
         speed_lognorm_median=args.speed_lognorm_median,
         speed_lognorm_sigma=args.speed_lognorm_sigma,
+        max_steps=args.max_steps,
     )
     print(
         f"n_seeds={args.seeds} master_seed={args.master_seed} "
         + " ".join(f"{key}={value}" for key, value in rollout_config.items())
         + (f" chamfer_mm={args.chamfer_mm}" if args.chamfer_mm is not None else "")
+        + f" delta_clamp={delta_module._MAX_DELTA_POSITION}"
     )
 
     def run_config(label: str, assist_factory: Callable[[], AssistProvider]) -> None:

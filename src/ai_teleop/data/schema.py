@@ -77,6 +77,9 @@ class DatasetConfig(TypedDict):
     speed_lognormal_sigma: NotRequired[float]
     expert_brake_gain: NotRequired[float]  # expert approach-speed brake (LAB-98); 0 = off
     expert_brake_lead_floor: NotRequired[float]
+    # Shared expert/policy per-step Δ-position bound (LAB-100); absent ⇒ the
+    # legacy ±2 cm bound every pre-LAB-100 corpus was clamped at.
+    delta_clamp: NotRequired[float]
 
 
 class _EpisodeMetadataBase(TypedDict):
@@ -130,6 +133,10 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     # on pre-LAB-98 episodes (⇒ brake off, the aim-only expert).
     expert_brake_gain: float
     expert_brake_lead_floor: float
+
+    # Shared expert/policy Δ-position bound (LAB-100). Stamped by data
+    # generation; absent on pre-LAB-100 episodes (⇒ the legacy ±2 cm bound).
+    delta_clamp: float
 
 
 class _EpisodeSummaryBase(TypedDict):

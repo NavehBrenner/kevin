@@ -69,7 +69,7 @@ Tension to acknowledge openly: the **paired-counterbalanced** design maximizes p
 
 ## Why the safety claim is a guarantee, not a statistic
 
-The peak-force KPI is bounded by design, not by hoping the policy behaves: the residual is **hard-clamped** (±2 cm / ±10° / ±5 N per step) *before* the controller sees it, and the impedance backbone bounds peak force mechanically. Even a 100%-wrong network output cannot exceed the envelope — see [policy-model.md](policy-model.md) and the safety layering in the deck.
+The peak-force KPI is bounded by design, not by hoping the policy behaves: the residual is **hard-clamped** (±3 cm / ±10° / ±5 N per step) *before* the controller sees it, and the impedance backbone bounds peak force mechanically. Even a 100%-wrong network output cannot exceed the envelope — see [policy-model.md](policy-model.md) and the safety layering in the deck.
 
 ---
 

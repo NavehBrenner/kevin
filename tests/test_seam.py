@@ -83,6 +83,14 @@ def test_apply_zero_delta_is_identity_nontrivial():
 def test_clamp_position_exceeds_bound_clamped_to_bound():
     large_delta = Delta(np.array([0.1, 0.0, 0.0]), np.zeros(3), 0.0)
     clamped = clamp_delta(large_delta)
+    np.testing.assert_allclose(np.linalg.norm(clamped.delta_position), 0.03, atol=1e-12)
+
+
+def test_clamp_position_explicit_bound_overrides_module_default():
+    # Data generation clamps at the fingerprinted per-corpus bound (LAB-100) —
+    # a legacy corpus regenerates at its recorded ±2 cm, not today's default.
+    large_delta = Delta(np.array([0.1, 0.0, 0.0]), np.zeros(3), 0.0)
+    clamped = clamp_delta(large_delta, max_delta_position=0.02)
     np.testing.assert_allclose(np.linalg.norm(clamped.delta_position), 0.02, atol=1e-12)
 
 

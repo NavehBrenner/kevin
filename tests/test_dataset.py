@@ -233,6 +233,29 @@ def test_fingerprint_of_legacy_config_is_unchanged():
     )
 
 
+def test_fingerprint_of_legacy_delta_clamp_is_unchanged():
+    # Pre-LAB-100 metadata carries no delta_clamp key — those corpora were
+    # clamped at the then-module-wide ±2 cm bound. The legacy bound must keep
+    # producing the exact committed hash (pinned to data/dataset_8's), and the
+    # knob must enter the hash once it leaves the legacy value.
+    from ai_teleop.data.generate import _episode_fingerprint
+
+    dataset_8 = dict(
+        seed=8,
+        max_steps=6000,
+        max_dpos=0.3,
+        expert_d_far=0.15,
+        generated_walls=True,
+        joint_damping=1.5,
+        speed_lognormal_median=0.09,
+        speed_lognormal_sigma=0.76,
+        expert_brake_gain=1.0,
+        expert_brake_lead_floor=0.008,
+    )
+    assert _episode_fingerprint(**dataset_8, delta_clamp=0.02) == "492c9509df3c11cb"
+    assert _episode_fingerprint(**dataset_8, delta_clamp=0.03) != "492c9509df3c11cb"
+
+
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_is_reproducible(tmp_path):
     paths_a = generate_dataset(

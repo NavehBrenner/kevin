@@ -28,6 +28,7 @@ from ai_teleop.common.log import (  # noqa: E402
     get_logger,
 )
 from ai_teleop.data.generate import (  # noqa: E402
+    DEFAULT_DELTA_CLAMP,
     DEFAULT_EXPERT_BRAKE_GAIN,
     DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
     DEFAULT_EXPERT_D_FAR,
@@ -108,6 +109,13 @@ def main() -> int:
         help="Log-space sigma of that draw (0.76 fits the recorded corpus' p90/median).",
     )
     parser.add_argument(
+        "--delta-clamp",
+        type=float,
+        default=DEFAULT_DELTA_CLAMP,
+        help="Shared expert/policy per-step Δ-position bound (m) — the label bound BC "
+        "clones and the brake's authority ceiling (LAB-100). Pre-LAB-100 corpora used 0.02.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Regenerate even if a cached episode with a matching fingerprint exists.",
@@ -169,6 +177,7 @@ def main() -> int:
         expert_brake_lead_floor=args.expert_brake_lead_floor,
         speed_lognormal_median=args.speed_lognormal_median,
         speed_lognormal_sigma=args.speed_lognormal_sigma,
+        delta_clamp=args.delta_clamp,
         cache=not args.force,
         baseline=not args.no_baseline,
         render_images=args.record == "all",

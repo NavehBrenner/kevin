@@ -106,7 +106,7 @@ Trial-level concepts (start, end, success, failure) live in the **evaluation har
 
 The residual policy is structured as a **pose-delta + grip-force-delta** layer, sitting on top of the active input command:
 
-- **Δposition**: 3D, clamped (e.g. ±2 cm/step).
+- **Δposition**: 3D, clamped (e.g. ±3 cm/step).
 - **Δorientation**: 3D axis-angle, clamped (e.g. ±10°/step).
 - **Δgrip-force**: 1D, clamped (e.g. ±5 N/step).
 
@@ -246,7 +246,7 @@ No C/C++/Rust extensions; no ROS. All glue code is plain Python.
 Safety is enforced in three layers, strongest first:
 
 1. **Passive (impedance control).** Peak contact force is bounded by stiffness × maximum deflection. With the chosen stiffness profile, no command — including garbage from a misbehaving residual policy — can produce large forces. This is the strongest guarantee because it is mechanical, not algorithmic. See *Controller architecture → Compliance*.
-2. **Active clamps on the residual.** Δposition ≤ 2 cm/step, Δorientation ≤ 10°/step, Δgrip-force ≤ 5 N/step. Enforced before the controller sees the augmented command. See *Controller architecture → Residual policy interface*.
+2. **Active clamps on the residual.** Δposition ≤ 3 cm/step, Δorientation ≤ 10°/step, Δgrip-force ≤ 5 N/step. Enforced before the controller sees the augmented command. See *Controller architecture → Residual policy interface*.
 3. **Trip-and-lock watchdog.** Monitors the runtime; if peak force exceeds a configurable threshold (e.g., 30 N), the trial timeout (e.g., 60 s) is hit, or the residual emits NaN / out-of-distribution values, the runtime enters **hold lock** and the trial is recorded as a failure.
 
 Between trials, the runtime executes a **park lock** routine returning the arm to a base pose.

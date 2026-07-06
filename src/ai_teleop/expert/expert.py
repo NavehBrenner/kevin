@@ -100,6 +100,12 @@ class Expert:
     grip_reduce_force:
         Grip-force reduction applied on a detected jam (N). Placeholder default;
         calibrated against logged jam episodes.
+    max_delta_position:
+        Position bound (m) for the final clamp — the expert's per-step
+        authority, and the label bound BC clones. ``None`` (default) uses the
+        shared module bound in ``domain.delta``; data generation passes its
+        fingerprinted per-corpus value so regenerating a legacy dataset clamps
+        at the bound that corpus was recorded under (LAB-100).
     """
 
     def __init__(
@@ -116,6 +122,7 @@ class Expert:
         brake_lead_floor: float = 0.008,
         jam_force_threshold: float = 8.0,
         grip_reduce_force: float = 1.0,
+        max_delta_position: float | None = None,
     ) -> None:
         self._target_hole_index = target_hole_index
         self._peg_half_length = peg_half_length
@@ -128,6 +135,7 @@ class Expert:
         self._brake_lead_floor = brake_lead_floor
         self._jam_force_threshold = jam_force_threshold
         self._grip_reduce_force = grip_reduce_force
+        self._max_delta_position = max_delta_position
 
     def get_delta(self, observation: Observation, command: Command) -> Delta:
         # --- Privileged geometry -----------------------------------------
@@ -194,4 +202,4 @@ class Expert:
             delta_orientation=gate * align_rotation,
             delta_grip_force=gate * delta_grip,
         )
-        return clamp_delta(delta)
+        return clamp_delta(delta, max_delta_position=self._max_delta_position)

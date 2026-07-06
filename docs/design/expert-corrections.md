@@ -38,7 +38,7 @@ The expert enforces the natural peg-in-hole order — **align laterally and angu
    Δ_brake   = −max(0, lead − allowed) · n
    ```
 
-   The effective target the impedance law chases becomes a controlled "carrot" at most `allowed` ahead of the arm, so approach speed (∝ lead under an impedance law) decays with distance — deceleration before contact, the "assist stops you slamming the wall" behavior. Two properties worth noting: the brake reads only `c_t − p_ee` — **non-privileged** streams, so unlike the aim correction this component is fully inferable by the deployed policy; and its authority is structurally bounded by the ±2 cm Δ-clamp, so operator sweeps faster than the clamp can absorb still crash (the honest-ceiling residual, measured in the LAB-98 sweep). `brake_gain = 0` disables the term (the pre-LAB-98 aim-only expert, bit-exact).
+   The effective target the impedance law chases becomes a controlled "carrot" at most `allowed` ahead of the arm, so approach speed (∝ lead under an impedance law) decays with distance — deceleration before contact, the "assist stops you slamming the wall" behavior. Two properties worth noting: the brake reads only `c_t − p_ee` — **non-privileged** streams, so unlike the aim correction this component is fully inferable by the deployed policy; and its authority is structurally bounded by the shared Δ-clamp, so operator sweeps faster than the clamp can absorb still crash (the honest-ceiling residual, measured in the LAB-98 sweep at ±2 cm; LAB-100 widened the bound to ±3 cm — the smallest that stops the brake saturating on success episodes — converting part of that residual). `brake_gain = 0` disables the term (the pre-LAB-98 aim-only expert, bit-exact).
 
 5. **Grip.** Hold the baseline grip force by default; **reduce** grip on a detected jam signature (so a slightly-angled peg can slip into alignment — the grip-modulation behavior the scope wants the policy to learn). Increase back to baseline once seated.
 
@@ -73,7 +73,7 @@ g(d) = 0                       for d ≥ d_far
 - **Far from the hole there is genuinely nothing to correct**: the operator's coarse approach is fine at the centimeter scale, the meaningful work is all in the last millimeters, and — critically — the deployed policy has *no reliable signal* far away anyway (F/T is ~0 in free space; the camera only resolves the hole on approach). Teaching a near-zero far-field correction matches what the policy can actually support and keeps the assist from fighting the operator during transit.
 - Because `g(d_far)=0` **exactly and by construction**, the expert's far-field correction is *structurally* zero, not approximately zero. We do not rely on the geometry happening to cancel; we hard-gate it.
 
-The clamp (`±2 cm / ±10° / ±5 N` per step) is applied last, as the final safety bound — identical bounds to the deployed policy.
+The clamp (`±3 cm / ±10° / ±5 N` per step; the position bound was ±2 cm before LAB-100 widened it to give the brake authority over the fast operator tail) is applied last, as the final safety bound — identical bounds to the deployed policy.
 
 ## Validating "Δ ≈ 0 far from the wall"
 
