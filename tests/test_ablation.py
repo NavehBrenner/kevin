@@ -14,7 +14,7 @@ from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 from ai_teleop.domain.delta import Delta
 from ai_teleop.eval.ablation import HUMAN_ONLY, Config, replay_kpis, run_paired, run_trial
-from ai_teleop.eval.schema import TrialKPIs
+from ai_teleop.eval.schema import TrialKPIs, TrialOutcome
 from ai_teleop.eval.trace import TRACE_NPZ_NAME, load_eval_trace
 
 # A short budget keeps the test fast; neither config seats in this window, so the
@@ -34,6 +34,26 @@ class _ConstantNudge:
 
 
 NUDGE = Config(label="nudge", assist_factory=_ConstantNudge)
+
+
+class _RamIntoWall:
+    """An AssistProvider that pushes hard *past* wherever the base command is
+    already aiming, overshooting into whatever the operator is approaching.
+
+    Used only to trip the controller's force-cap watchdog reliably (LAB-94
+    regression) -- not a stand-in for any real policy. Direction-agnostic (scales
+    off the base command's own aim) so it doesn't depend on the static scene's
+    world-frame orientation.
+    """
+
+    def get_delta(self, observation: Observation, command: Command) -> Delta:
+        toward_target = command.target_position - observation.ee_pose[:3]
+        norm = np.linalg.norm(toward_target)
+        direction = toward_target / norm if norm > 1e-6 else np.array([1.0, 0.0, 0.0])
+        return Delta(direction * 0.02, np.zeros(3), 0.0)
+
+
+RAM_INTO_WALL = Config(label="ram_into_wall", assist_factory=_RamIntoWall)
 
 
 def test_run_trial_produces_wellformed_record():
@@ -101,3 +121,24 @@ def test_saved_trace_replays_to_same_kpis(tmp_path):
     live = run_trial(7, NUDGE, max_steps=MAX_STEPS, trace_path=trace_path, generated_walls=False)
     replayed = replay_kpis(trace_path)
     assert live.to_dict() == replayed.to_dict()
+
+
+def test_controller_watchdog_trip_is_classified_force_abort():
+    """LAB-94 regression: a trial that trips the controller's force-cap watchdog
+    must be classified FORCE_ABORT, not TIMEOUT.
+
+    Before the fix, ``run_trial`` wired the controller's watchdog (hardcoded 30N)
+    and the observer's FORCE_ABORT threshold (its own default, 50N) independently
+    -- the controller always froze the arm at 30N first, so the observer's raw
+    force check never saw anything past that and every such trial silently fell
+    through to TIMEOUT. Confirmed live on the pre-fix code: with this same setup
+    the controller's watchdog visibly trips (`lock active -> HOLD ... 33.21N` in
+    the log) yet the outcome was still TIMEOUT. Post-fix, ``force_cap`` couples
+    both thresholds and this same scenario correctly classifies FORCE_ABORT.
+
+    A larger ``max_dpos`` raises the steady-state contact-force ceiling (the
+    controller's own position clamp otherwise bounds it to ~10-15N here, which
+    the default 30N cap can't reliably reach) so the watchdog trips deterministically.
+    """
+    kpis = run_trial(0, RAM_INTO_WALL, max_steps=3000, max_dpos=0.1, generated_walls=False)
+    assert kpis.outcome is TrialOutcome.FORCE_ABORT
