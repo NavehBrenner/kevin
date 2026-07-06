@@ -18,7 +18,7 @@ Three outputs, each recorded-vs-scripted overlaid:
 3. Episode length + motion-per-step, grouped by `terminal_reason` -- does a
    force_abort episode look different (motion-wise) from a timeout or a success.
 
-Run: uv run python scripts/dev/motion_profile_analysis.py [--scripted data/dataset_6]
+Run: uv run python scripts/dev/motion_profile_analysis.py [--scripted data/dataset_7]
 Writes outputs/motion_profile.png and prints the grouped-by-terminal-reason tables.
 """
 
@@ -125,7 +125,7 @@ def summarize_reason_table(tag: str, by_reason: dict[str, list[dict]]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--recorded", default=str(ROOT / "data" / "recorded" / "runs"))
-    ap.add_argument("--scripted", default=str(ROOT / "data" / "dataset_6"))
+    ap.add_argument("--scripted", default=str(ROOT / "data" / "dataset_7"))
     args = ap.parse_args()
 
     rec_paths = sorted(Path(args.recorded).glob("episode_*/episode.npz"))
