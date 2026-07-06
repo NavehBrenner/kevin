@@ -11,6 +11,9 @@ analytically (prism extrude + chamfer wedges), and emits all artifacts into
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 from . import emit, meta, solid
@@ -62,7 +65,14 @@ def generate_from_spec(
     *,
     tessellation_tolerance_mm: float = 0.2,
 ) -> WallScene:
-    """Build every artifact for ``spec`` under ``out_dir`` and return a WallScene."""
+    """Build every artifact for ``spec`` under ``out_dir`` and return a WallScene.
+
+    Artifacts are built into a private staging directory and published to
+    ``out_dir`` with a single atomic rename, so a concurrent reader (or a losing
+    concurrent writer sharing the same seed) can never observe a half-written
+    cache entry — see ``_publish_atomically``. ``header.json`` is written last
+    inside the staging dir and doubles as the commit marker.
+    """
     out_dir = Path(out_dir)
 
     workpiece = solid.build_wall_solid(spec)
@@ -73,17 +83,52 @@ def generate_from_spec(
     visual_mesh = to_trimesh(vertices, triangles)
     collision_parts = wall_collision_parts(spec)
 
-    visual_name, collision_names = emit.write_meshes(out_dir, visual_mesh, collision_parts)
-    mjcf_path = emit.write_mjcf(out_dir, spec, visual_name, collision_names)
-    header_path = meta.write_header(out_dir, spec)
+    # Stage on the same filesystem as the destination so the publish is a plain
+    # rename (atomic), not a cross-device copy.
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(dir=out_dir.parent, prefix=f".{out_dir.name}.tmp-"))
+    try:
+        visual_name, collision_names = emit.write_meshes(staging, visual_mesh, collision_parts)
+        emit.write_mjcf(staging, spec, visual_name, collision_names)
+        meta.write_header(staging, spec)  # commit marker — written last
+        _publish_atomically(staging, out_dir)
+    finally:
+        # No-op after a successful rename (staging was consumed); cleans up the
+        # discarded staging dir when we lost a publish race or hit an error.
+        shutil.rmtree(staging, ignore_errors=True)
 
     return WallScene(
         spec=spec,
-        mjcf_path=str(mjcf_path),
+        mjcf_path=str(out_dir / "wall.xml"),
         visual_mesh_path=str(out_dir / f"{visual_name}.obj"),
         collision_mesh_paths=[str(out_dir / f"{name}.obj") for name in collision_names],
-        header_path=str(header_path),
+        header_path=str(out_dir / "header.json"),
     )
+
+
+def _publish_atomically(staging: Path, out_dir: Path) -> None:
+    """Move a fully-built ``staging`` dir into place as the cache entry ``out_dir``.
+
+    ``os.replace`` of a directory is atomic on a single filesystem, so readers
+    only ever see a complete entry. If ``out_dir`` already holds a committed
+    entry — a concurrent writer won the race, or the cache was already warm —
+    we keep it and leave ``staging`` for the caller to discard; wall generation
+    is deterministic from the seed, so both writers produced identical bytes. A
+    pre-existing but *uncommitted* directory (no ``header.json``: an empty
+    leftover or a torn entry from older, non-atomic code) is cleared and
+    replaced.
+    """
+    try:
+        os.replace(staging, out_dir)
+        return
+    except OSError:
+        # out_dir already exists (non-empty dir rename is rejected on POSIX;
+        # any existing-dir rename is rejected on Windows).
+        pass
+    if (out_dir / "header.json").exists():
+        return  # committed entry present — adopt it, discard staging.
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.replace(staging, out_dir)
 
 
 def _load_cached_scene(out_dir: Path, spec: WallSpec) -> WallScene | None:
@@ -95,6 +140,11 @@ def _load_cached_scene(out_dir: Path, spec: WallSpec) -> WallScene | None:
     compare against) but skip the build when a byte-identical wall already
     exists on disk. Returns ``None`` on any mismatch or missing file so the
     caller falls back to a full rebuild.
+
+    ``header.json`` is the cache's *commit marker*: ``generate_from_spec`` writes
+    it last and only ever publishes a complete entry via an atomic rename, so a
+    directory without it — an interrupted write from older, non-atomic code, or
+    a staging dir mid-publish — is treated as a miss rather than adopted.
     """
     header = out_dir / "header.json"
     mjcf = out_dir / "wall.xml"

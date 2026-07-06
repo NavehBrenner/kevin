@@ -77,6 +77,36 @@ def test_bounding_radius_includes_chamfer():
     assert hole.bounding_radius() == pytest.approx(0.005 + 0.002)
 
 
+def test_header_is_the_commit_marker(tmp_path):
+    """A cache dir with meshes + xml but no ``header.json`` (a torn entry, or an
+    interrupted write from older non-atomic code) must be a miss; the same dir
+    becomes a hit once the matching header is present (LAB-97)."""
+    # `generate` imports the CAD/mesh stack at module load, so this needs the
+    # scenegen extra even though `_load_cached_scene` itself only touches files.
+    pytest.importorskip("cadquery")
+    pytest.importorskip("trimesh")
+    from ai_teleop.sim.scenegen import WallSpec, meta
+    from ai_teleop.sim.scenegen.generate import _load_cached_scene
+
+    spec = WallSpec(
+        seed=1,
+        wall_size=(0.02, 0.40, 0.40),
+        holes=[HoleSpec("circle", (0.10, 0.05), {"diameter": 0.014}, 0.002, True)],
+    )
+    (tmp_path / "wall.xml").write_text("<mujoco/>")
+    (tmp_path / "wall_visual.obj").write_text("# v\n")
+    (tmp_path / "wall_col_000.obj").write_text("# v\n")
+
+    # Commit marker absent -> miss, even though every other artifact exists.
+    assert _load_cached_scene(tmp_path, spec) is None
+
+    # Marker present and matching the spec -> hit.
+    meta.write_header(tmp_path, spec)
+    scene = _load_cached_scene(tmp_path, spec)
+    assert scene is not None
+    assert scene.from_cache
+
+
 # --- Geometry round-trip (needs the scenegen extra) ----------------------
 
 
@@ -122,3 +152,17 @@ def test_generated_bore_is_open_and_wall_is_solid(tmp_path, mujoco_mod):
 
     assert not ray_hits(0.10, 0.05)  # through the bore -> open
     assert ray_hits(-0.10, -0.10)  # through solid wall -> blocked
+
+
+def test_republish_over_existing_entry_is_safe(tmp_path, mujoco_mod):
+    """Building into a dir that already holds a committed entry (the atomic-
+    publish 'adopt the winner' path) leaves a loadable cache — it neither
+    corrupts the existing entry nor raises (LAB-97)."""
+    out_dir = tmp_path / "wall_x"
+    _build(out_dir)  # first publish: rename staging into place
+    scene = _build(out_dir)  # out_dir committed -> adopt path in _publish_atomically
+
+    model = mujoco_mod.MjModel.from_xml_path(scene.mjcf_path)
+    assert model.nsite == 1
+    # No leftover staging dirs beside the entry.
+    assert [p.name for p in tmp_path.iterdir()] == ["wall_x"]
