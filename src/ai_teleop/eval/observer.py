@@ -55,13 +55,20 @@ from ai_teleop.eval.schema import TrialKPIs, TrialOutcome
 # means the same thing it meant when the BC corpus was scored.
 __all__ = ["PEG_HALF_LENGTH", "TrialObserver"]
 
-# Classification thresholds. Defaults match the data-generation seating
-# definition (``data.generate.DEFAULT_*``) so a "success" here means the same
-# thing it meant when the BC corpus was scored; LAB-37 calibrates the operating
-# point (these are the knobs it sweeps).
+# Classification thresholds. Success depth/tolerance default match the
+# data-generation seating definition (``data.generate.DEFAULT_*``) so a "success"
+# here means the same thing it meant when the BC corpus was scored; LAB-37
+# calibrates the operating point (these are the knobs it sweeps).
 DEFAULT_SUCCESS_DEPTH = 0.015  # penetration past the hole entry → seated (m)
 DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral tip error for a seated peg (m); LAB-77 calibration
-DEFAULT_FORCE_CAP = 50.0  # contact-force magnitude that aborts the trial (N)
+# Matches `Controller`'s own watchdog (`force_cap_n`, default 30N in
+# control/backbone.py), NOT data-generation's DEFAULT_FORCE_CAP (50N) — the
+# controller freezes the arm at its own threshold first, so a raw-force check set
+# any higher than that is practically unreachable here (LAB-94: this observer,
+# unlike data-gen's TerminationProbe, has no controller reference to fall back on
+# a `locked` check, per LAB-36's harness/controller decoupling — so the raw
+# threshold itself must be the one that's actually reachable).
+DEFAULT_FORCE_CAP = 30.0  # contact-force magnitude that aborts the trial (N)
 DEFAULT_SUSTAINED_DURATION = 0.05  # seating must hold this long to count (s)
 
 # Contact-event detection — a rising edge above ``CONTACT_FORCE_FLOOR`` counts

@@ -33,7 +33,7 @@ import numpy as np
 from ai_teleop.control import Controller
 from ai_teleop.domain import NoAssist
 from ai_teleop.domain.interfaces import AssistProvider
-from ai_teleop.eval.observer import TrialObserver
+from ai_teleop.eval.observer import DEFAULT_FORCE_CAP, TrialObserver
 from ai_teleop.eval.schema import TrialKPIs
 from ai_teleop.eval.trace import TRACE_NPZ_NAME, EvalTraceRecorder
 from ai_teleop.input.scripted_noisy_human import (
@@ -98,6 +98,7 @@ def run_trial(
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
+    force_cap: float = DEFAULT_FORCE_CAP,
     trace_path: str | Path | None = None,
     **observer_kwargs: Any,
 ) -> TrialKPIs:
@@ -110,13 +111,17 @@ def run_trial(
 
     ``operator_error_scale`` multiplies the scripted operator's lateral-error σ's
     (bias + drift) off their training defaults — the difficulty knob the LAB-53 pin
-    sweeps. When ``trace_path`` is given, the realized-state trace is written there so
-    the KPIs can later be recomputed offline via :func:`replay_kpis`.
+    sweeps. ``force_cap`` feeds **both** the controller's watchdog (``force_cap_n``)
+    and the observer's own FORCE_ABORT threshold — they must match (LAB-94: the
+    controller freezes the arm at its threshold first, so a higher observer
+    threshold is never reached and FORCE_ABORT silently never fires). When
+    ``trace_path`` is given, the realized-state trace is written there so the KPIs
+    can later be recomputed offline via :func:`replay_kpis`.
     """
     wall_seed = episode_wall_seed(master_seed, episode_index) if generated_walls else None
     environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
     try:
-        controller = Controller(environment, max_dpos_per_step=max_dpos)
+        controller = Controller(environment, max_dpos_per_step=max_dpos, force_cap_n=force_cap)
         observation = environment.reset()
         target_position = observation.hole_poses[_TARGET_HOLE_INDEX][:3].copy()
         home_quaternion = controller.home_pose[3:]
@@ -133,6 +138,7 @@ def run_trial(
             target_hole_index=_TARGET_HOLE_INDEX,
             seed=episode_index,
             config_label=config.label,
+            force_cap=force_cap,
             **observer_kwargs,
         )
         recorder = (
@@ -179,6 +185,7 @@ def run_paired(
     max_steps: int = DEFAULT_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
+    force_cap: float = DEFAULT_FORCE_CAP,
     **observer_kwargs: Any,
 ) -> dict[str, TrialKPIs]:
     """Run one paired trial — the same ``episode_index`` under each config.
@@ -201,6 +208,7 @@ def run_paired(
             max_steps=max_steps,
             max_dpos=max_dpos,
             operator_error_scale=operator_error_scale,
+            force_cap=force_cap,
             trace_path=trace_path,
             **observer_kwargs,
         )
