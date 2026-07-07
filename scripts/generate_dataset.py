@@ -162,6 +162,14 @@ def main() -> int:
         )
         return 0
 
+    if args.record == "all" and args.render_every < 2:
+        # ponytail: warn, don't block — dense frames are legitimate for a small dev corpus.
+        log.warning(
+            "--record all with --render-every %d renders ~1 frame/step (hundreds/episode). "
+            "For a large corpus this is terabytes on disk; pass --render-every 10-20.",
+            args.render_every,
+        )
+
     out_dir = Path(args.out) if args.out is not None else Path("data") / f"dataset_{args.seed}"
     log.info("generating %d episodes → %s  (seed=%d)", args.episodes, out_dir, args.seed)
     start = time.time()

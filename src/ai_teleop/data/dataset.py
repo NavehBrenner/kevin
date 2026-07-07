@@ -25,7 +25,12 @@ from torch.utils.data import DataLoader, Dataset
 from ai_teleop.common.log import get_logger
 from ai_teleop.common.utils.rotations import quat_to_6d
 from ai_teleop.data.generate import regenerate_from_metadata
-from ai_teleop.data.images import load_frame_stream
+from ai_teleop.data.images import (
+    decode_frames,
+    discover_frames,
+    frame_index_for_steps,
+    load_frame_stream,
+)
 from ai_teleop.data.schema import (
     EpisodeColumns,
     EpisodeMetadata,
@@ -257,21 +262,37 @@ class OfflineResidualBCDataset(Dataset):
             self.metadata["episodes"], val_fraction=val_fraction, seed=seed
         )
         episode_summaries = train_episodes if train else val_episodes
-        raw_episodes = [
-            extract_training_episode(
-                load_episode(self.dataset_dir / summary["file"]),
-                imgs_dir=(
-                    episode_imgs_dir(self.dataset_dir / "runs", summary["episode_index"])
-                    if load_images
-                    else None
-                ),
-            )
-            for summary in episode_summaries
-        ]
+        # Load the cheap vector streams eagerly; when load_images, store frame *paths* only and
+        # the (cheap) per-step frame index — pixels decode lazily in __getitem__ (LAB-103). Holding
+        # the whole decoded corpus resident OOMs before epoch 1 at the ~5k-episode LAB-82 scale.
+        raw_episodes: list[Episode] = []
+        self._frame_paths: list[list[Path] | None] = []
+        for summary in episode_summaries:
+            episode = extract_training_episode(load_episode(self.dataset_dir / summary["file"]))
+            paths: list[Path] | None = None
+            if load_images:
+                imgs_dir = episode_imgs_dir(self.dataset_dir / "runs", summary["episode_index"])
+                frames = discover_frames(imgs_dir)
+                if not frames:
+                    raise FileNotFoundError(
+                        f"no rendered frames found under {imgs_dir}; regenerate this dataset "
+                        "with --record all (or --record images) to populate imgs/"
+                    )
+                paths = [path for _, path in frames]
+                episode = replace(
+                    episode,
+                    image_frame_index=frame_index_for_steps(
+                        [step for step, _ in frames], n_steps=episode.command.shape[0]
+                    ),
+                )
+            raw_episodes.append(episode)
+            self._frame_paths.append(paths)
 
         if norm_stats is None:
             if not train:
                 raise ValueError("the val split requires norm_stats computed on the train split")
+            # Vector streams only — extract_training_episode above never decoded images, so
+            # norm-stats never hold the corpus resident (LAB-103).
             norm_stats = compute_norm_stats(raw_episodes)
         self.norm_stats = norm_stats
         self.episodes = [normalize_episode(episode, norm_stats) for episode in raw_episodes]
@@ -280,7 +301,13 @@ class OfflineResidualBCDataset(Dataset):
         return len(self.episodes)
 
     def __getitem__(self, index: int) -> Episode:
-        return self.episodes[index]
+        episode = self.episodes[index]
+        paths = self._frame_paths[index]
+        if paths is None:
+            return episode
+        # Lazy decode — runs in a DataLoader worker when num_workers>0, so resident RAM is
+        # bounded to ~one batch of frames rather than the whole corpus.
+        return replace(episode, images=decode_frames(paths))
 
 
 def collate_episodes(batch: list[Episode]) -> EpisodeBatch:
@@ -321,6 +348,7 @@ def build_dataloaders(
     download: bool = True,
     load_images: bool = False,
     num_workers: int = 0,
+    pin_memory: bool = True,
 ) -> tuple[DataLoader, DataLoader, NormStats]:
     """Build train + val ``DataLoader``s over an M4 dataset directory.
 
@@ -328,7 +356,9 @@ def build_dataloaders(
     and the val dataset reuses the train-computed ``norm_stats`` so both splits —
     and, later, inference — share one normalization. The train loader is shuffled
     (episodes are the i.i.d. unit), the val loader is not. ``load_images`` requires
-    the dataset was generated with ``--record all``/``--record images``. Returns
+    the dataset was generated with ``--record all``/``--record images``; frames decode
+    lazily per item, so ``num_workers>0`` parallelizes the decode into worker processes
+    and keeps resident RAM bounded to ~one batch (LAB-103). Returns
     ``(train_loader, val_loader, norm_stats)``.
     """
     train_dataset = OfflineResidualBCDataset(
@@ -354,6 +384,7 @@ def build_dataloaders(
         shuffle=True,
         collate_fn=collate_episodes,
         num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -361,5 +392,6 @@ def build_dataloaders(
         shuffle=False,
         collate_fn=collate_episodes,
         num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     return train_loader, val_loader, train_dataset.norm_stats
