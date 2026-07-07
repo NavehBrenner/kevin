@@ -16,7 +16,31 @@ class PolicyConfig:
 
     @property
     def input_dim(self) -> int:
+        """Width of the concatenated **vector** streams (command + F/T + proprio).
+
+        Vision-independent by design: this is the Phase-1 fused width and stays 39
+        regardless of ``use_vision``. The image embedding widens the GRU input
+        separately (see ``gru_input_dim``), preserving the clean ``Phase2 − Phase1``
+        input-width change (``docs/design/policy-model.md``).
+        """
         return self.command_dim + self.force_torque_dim + self.proprioception_dim
+
+    # vision (Phase 2 — docs/design/policy-model.md Decision B). Off by default so
+    # the F/T-only Phase-1 model and its checkpoints are unchanged; every field is
+    # defaulted so an old checkpoint's config dict still deserializes.
+    use_vision: bool = False
+    image_embed_dim: int = 128  # width of the CNN embedding fused into the GRU input
+    image_backbone: str = "mobilenet_v3_small"  # torchvision backbone name
+    image_pretrained: bool = True  # ImageNet-pretrained init (fine-tuned end-to-end)
+    freeze_image_encoder: bool = False  # freeze-fallback: use the backbone as a fixed extractor
+
+    @property
+    def gru_input_dim(self) -> int:
+        """Actual GRU input width: the vector streams, widened by the image
+        embedding when vision is on. Phase 1 == ``input_dim``; Phase 2 adds
+        ``image_embed_dim`` — the core/head are otherwise identical across phases.
+        """
+        return self.input_dim + (self.image_embed_dim if self.use_vision else 0)
 
     # model
     hidden_size: int = 128

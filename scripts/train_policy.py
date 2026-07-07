@@ -80,6 +80,11 @@ def _to_device(batch: EpisodeBatch, device: torch.device) -> EpisodeBatch:
         proprioception=batch.proprioception.to(device),
         delta=batch.delta.to(device),
         lengths=batch.lengths.to(device),
+        # Carried through for the Phase-2 vision path; None for the F/T-only corpus.
+        images=batch.images.to(device) if batch.images is not None else None,
+        image_frame_index=(
+            batch.image_frame_index.to(device) if batch.image_frame_index is not None else None
+        ),
     )
 
 
@@ -120,6 +125,14 @@ def _epoch(
                     batch.command[:, start:end],
                     batch.force_torque[:, start:end],
                     batch.proprioception[:, start:end],
+                    # Frames are per-episode (not time-sliced); the per-step index is
+                    # sliced to the chunk. Both None on the F/T-only path (ignored).
+                    images=batch.images,
+                    image_frame_index=(
+                        batch.image_frame_index[:, start:end]
+                        if batch.image_frame_index is not None
+                        else None
+                    ),
                     hidden=hidden,
                 )
                 chunk_loss = residual_bc_loss(
@@ -243,6 +256,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-size", type=int, default=PolicyConfig.hidden_size)
     parser.add_argument("--num-layers", type=int, default=PolicyConfig.num_layers)
     parser.add_argument("--tbptt-steps", type=int, default=DEFAULT_TBPTT_STEPS)
+    parser.add_argument(
+        "--vision",
+        action="store_true",
+        help="Train the Phase-2 vision-conditioned policy: load wrist frames and add the "
+        "image-CNN stream. Requires a dataset generated with --record all/images.",
+    )
+    parser.add_argument(
+        "--image-backbone",
+        default=PolicyConfig.image_backbone,
+        help="torchvision backbone for the image encoder (with --vision).",
+    )
+    parser.add_argument(
+        "--freeze-image-encoder",
+        action="store_true",
+        help="Freeze-fallback: use the pretrained backbone as a fixed extractor (train only the projection).",
+    )
+    parser.add_argument(
+        "--no-image-pretrained",
+        action="store_true",
+        help="Initialize the image backbone from scratch instead of ImageNet weights (with --vision).",
+    )
     parser.add_argument("--patience", type=int, default=TrainConfig.patience)
     parser.add_argument(
         "--device",
@@ -289,10 +323,26 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         val_fraction=args.val_fraction,
         seed=args.seed,
+        load_images=args.vision,
     )
     log.info("episodes: %d train │ %d val", len(train_loader.dataset), len(val_loader.dataset))
 
-    config = PolicyConfig(hidden_size=args.hidden_size, num_layers=args.num_layers)
+    config = PolicyConfig(
+        hidden_size=args.hidden_size,
+        num_layers=args.num_layers,
+        use_vision=args.vision,
+        image_backbone=args.image_backbone,
+        image_pretrained=not args.no_image_pretrained,
+        freeze_image_encoder=args.freeze_image_encoder,
+    )
+    if args.vision:
+        log.info(
+            "vision ON │ backbone %s │ pretrained %s │ frozen %s │ embed %d",
+            config.image_backbone,
+            config.image_pretrained,
+            config.freeze_image_encoder,
+            config.image_embed_dim,
+        )
     loss_config = LossConfig()
     train_config = TrainConfig(
         epochs=args.epochs,
