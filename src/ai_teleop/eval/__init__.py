@@ -15,6 +15,9 @@ Public surface:
 * :class:`Config` / :func:`run_trial` / :func:`run_paired` / :func:`replay_kpis` —
   the paired-seed ablation mechanism + offline trace replay (LAB-37).
 * :class:`EvalTraceRecorder` — the realized-state eval-log producer (LAB-37).
+* :func:`load_trials` / :func:`build_report` (+ :class:`ConfigSummary` /
+  :class:`PairedComparison`) — aggregate the per-trial records into the publishable
+  KPI tables + plots + paired statistics (LAB-38).
 """
 
 from ai_teleop.eval.ablation import (
@@ -25,6 +28,14 @@ from ai_teleop.eval.ablation import (
     run_trial,
 )
 from ai_teleop.eval.observer import TrialObserver
+from ai_teleop.eval.report import (
+    ConfigSummary,
+    PairedComparison,
+    build_report,
+    compare_paired,
+    load_trials,
+    summarize_config,
+)
 from ai_teleop.eval.schema import TrialKPIs, TrialOutcome
 from ai_teleop.eval.trace import EvalTraceRecorder, load_eval_trace
 
@@ -39,4 +50,10 @@ __all__ = [
     "replay_kpis",
     "EvalTraceRecorder",
     "load_eval_trace",
+    "load_trials",
+    "build_report",
+    "compare_paired",
+    "summarize_config",
+    "ConfigSummary",
+    "PairedComparison",
 ]
