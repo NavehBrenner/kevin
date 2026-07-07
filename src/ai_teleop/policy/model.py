@@ -48,13 +48,17 @@ class ResidualPolicy(nn.Module):
 
         self.regression_head = nn.Sequential(*layers)
 
-    def _per_step_image_embedding(self, images: Tensor, image_frame_index: Tensor) -> Tensor:
+    def per_step_image_embedding(self, images: Tensor, image_frame_index: Tensor) -> Tensor:
         """Compact frames ``(B, F, 3, 224, 224)`` + per-step index ``(B, T)`` → ``(B, T, embed)``.
 
         Encodes the ``F`` unique frames once, then gathers each step's most-recent
         frame embedding via ``image_frame_index`` (the forward-fill index the loader
         builds). This is the compact-frame contract: cost scales with rendered
         frames, not steps.
+
+        Public so the TBPTT training loop can run the CNN **once per batch** and feed
+        chunk-sliced embeddings back through ``forward(image_embedding=...)``, instead
+        of re-encoding the whole CNN on every truncation chunk (LAB-102).
         """
         assert self.image_encoder is not None
         frame_embeddings = self.image_encoder.encode_frames(images)  # (B, F, embed)
@@ -70,14 +74,24 @@ class ResidualPolicy(nn.Module):
         proprioception: Tensor,
         images: Tensor | None = None,
         image_frame_index: Tensor | None = None,
+        image_embedding: Tensor | None = None,
         lengths: Tensor | None = None,
         hidden=None,
     ):
         streams = [command, force_torque, proprioception]
         if self.config.use_vision:
-            if images is None or image_frame_index is None:
-                raise ValueError("use_vision=True requires images and image_frame_index")
-            streams.append(self._per_step_image_embedding(images, image_frame_index))
+            # Prefer a precomputed per-step embedding stream (B, T, embed): the training
+            # loop encodes the CNN once per batch and passes chunk slices, so the backbone
+            # isn't re-run on every TBPTT chunk (LAB-102). Fall back to encoding raw frames
+            # for callers that pass a full sequence (eval, tests).
+            if image_embedding is not None:
+                streams.append(image_embedding)
+            elif images is not None and image_frame_index is not None:
+                streams.append(self.per_step_image_embedding(images, image_frame_index))
+            else:
+                raise ValueError(
+                    "use_vision=True requires image_embedding, or images and image_frame_index"
+                )
 
         x = _fuse(*streams)  # (B, max_T, gru_input_dim)
         gru_input: Tensor | PackedSequence = x

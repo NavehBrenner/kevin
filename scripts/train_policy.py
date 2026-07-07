@@ -114,6 +114,22 @@ def _epoch(
 
         hidden: Tensor | None = None
         with torch.set_grad_enabled(training):
+            # Encode the CNN **once per batch** (LAB-102). The per-step image embedding is a
+            # pure function of the frames — independent of the GRU's TBPTT truncation — so
+            # re-running the whole backbone on every chunk was pure waste (and blew VRAM:
+            # N_chunks × the full B·F-frame grad graph). Encode once here, slice the resulting
+            # embedding per chunk. None on the F/T-only path.
+            image_embedding: Tensor | None = None
+            if model.config.use_vision:
+                image_embedding = model.per_step_image_embedding(
+                    batch.images, batch.image_frame_index
+                )
+
+            # Accumulate chunk losses and backward once per batch. With `hidden` detached at
+            # each boundary the chunk graphs are independent, so Σ backward(chunk_loss) equals
+            # backward(Σ chunk_loss) — identical gradients — but the shared CNN graph is then
+            # traversed once, not retained/rebuilt per chunk.
+            batch_loss: Tensor | None = None
             for start in range(0, max_steps, tbptt_steps):
                 end = min(start + tbptt_steps, max_steps)
                 chunk_mask = mask[:, start:end]
@@ -125,13 +141,8 @@ def _epoch(
                     batch.command[:, start:end],
                     batch.force_torque[:, start:end],
                     batch.proprioception[:, start:end],
-                    # Frames are per-episode (not time-sliced); the per-step index is
-                    # sliced to the chunk. Both None on the F/T-only path (ignored).
-                    images=batch.images,
-                    image_frame_index=(
-                        batch.image_frame_index[:, start:end]
-                        if batch.image_frame_index is not None
-                        else None
+                    image_embedding=(
+                        image_embedding[:, start:end] if image_embedding is not None else None
                     ),
                     hidden=hidden,
                 )
@@ -139,12 +150,15 @@ def _epoch(
                     predicted, batch.delta[:, start:end], chunk_mask, config=loss_config
                 )
                 if training:
-                    chunk_loss.backward()
+                    batch_loss = chunk_loss if batch_loss is None else batch_loss + chunk_loss
                 # Carry the recurrent state across chunks but cut the graph (TBPTT).
                 hidden = next_hidden.detach()
 
                 total_loss += float(chunk_loss.detach()) * chunk_valid
                 total_steps += chunk_valid
+
+            if training and batch_loss is not None:
+                batch_loss.backward()
 
         if training:
             assert optimizer is not None

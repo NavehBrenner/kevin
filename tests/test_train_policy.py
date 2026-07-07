@@ -78,6 +78,64 @@ def test_train_drives_train_and_val_loss_down():
     assert history["val_loss"][-1] < history["val_loss"][0]
 
 
+def _vision_episode(index: int, length: int, *, n_frames: int = 3, seed: int = 0) -> Episode:
+    """A synthetic vision Episode: vector streams + a compact (F, 3, H, W) frame stack."""
+    generator = torch.Generator().manual_seed(seed + index)
+    image_frame_index = (torch.arange(length) * n_frames // max(length, 1)).clamp(max=n_frames - 1)
+    return Episode(
+        episode_index=index,
+        command=torch.randn(length, 9, generator=generator),
+        force_torque=torch.randn(length, 6, generator=generator),
+        proprioception=torch.randn(length, 24, generator=generator),
+        delta=torch.randn(length, 7, generator=generator),
+        images=torch.randn(n_frames, 3, 16, 16, generator=generator),
+        image_frame_index=image_frame_index,
+    )
+
+
+def test_vision_epoch_encodes_cnn_once_per_batch_regardless_of_tbptt():
+    """LAB-102 acceptance: the CNN runs once per batch, not once per TBPTT chunk.
+
+    The pre-fix loop re-encoded the whole backbone on every chunk (blowing VRAM); the
+    fix encodes once and slices the embedding. So the per-step-embedding call count must
+    equal the batch count and be *independent* of ``tbptt_steps`` (which sets chunk count).
+    """
+    from ai_teleop.policy.model import ResidualPolicy
+
+    device = torch.device("cpu")
+    # One batch (batch_size 4 ≥ 3 episodes), each episode long enough to span many chunks.
+    episodes = [_vision_episode(i, length=10) for i in range(3)]
+    loader = DataLoader(episodes, batch_size=4, shuffle=False, collate_fn=collate_episodes)
+
+    def count_encode_calls(tbptt_steps: int) -> int:
+        torch.manual_seed(0)
+        config = PolicyConfig(
+            hidden_size=16, num_layers=1, use_vision=True, image_pretrained=False, image_embed_dim=8
+        )
+        model = ResidualPolicy(config).to(device)
+        calls = {"n": 0}
+        original = model.per_step_image_embedding
+
+        def counting(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        model.per_step_image_embedding = counting  # type: ignore[method-assign]
+        train_policy._epoch(
+            model,
+            loader,
+            train_policy.LossConfig(),
+            device,
+            tbptt_steps=tbptt_steps,
+            optimizer=torch.optim.Adam(model.parameters()),
+        )
+        return calls["n"]
+
+    # 10 steps @ tbptt 2 → 5 chunks; @ tbptt 100 → 1 chunk. Encode count stays 1 (one batch).
+    assert count_encode_calls(tbptt_steps=2) == 1
+    assert count_encode_calls(tbptt_steps=100) == 1
+
+
 def test_checkpoint_persists_training_history(tmp_path):
     from ai_teleop.data.dataset import NormStats
     from ai_teleop.policy import ResidualPolicy
