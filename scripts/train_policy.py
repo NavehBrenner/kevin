@@ -252,6 +252,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=TrainConfig.learning_rate)
     parser.add_argument("--val-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader worker processes. With --vision, use >0 (e.g. 4) so wrist frames "
+        "decode in parallel worker processes instead of the main process.",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Train/val split seed.")
     parser.add_argument("--hidden-size", type=int, default=PolicyConfig.hidden_size)
     parser.add_argument("--num-layers", type=int, default=PolicyConfig.num_layers)
@@ -324,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         val_fraction=args.val_fraction,
         seed=args.seed,
         load_images=args.vision,
+        num_workers=args.num_workers,
     )
     log.info("episodes: %d train │ %d val", len(train_loader.dataset), len(val_loader.dataset))
 

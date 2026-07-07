@@ -20,6 +20,7 @@ vision at inference.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -55,12 +56,41 @@ def _load_and_normalize(path: Path) -> Tensor:
     return (frame - _IMAGENET_MEAN) / _IMAGENET_STD
 
 
+def frame_index_for_steps(frame_steps: Sequence[int], n_steps: int) -> Tensor:
+    """``(n_steps,)`` long forward-fill index: each step → index of the most recent frame.
+
+    Cheap (no decode) — this is the half of a frame stream the lazy dataset computes
+    eagerly at construction; the pixels themselves are decoded on demand (``decode_frames``).
+    Steps before the first rendered frame clamp to frame 0.
+    """
+    steps = np.asarray(frame_steps)
+    step_range = np.arange(n_steps)
+    # Index of the last frame_step <= step; clamp steps before the first frame to frame 0.
+    frame_index = np.clip(np.searchsorted(steps, step_range, side="right") - 1, 0, None)
+    return torch.from_numpy(frame_index).long()
+
+
+def decode_frames(paths: Sequence[Path]) -> Tensor:
+    """Decode frame JPEGs to a compact ``(F, 3, 224, 224)`` normalized float32 tensor.
+
+    The expensive, RAM-heavy half of a frame stream (one decoded frame ≈ 0.57 MB) — the
+    lazy dataset calls this per episode inside ``__getitem__`` (in a DataLoader worker),
+    never up front, so resident RAM is bounded to ~one batch rather than the whole corpus.
+    """
+    return torch.stack([_load_and_normalize(path) for path in paths])  # (F, 3, 224, 224)
+
+
 def load_frame_stream(imgs_dir: Path, n_steps: int) -> tuple[Tensor, Tensor]:
     """Load an episode's rendered wrist-cam frames as a compact ``(images, frame_index)`` pair.
 
     ``images`` is ``(F, 3, 224, 224)`` — the ``F`` unique decoded frames, in step order.
     ``frame_index`` is ``(n_steps,)`` long — for each step, the index into ``images`` of the
     most recent frame at or before it (steps before the first rendered frame use frame 0).
+
+    Eager (decodes all frames at once); the training dataset loads lazily via
+    ``discover_frames`` + ``frame_index_for_steps`` (eager, cheap) and ``decode_frames``
+    (lazy, per ``__getitem__``). This eager combo stays for single-episode callers
+    (dev eval scripts, tests).
 
     Raises ``FileNotFoundError`` if ``imgs_dir`` has no rendered frames — the caller asked for
     images from an episode generated without ``--record all`` / ``--record images``.
@@ -72,10 +102,6 @@ def load_frame_stream(imgs_dir: Path, n_steps: int) -> tuple[Tensor, Tensor]:
             "--record all (or --record images) to populate imgs/"
         )
 
-    images = torch.stack([_load_and_normalize(path) for _, path in frames])  # (F, 3, 224, 224)
-
-    frame_steps = np.array([step for step, _ in frames])
-    step_range = np.arange(n_steps)
-    # Index of the last frame_step <= step; clamp steps before the first frame to frame 0.
-    frame_index = np.clip(np.searchsorted(frame_steps, step_range, side="right") - 1, 0, None)
-    return images, torch.from_numpy(frame_index).long()
+    images = decode_frames([path for _, path in frames])
+    frame_index = frame_index_for_steps([step for step, _ in frames], n_steps)
+    return images, frame_index

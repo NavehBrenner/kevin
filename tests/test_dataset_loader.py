@@ -315,6 +315,19 @@ def test_dataset_load_images_true_populates_episode_images(tiny_dataset_with_ima
     assert episode.image_frame_index.shape == (length,)
 
 
+def test_dataset_load_images_true_keeps_frames_lazy(tiny_dataset_with_images: Path):
+    """LAB-103: decoded frames must not be resident in ``self.episodes`` — they decode
+    per ``__getitem__``. This is the invariant that keeps RAM batch-scaled, not corpus-scaled."""
+    dataset = OfflineResidualBCDataset(
+        tiny_dataset_with_images, download=False, train=True, load_images=True
+    )
+    # Nothing decoded up front — only frame paths + the cheap per-step index are held.
+    assert all(episode.images is None for episode in dataset.episodes)
+    assert all(episode.image_frame_index is not None for episode in dataset.episodes)
+    # __getitem__ decodes on demand.
+    assert dataset[0].images is not None
+
+
 def test_dataset_load_images_false_leaves_images_none(tiny_dataset_with_images: Path):
     dataset = OfflineResidualBCDataset(
         tiny_dataset_with_images, download=False, train=True, load_images=False
