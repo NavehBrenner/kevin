@@ -36,6 +36,7 @@ from ai_teleop.common.log import (  # noqa: E402
 from ai_teleop.data.generate import DEFAULT_JOINT_DAMPING  # noqa: E402
 from ai_teleop.eval.ablation import (  # noqa: E402
     DEFAULT_MAX_DPOS,
+    DEFAULT_OPERATOR_ERROR_SCALE,
     HUMAN_ONLY,
     INSERTION_MAX_STEPS,
     Config,
@@ -80,6 +81,7 @@ def _run_pair(args: argparse.Namespace) -> int:
             max_steps=args.max_steps,
             max_dpos=args.max_dpos,
             joint_damping=args.joint_damping,
+            operator_error_scale=args.error_scale,
         )
         for kpis in results.values():
             rows.append(kpis.to_dict())
@@ -159,6 +161,15 @@ def main() -> int:
         "--residual-checkpoint",
         default=None,
         help="Add the F/T-residual config from this checkpoint (else human-only only).",
+    )
+    pair.add_argument(
+        "--error-scale",
+        type=float,
+        default=DEFAULT_OPERATOR_ERROR_SCALE,
+        help="Operator lateral-error scale (the difficulty pin). 1.0 == training σ's "
+        "(contact on the flat wall, outside the capture band); <1.0 shrinks the error "
+        "toward the chamfer-contact band where the F/T residual has a lever. Locate the "
+        "band with the `sweep` subcommand first.",
     )
     pair.set_defaults(func=_run_pair)
 
