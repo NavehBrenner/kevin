@@ -47,11 +47,20 @@ class LossConfig:
     Weights are relative — only their ratios matter. Defaults lean on position
     (the dominant alignment signal) with a modest orientation term and a small
     grip term; calibrate against the validation curve.
+
+    ``weight_action_rate`` scales an optional **smoothness** term (LAB-104): a
+    penalty on the per-step *change* in the predicted Δ (‖Δ̂ₜ − Δ̂ₜ₋₁‖), which
+    targets the measured jerk regression — both residuals inject sub-clamp
+    spurious variance the expert does not (∫|jerk| expert 40 → F/T 162 → vision
+    110; see ``project-wiki/concepts/vision-conditioned-policy.md``). Off by
+    default (0.0) so existing checkpoints/runs are byte-identical; the per-channel
+    weights above set its relative unit scale (m vs rad vs N).
     """
 
     weight_position: float = 1.0
     weight_orientation: float = 0.5
     weight_grip: float = 0.1
+    weight_action_rate: float = 0.0
     orientation: OrientationLoss = "geodesic"
     huber_beta: float = 1.0
 
@@ -115,6 +124,12 @@ def residual_bc_loss(
     Position and grip use smooth-L1 (Huber); orientation uses the geodesic angle
     (default) or smooth-L1 on the raw axis-angle. Each is reduced to a per-step
     ``(B, T)`` scalar, weighted, summed, then averaged over the real steps only.
+
+    When ``config.weight_action_rate > 0`` a **smoothness** term is added: the
+    squared first difference of the *predicted* Δ along time, per-channel weighted
+    (same weights as the imitation term, for unit consistency) and averaged over
+    consecutive step-pairs where both steps are real. It penalizes the sub-clamp
+    jerk both residuals inject (LAB-104).
     """
     config = config or LossConfig()
     mask = mask.to(predicted.dtype)
@@ -143,4 +158,21 @@ def residual_bc_loss(
     )  # (B, T)
 
     denominator = mask.sum().clamp_min(1.0)
-    return (per_step * mask).sum() / denominator
+    loss = (per_step * mask).sum() / denominator
+
+    if config.weight_action_rate > 0.0:
+        # Squared first difference of the predicted Δ along time — the canonical
+        # action-rate penalty. ponytail: computed within the given (B, T) block, so
+        # a per-chunk caller (TBPTT) drops the one cross-chunk boundary pair per
+        # 256-step chunk — negligible, and avoids threading Δ̂₋₁ across chunks.
+        difference = predicted[:, 1:] - predicted[:, :-1]  # (B, T-1, 7)
+        pair_mask = mask[:, 1:] * mask[:, :-1]  # (B, T-1) — both steps real
+        rate_step = (
+            config.weight_position * difference[..., _POS].pow(2).mean(dim=-1)
+            + config.weight_orientation * difference[..., _ORI].pow(2).mean(dim=-1)
+            + config.weight_grip * difference[..., _GRIP].pow(2).mean(dim=-1)
+        )  # (B, T-1)
+        rate_loss = (rate_step * pair_mask).sum() / pair_mask.sum().clamp_min(1.0)
+        loss = loss + config.weight_action_rate * rate_loss
+
+    return loss

@@ -298,6 +298,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Initialize the image backbone from scratch instead of ImageNet weights (with --vision).",
     )
+    parser.add_argument(
+        "--action-rate-weight",
+        type=float,
+        default=LossConfig.weight_action_rate,
+        help="Smoothness penalty weight (LAB-104): penalizes the per-step change in the "
+        "predicted Δ to kill the sub-clamp jerk regression. 0 disables (default).",
+    )
     parser.add_argument("--patience", type=int, default=TrainConfig.patience)
     parser.add_argument(
         "--device",
@@ -365,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             config.freeze_image_encoder,
             config.image_embed_dim,
         )
-    loss_config = LossConfig()
+    loss_config = LossConfig(weight_action_rate=args.action_rate_weight)
     train_config = TrainConfig(
         epochs=args.epochs,
         learning_rate=args.lr,
