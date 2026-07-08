@@ -112,6 +112,45 @@ def test_channel_weights_scale_their_term():
     torch.testing.assert_close(doubled, 2.0 * base)
 
 
+def test_action_rate_penalty_zero_for_constant_prediction():
+    """A perfectly smooth (constant-in-time) prediction has zero action rate."""
+    target = _delta(2, 5)
+    predicted = torch.ones(2, 5, 7)  # no per-step change
+    mask = torch.ones(2, 5)
+    config = LossConfig(weight_action_rate=10.0)
+    with_penalty = residual_bc_loss(predicted, target, mask, config=config)
+    without = residual_bc_loss(predicted, target, mask, config=LossConfig())
+    torch.testing.assert_close(with_penalty, without)
+
+
+def test_action_rate_penalty_positive_for_jerky_prediction():
+    """A prediction that flips every step incurs a strictly larger loss under the penalty."""
+    target = _delta(2, 6)
+    predicted = target.clone()
+    predicted[:, ::2] += 1.0  # inject a per-step oscillation the target doesn't have
+    mask = torch.ones(2, 6)
+    without = residual_bc_loss(predicted, target, mask, config=LossConfig())
+    with_penalty = residual_bc_loss(
+        predicted, target, mask, config=LossConfig(weight_action_rate=1.0)
+    )
+    assert float(with_penalty) > float(without)
+
+
+def test_action_rate_penalty_ignores_padding_steps():
+    """Garbage in a masked-out trailing step must not change the smoothness term."""
+    config = LossConfig(weight_action_rate=5.0)
+    predicted = _delta(1, 3, seed=1)
+    target = _delta(1, 3, seed=2)
+
+    padded_predicted = torch.cat([predicted, 1e3 * torch.ones(1, 1, 7)], dim=1)
+    padded_target = torch.cat([target, -1e3 * torch.ones(1, 1, 7)], dim=1)
+    padded_mask = torch.tensor([[1.0, 1.0, 1.0, 0.0]])
+
+    full = residual_bc_loss(predicted, target, torch.ones(1, 3), config=config)
+    masked = residual_bc_loss(padded_predicted, padded_target, padded_mask, config=config)
+    torch.testing.assert_close(masked, full)
+
+
 def test_gradient_is_finite_at_zero_rotation():
     """The Rodrigues θ→0 singularity must not produce NaN/Inf gradients."""
     predicted = torch.zeros(1, 1, 7, requires_grad=True)
