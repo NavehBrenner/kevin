@@ -77,6 +77,13 @@ INSERTION_MAX_STEPS = 9000
 # the F/T residual has a lever and human-only sits below ceiling with headroom.
 DEFAULT_OPERATOR_ERROR_SCALE = 1.0
 
+# Wrist-camera capture cadence for a vision trial: render a new frame every N
+# observation ticks and hold it between (the env is the frame-rate limiter — see
+# SimEnv.enable_wrist_capture). Matches the M7 corpus's render_every=20
+# (dataset_vision), so the deploy frame stream decimates like the training one. Only
+# a vision policy triggers capture; F/T-only and human-only render nothing.
+DEFAULT_WRIST_RENDER_EVERY = 20
+
 
 @dataclass(frozen=True)
 class Config:
@@ -113,6 +120,7 @@ def run_trial(
     speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
     speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     force_cap: float = DEFAULT_FORCE_CAP,
+    wrist_render_every: int = DEFAULT_WRIST_RENDER_EVERY,
     trace_path: str | Path | None = None,
     **observer_kwargs: Any,
 ) -> TrialKPIs:
@@ -158,6 +166,11 @@ def run_trial(
             seed=_human_seed(master_seed, episode_index),
         )
         assist = config.assist_factory()
+        # A vision policy needs a live wrist frame on each Observation; enable the
+        # env's rate-limited capture for it (duck-typed so eval/ imports no policy).
+        # F/T-only and human-only leave `use_vision` False → the env renders nothing.
+        if getattr(assist, "use_vision", False):
+            environment.enable_wrist_capture(wrist_render_every)
 
         observer = TrialObserver(
             target_hole_index=_TARGET_HOLE_INDEX,
@@ -214,6 +227,7 @@ def run_paired(
     speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
     speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
     force_cap: float = DEFAULT_FORCE_CAP,
+    wrist_render_every: int = DEFAULT_WRIST_RENDER_EVERY,
     **observer_kwargs: Any,
 ) -> dict[str, TrialKPIs]:
     """Run one paired trial — the same ``episode_index`` under each config.
@@ -240,6 +254,7 @@ def run_paired(
             speed_lognormal_median=speed_lognormal_median,
             speed_lognormal_sigma=speed_lognormal_sigma,
             force_cap=force_cap,
+            wrist_render_every=wrist_render_every,
             trace_path=trace_path,
             **observer_kwargs,
         )

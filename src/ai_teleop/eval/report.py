@@ -428,7 +428,9 @@ def plot_success_rates(summaries: Sequence[ConfigSummary], path: str | Path) -> 
     figure, axes = plt.subplots(figsize=(5.0, 4.0))
     labels = [s.config_label for s in summaries]
     rates = [100 * s.success_rate for s in summaries]
-    bars = axes.bar(labels, rates, color=["#8c8c8c", "#3b7dd8"][: len(labels)])
+    # baseline grey, then treatments; enough colors for the M7 3-way (human/ftonly/vision).
+    palette = ["#8c8c8c", "#3b7dd8", "#3aa657", "#d1495b"]
+    bars = axes.bar(labels, rates, color=[palette[i % len(palette)] for i in range(len(labels))])
     axes.set_ylabel("Insertion success rate (%)")
     axes.set_ylim(0, 100)
     axes.set_title("Phase-1 insertion success — assist off vs on")
@@ -506,7 +508,8 @@ class ReportArtifacts:
 
     markdown: str
     marginal_table: str
-    paired_table: str | None
+    paired_table: str | None  # the primary (baseline vs treatment) comparison
+    extra_paired_tables: tuple[str, ...]  # any further pairings (the M7 3-way)
     success_plot: Path
     distributions_plot: Path
     deltas_plot: Path | None
@@ -518,13 +521,16 @@ def build_report(
     *,
     baseline_label: str = "human_only",
     treatment_label: str = "residual",
+    extra_comparisons: Sequence[tuple[str, str]] = (),
 ) -> ReportArtifacts:
     """Aggregate trials into tables + plots under ``out_dir``; return the artifacts.
 
-    Marginal tables/plots are always produced. When both ``baseline_label`` and
-    ``treatment_label`` are present the paired comparison + delta plot are added — the
-    primary Phase-1 result. A single-config run (e.g. human-only calibration) reports
-    the marginal side only.
+    The marginal table/plots cover **all** configs present, so a 3-way run (M7:
+    human-only / F/T-only / vision) shows all three side by side. The primary paired
+    comparison + delta plot are ``baseline_label`` vs ``treatment_label``; pass
+    ``extra_comparisons`` (e.g. ``[("human_only","ftonly"), ("ftonly","vision")]``) to
+    append further paired tables — the M7 headline is one 3-way report, not three
+    reports. A single-config run (human-only calibration) reports the marginal side only.
     """
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -541,34 +547,53 @@ def build_report(
     plot_success_rates(summaries, success_plot)
     plot_kpi_distributions({label: grouped[label] for label in ordered_labels}, distributions_plot)
 
-    paired_table: str | None = None
-    deltas_plot: Path | None = None
-    if baseline_label in grouped and treatment_label in grouped:
-        comparison = compare_paired(
-            grouped[baseline_label],
-            grouped[treatment_label],
-            baseline_label=baseline_label,
-            treatment_label=treatment_label,
+    def _paired(base: str, treat: str) -> str | None:
+        if base not in grouped or treat not in grouped:
+            return None
+        return format_paired_table(
+            compare_paired(
+                grouped[base], grouped[treat], baseline_label=base, treatment_label=treat
+            )
         )
-        paired_table = format_paired_table(comparison)
-        deltas_plot = out_path / "paired_deltas.png"
-        plot_paired_deltas(comparison, deltas_plot)
 
-    markdown = _assemble_markdown(marginal_table, paired_table)
+    paired_table = _paired(baseline_label, treatment_label)
+    deltas_plot: Path | None = None
+    if paired_table is not None:
+        deltas_plot = out_path / "paired_deltas.png"
+        plot_paired_deltas(
+            compare_paired(
+                grouped[baseline_label],
+                grouped[treatment_label],
+                baseline_label=baseline_label,
+                treatment_label=treatment_label,
+            ),
+            deltas_plot,
+        )
+
+    extra_tables = tuple(
+        table for base, treat in extra_comparisons if (table := _paired(base, treat)) is not None
+    )
+
+    markdown = _assemble_markdown(marginal_table, paired_table, extra_tables)
     (out_path / "kpi_tables.md").write_text(markdown + "\n", encoding="utf-8")
     return ReportArtifacts(
         markdown=markdown,
         marginal_table=marginal_table,
         paired_table=paired_table,
+        extra_paired_tables=extra_tables,
         success_plot=success_plot,
         distributions_plot=distributions_plot,
         deltas_plot=deltas_plot,
     )
 
 
-def _assemble_markdown(marginal_table: str, paired_table: str | None) -> str:
+def _assemble_markdown(
+    marginal_table: str, paired_table: str | None, extra_paired_tables: Sequence[str] = ()
+) -> str:
     """Compose the KPI-tables markdown fragment written next to the plots."""
     parts = ["## KPI summary (marginal)", "", marginal_table]
     if paired_table is not None:
         parts += ["", "## Paired comparison (matched seeds)", "", paired_table]
+    for table in extra_paired_tables:
+        parts += ["", "## Paired comparison (matched seeds)", "", table]
     return "\n".join(parts)

@@ -47,13 +47,26 @@ def discover_frames(imgs_dir: Path) -> list[tuple[int, Path]]:
     return frames
 
 
+def normalize_frame(frame: np.ndarray) -> Tensor:
+    """An ``(H, W, 3)`` RGB uint8 frame → normalized ``(3, H, W)`` float32 tensor.
+
+    The single normalization definition shared by the training loader
+    (``_load_and_normalize``, which decodes a JPEG first) and the live deploy path
+    (``LearnedResidual``, which passes the raw render straight in). Keeping one
+    codepath is what guarantees the vision policy sees the same channel statistics
+    at inference that it trained on — two copies would be a silent covariate-shift
+    bug. ImageNet-normalized to match the pretrained backbone (see ``ImageEncoder``).
+    """
+    image = np.asarray(frame, dtype=np.float32) / 255.0
+    tensor = torch.from_numpy(image).permute(2, 0, 1)  # (H, W, 3) -> (3, H, W)
+    return (tensor - _IMAGENET_MEAN) / _IMAGENET_STD
+
+
 def _load_and_normalize(path: Path) -> Tensor:
     """Decode one JPEG frame to a normalized ``(3, 224, 224)`` float32 tensor."""
     from PIL import Image
 
-    image = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-    frame = torch.from_numpy(image).permute(2, 0, 1)  # (H, W, 3) -> (3, H, W)
-    return (frame - _IMAGENET_MEAN) / _IMAGENET_STD
+    return normalize_frame(np.asarray(Image.open(path).convert("RGB")))
 
 
 def frame_index_for_steps(frame_steps: Sequence[int], n_steps: int) -> Tensor:
