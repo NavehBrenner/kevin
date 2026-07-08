@@ -43,6 +43,7 @@ from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 from ai_teleop.common.utils.rotations import quat_to_6d
 from ai_teleop.data.dataset import INPUT_STREAMS, NormStats
+from ai_teleop.data.images import normalize_frame
 from ai_teleop.data.trajectory import SCHEMA_VERSION as DATA_SCHEMA_VERSION
 from ai_teleop.domain import Delta, clamp_delta
 from ai_teleop.policy.config import PolicyConfig
@@ -154,6 +155,15 @@ class LearnedResidual:
         self._ft_bias: np.ndarray | None = None
         self._last_sim_time: float | None = None
 
+    @property
+    def use_vision(self) -> bool:
+        """Whether this checkpoint conditions on the wrist image (Phase-2 vision).
+
+        The eval harness reads this (duck-typed, no policy import) to decide whether
+        to enable the env's wrist-camera capture for the trial.
+        """
+        return self._model.config.use_vision
+
     @classmethod
     def from_checkpoint(cls, path: str | Path, *, device: str = "cpu") -> LearnedResidual:
         """Load a trained checkpoint into a deployable provider."""
@@ -206,6 +216,29 @@ class LearnedResidual:
         raw = torch.as_tensor(vector, dtype=torch.float32, device=self._device)
         return ((raw - self._mean[stream]) / self._std[stream]).unsqueeze(0)
 
+    def _image_tensor(self, observation: Observation) -> Tensor:
+        """The wrist frame as a normalized ``(1, 3, 224, 224)`` tensor for ``model.step``.
+
+        Uses the *same* ``normalize_frame`` the training loader uses, so the encoder
+        sees the channel statistics it trained on. The env supplies the frame under
+        its own rate limiter (``SimEnv.enable_wrist_capture``), so this may be the
+        same held frame across several ticks — the CNN re-encodes it each tick, which
+        is the honest per-tick cost the latency check measures.
+
+        ponytail: re-encoding a repeated frame is wasted work; if the per-tick budget
+        is ever blown, cache the embedding keyed on ``frame is last_frame`` (the env
+        returns the same array object between renders). Stays out until measured.
+        ponytail: live frames are raw renders; the corpus frames went through a JPEG
+        q90 round-trip. Near-lossless at 224², so no re-encode here — revisit only if
+        a train/deploy gap shows up.
+        """
+        if observation.wrist_image is None:
+            raise ValueError(
+                "vision policy (use_vision=True) requires Observation.wrist_image, but it is "
+                "None — enable the env's wrist capture (SimEnv.enable_wrist_capture) for this run"
+            )
+        return normalize_frame(observation.wrist_image).unsqueeze(0).to(self._device)
+
     def get_delta(self, observation: Observation, command: Command) -> Delta:
         """Advance the policy one step and return the clamped correction Δ.
 
@@ -226,10 +259,15 @@ class LearnedResidual:
         proprioception_tensor = self._normalized_step_tensor(
             "proprioception", proprioception_vector
         )
+        image_tensor = self._image_tensor(observation) if self.use_vision else None
 
         with torch.no_grad():
             raw_delta, self._hidden = self._model.step(
-                command_tensor, force_torque_tensor, proprioception_tensor, hidden=self._hidden
+                command_tensor,
+                force_torque_tensor,
+                proprioception_tensor,
+                image=image_tensor,
+                hidden=self._hidden,
             )
         delta = raw_delta.squeeze(0).cpu().numpy()  # (7,)
 

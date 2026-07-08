@@ -38,3 +38,13 @@ class Observation:
 
     # --- Timing ----------------------------------------------------------
     sim_time: float  # seconds since reset
+
+    # --- Wrist camera (Phase-2 vision policy; real exteroception) --------
+    # A (H, W, 3) uint8 RGB frame from the wrist camera, or None when the env is
+    # not capturing images (F/T-only runs, data-gen, every pre-M7 caller). The env
+    # is the frame-rate limiter: it holds the last frame and re-renders only on its
+    # capture cadence, so the policy reads the most-recent frame and stays stateless
+    # (see SimEnv.enable_wrist_capture). Not privileged — a real wrist camera
+    # provides this at deploy, unlike the peg/hole ground truth above. Defaulted so
+    # every existing construction site (data-gen, tests, trace replay) is unchanged.
+    wrist_image: np.ndarray | None = None

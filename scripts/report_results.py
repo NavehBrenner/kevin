@@ -51,7 +51,16 @@ def main() -> int:
     parser.add_argument(
         "--treatment",
         default="residual",
-        help="Config label for the assist-on treatment.",
+        help="Config label for the primary assist-on treatment (the headline pairing).",
+    )
+    parser.add_argument(
+        "--also-compare",
+        action="append",
+        default=[],
+        metavar="BASE:TREAT",
+        help="Extra paired comparison to append, e.g. `ftonly:vision`. Repeatable — the "
+        "M7 3-way report is `--baseline human_only --treatment vision "
+        "--also-compare human_only:ftonly --also-compare ftonly:vision`.",
     )
     add_logging_arguments(parser)
     args = parser.parse_args()
@@ -66,11 +75,20 @@ def main() -> int:
     trials = load_trials(trials_path)
     log.info("loaded %d trial records from %s", len(trials), trials_path)
 
+    extra_comparisons: list[tuple[str, str]] = []
+    for spec in args.also_compare:
+        base, _, treat = spec.partition(":")
+        if not base or not treat:
+            log.error("--also-compare expects BASE:TREAT, got %r", spec)
+            return 1
+        extra_comparisons.append((base, treat))
+
     artifacts = build_report(
         trials,
         out_dir,
         baseline_label=args.baseline,
         treatment_label=args.treatment,
+        extra_comparisons=extra_comparisons,
     )
     plots = [artifacts.success_plot, artifacts.distributions_plot, artifacts.deltas_plot]
     log.info("wrote KPI tables → %s", out_dir / "kpi_tables.md")

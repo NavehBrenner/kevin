@@ -160,6 +160,16 @@ class SimEnv:
         self._camera_width = camera_width
         self._renderer: mujoco.Renderer | None = None
 
+        # Wrist-camera capture for the Phase-2 vision policy (LAB-83). Off by
+        # default so F/T-only runs, data-gen and every pre-M7 caller render nothing.
+        # When enabled the env is the frame-rate limiter: it re-renders every
+        # `_wrist_capture_every` observation ticks and holds the last frame between,
+        # so `Observation.wrist_image` decimates exactly like the training corpus's
+        # `render_every` cadence — and the policy stays stateless.
+        self._wrist_capture_every: int | None = None
+        self._wrist_tick = 0
+        self._last_wrist_frame: np.ndarray | None = None
+
         # Interactive viewer handle, only populated when render_mode="viewer".
         # mujoco.viewer is imported lazily — it pulls in GLFW which we don't
         # want loaded during headless runs.
@@ -209,6 +219,10 @@ class SimEnv:
         """
         mujoco.mj_resetDataKeyframe(self._model, self._data, self._home_keyframe_id)
         mujoco.mj_forward(self._model, self._data)
+        # Clear the wrist-frame cache so the new episode's first observation renders
+        # fresh rather than returning a stale frame from the previous episode.
+        self._wrist_tick = 0
+        self._last_wrist_frame = None
         self.sync_viewer()  # show the reset pose immediately (no-op when headless)
         return self.get_observation()
 
@@ -264,7 +278,39 @@ class SimEnv:
             peg_pose=peg_pose,
             hole_poses=hole_poses,
             sim_time=float(data.time),
+            wrist_image=self._capture_wrist_frame(),
         )
+
+    def enable_wrist_capture(self, render_every: int = 20) -> None:
+        """Start stamping a wrist-camera frame onto each ``Observation`` (LAB-83).
+
+        The env becomes the frame-rate limiter for the vision policy: it renders a
+        new wrist frame every ``render_every`` observation ticks and returns the held
+        last frame in between, so ``Observation.wrist_image`` decimates exactly like
+        the training corpus's ``render_every`` cadence (default 20 ⇒ ~25 Hz at the
+        500 Hz sim). The policy just reads the most-recent frame — no decimation
+        state on the policy side. Idempotent; call before an episode's ``reset``.
+        """
+        if render_every < 1:
+            raise ValueError(f"render_every must be >= 1, got {render_every}")
+        self._wrist_capture_every = render_every
+        self._wrist_tick = 0
+        self._last_wrist_frame = None
+
+    def _capture_wrist_frame(self) -> np.ndarray | None:
+        """The current wrist frame under the capture cadence, or None when disabled.
+
+        Renders on the first tick of an episode and every ``render_every`` ticks
+        after; otherwise returns the held last frame. Rendering (the ~tens-of-ms
+        cost) therefore fires ~1/``render_every`` of the ticks — the deploy-side
+        counterpart of the corpus's render decimation.
+        """
+        if self._wrist_capture_every is None:
+            return None
+        if self._last_wrist_frame is None or self._wrist_tick % self._wrist_capture_every == 0:
+            self._last_wrist_frame = self.render_wrist_camera()
+        self._wrist_tick += 1
+        return self._last_wrist_frame
 
     # ------------------------------------------------------------------
     # Rendering.

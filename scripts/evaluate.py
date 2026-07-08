@@ -37,6 +37,7 @@ from ai_teleop.data.generate import DEFAULT_JOINT_DAMPING  # noqa: E402
 from ai_teleop.eval.ablation import (  # noqa: E402
     DEFAULT_MAX_DPOS,
     DEFAULT_OPERATOR_ERROR_SCALE,
+    DEFAULT_WRIST_RENDER_EVERY,
     HUMAN_ONLY,
     INSERTION_MAX_STEPS,
     Config,
@@ -46,13 +47,19 @@ from ai_teleop.eval.ablation import (  # noqa: E402
 log = get_logger("evaluate")
 
 
-def _residual_config(checkpoint: str) -> Config:
-    """Build the F/T-residual config from a checkpoint (lazy import — needs torch)."""
+def _policy_config(checkpoint: str, *, label: str, device: str) -> Config:
+    """Build a learned-residual config from a checkpoint (lazy import — needs torch).
+
+    Works for both the F/T-only and the vision checkpoint: whether the policy
+    conditions on the wrist image is read from the checkpoint's own config
+    (``use_vision``), so the ablation harness turns on the env's wrist capture for
+    the vision one automatically — no flag needed here.
+    """
     from ai_teleop.policy import LearnedResidual
 
     return Config(
-        label="residual",
-        assist_factory=lambda: LearnedResidual.from_checkpoint(checkpoint),
+        label=label,
+        assist_factory=lambda: LearnedResidual.from_checkpoint(checkpoint, device=device),
     )
 
 
@@ -66,9 +73,18 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _run_pair(args: argparse.Namespace) -> int:
+    # The M7 3-way ablation (LAB-83): human-only vs F/T-only vs vision, matched
+    # seeds. Any subset is fine — supply only the checkpoints you have. `--residual-
+    # checkpoint` stays as the single-treatment "residual" label (back-compat).
     configs = [HUMAN_ONLY]
+    if args.ftonly_checkpoint:
+        configs.append(_policy_config(args.ftonly_checkpoint, label="ftonly", device=args.device))
+    if args.vision_checkpoint:
+        configs.append(_policy_config(args.vision_checkpoint, label="vision", device=args.device))
     if args.residual_checkpoint:
-        configs.append(_residual_config(args.residual_checkpoint))
+        configs.append(
+            _policy_config(args.residual_checkpoint, label="residual", device=args.device)
+        )
 
     out_dir = Path(args.out_dir)
     rows: list[dict[str, object]] = []
@@ -82,6 +98,7 @@ def _run_pair(args: argparse.Namespace) -> int:
             max_dpos=args.max_dpos,
             joint_damping=args.joint_damping,
             operator_error_scale=args.error_scale,
+            wrist_render_every=args.wrist_render_every,
         )
         for kpis in results.values():
             rows.append(kpis.to_dict())
@@ -160,7 +177,32 @@ def main() -> int:
     pair.add_argument(
         "--residual-checkpoint",
         default=None,
-        help="Add the F/T-residual config from this checkpoint (else human-only only).",
+        help="Add a single learned-residual config (label 'residual') from this checkpoint. "
+        "For the M7 3-way, prefer --ftonly-checkpoint / --vision-checkpoint instead.",
+    )
+    pair.add_argument(
+        "--ftonly-checkpoint",
+        default=None,
+        help="F/T-only residual checkpoint → the 'ftonly' config (LAB-83 3-way ablation).",
+    )
+    pair.add_argument(
+        "--vision-checkpoint",
+        default=None,
+        help="Vision (image+F/T) residual checkpoint → the 'vision' config. The env's "
+        "wrist-camera capture is enabled automatically for it (LAB-83).",
+    )
+    pair.add_argument(
+        "--device",
+        default="cuda",
+        help="Torch device for policy inference (cuda by default — vision needs it for "
+        "real-time; falls to the checkpoint on CPU only if you pass --device cpu).",
+    )
+    pair.add_argument(
+        "--wrist-render-every",
+        type=int,
+        default=DEFAULT_WRIST_RENDER_EVERY,
+        help="Vision only: render a new wrist frame every N ticks, hold between "
+        "(the env is the frame-rate limiter). Default matches the M7 corpus cadence.",
     )
     pair.add_argument(
         "--error-scale",
