@@ -63,12 +63,15 @@ def _evaluate(
         dataset_dir, batch_size=4, val_fraction=0.2, seed=0, load_images=vision, download=False
     )
 
-    predicted_all, target_all, mask_all = [], [], []
+    # Collect only the valid (unpadded) steps as flat (n_valid, C) rows. Concatenating the
+    # padded (B, T, C) tensors across batches fails when batches have different T_max
+    # (variable-length episodes), so mask per batch first, then cat on the flat step axis.
+    predicted_all, target_all = [], []
     with torch.no_grad():
         for batch in val_loader:
             max_steps = batch.command.shape[1]
             steps = torch.arange(max_steps)
-            mask = (steps[None, :] < batch.lengths[:, None]).float()  # (B, T)
+            valid = (steps[None, :] < batch.lengths[:, None]).bool()  # (B, T)
             predicted, _ = model.forward(
                 batch.command,
                 batch.force_torque,
@@ -77,13 +80,12 @@ def _evaluate(
                 image_frame_index=batch.image_frame_index if vision else None,
                 lengths=batch.lengths,
             )
-            predicted_all.append(predicted)
-            target_all.append(batch.delta)
-            mask_all.append(mask)
+            predicted_all.append(predicted[valid])  # (n_valid, C)
+            target_all.append(batch.delta[valid])
 
-    predicted = torch.cat(predicted_all)
+    predicted = torch.cat(predicted_all)  # (N, C) — all valid steps across the split
     target = torch.cat(target_all)
-    mask = torch.cat(mask_all)
+    mask = torch.ones(predicted.shape[0])  # already masked to valid steps
     policy = _channel_errors(predicted, target, mask)
     zero_baseline = _channel_errors(torch.zeros_like(target), target, mask)
     return policy, zero_baseline
