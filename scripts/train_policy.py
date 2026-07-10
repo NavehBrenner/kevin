@@ -348,6 +348,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Smoothness penalty weight (LAB-104): penalizes the per-step change in the "
         "predicted Δ to kill the sub-clamp jerk regression. 0 disables (default).",
     )
+    parser.add_argument(
+        "--weight-position",
+        type=float,
+        default=LossConfig.weight_position,
+        help="BC loss weight on the position channel (LAB-106). The Δposition target is "
+        "~mm-scale next to orientation in radians, so the default 1.0 under-serves it; raise "
+        "to force the optimizer to fit the (success-critical) lateral correction.",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=TrainConfig.weight_decay,
+        help="Adam weight decay (L2). >0 regularizes the far-field spurious-correction floor "
+        "the BC net emits where the expert is structurally zero (LAB-106).",
+    )
+    parser.add_argument(
+        "--command-ee-delta",
+        action="store_true",
+        help="LAB-106: append the raw (command_position − ee_position) tracking-error vector "
+        "to the proprioception stream so the GRU can learn the free-space zero (the residual "
+        "∝ this vector). Adds 3 input dims; both train and deploy assembly gate on it.",
+    )
     parser.add_argument("--patience", type=int, default=TrainConfig.patience)
     parser.add_argument(
         "--device",
@@ -396,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         load_images=args.vision,
         num_workers=args.num_workers,
+        command_ee_delta=args.command_ee_delta,
     )
     log.info("episodes: %d train │ %d val", len(train_loader.dataset), len(val_loader.dataset))
 
@@ -406,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         image_backbone=args.image_backbone,
         image_pretrained=not args.no_image_pretrained,
         freeze_image_encoder=args.freeze_image_encoder,
+        use_command_ee_delta=args.command_ee_delta,
     )
     if args.vision:
         log.info(
@@ -417,10 +441,13 @@ def main(argv: list[str] | None = None) -> int:
             args.amp,
             args.checkpoint_image_encoder,
         )
-    loss_config = LossConfig(weight_action_rate=args.action_rate_weight)
+    loss_config = LossConfig(
+        weight_position=args.weight_position, weight_action_rate=args.action_rate_weight
+    )
     train_config = TrainConfig(
         epochs=args.epochs,
         learning_rate=args.lr,
+        weight_decay=args.weight_decay,
         tbptt_steps=args.tbptt_steps,
         patience=args.patience,
         use_amp=args.amp,

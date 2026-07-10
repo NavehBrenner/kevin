@@ -14,16 +14,25 @@ class PolicyConfig:
     force_torque_dim: int = 6
     proprioception_dim: int = 24
 
+    # LAB-106: append the raw (command_position − ee_position) tracking-error vector
+    # (3-d) to the proprioception stream. Inputs are z-scored per stream, so the GRU
+    # cannot recover this difference from the separately-normalized cmd/ee channels;
+    # handed it as its own channel it can learn the free-space zero the expert enforces
+    # structurally (the residual ∝ this vector → 0 when the arm tracks the command).
+    # Off by default so Phase-1/vision checkpoints stay byte-identical and loadable.
+    use_command_ee_delta: bool = False
+
     @property
     def input_dim(self) -> int:
         """Width of the concatenated **vector** streams (command + F/T + proprio).
 
-        Vision-independent by design: this is the Phase-1 fused width and stays 39
-        regardless of ``use_vision``. The image embedding widens the GRU input
-        separately (see ``gru_input_dim``), preserving the clean ``Phase2 − Phase1``
-        input-width change (``docs/design/policy-model.md``).
+        Vision-independent by design (the image embedding widens the GRU input
+        separately — see ``gru_input_dim`` — preserving the clean ``Phase2 − Phase1``
+        input-width change, ``docs/design/policy-model.md``). Base is 39; the LAB-106
+        ``use_command_ee_delta`` feature adds 3.
         """
-        return self.command_dim + self.force_torque_dim + self.proprioception_dim
+        base = self.command_dim + self.force_torque_dim + self.proprioception_dim
+        return base + (3 if self.use_command_ee_delta else 0)
 
     # vision (Phase 2 — docs/design/policy-model.md Decision B). Off by default so
     # the F/T-only Phase-1 model and its checkpoints are unchanged; every field is

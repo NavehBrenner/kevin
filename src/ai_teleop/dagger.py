@@ -292,6 +292,7 @@ def run_dagger(
     import sys
 
     from ai_teleop.policy import LearnedResidual
+    from ai_teleop.policy.residual_policy import load_checkpoint
 
     train_script = Path(__file__).resolve().parents[2] / "scripts" / "train_policy.py"
 
@@ -299,6 +300,12 @@ def run_dagger(
     aggregate_dir = Path(aggregate_dir)
     config = json.loads((base_dir / "metadata.json").read_text(encoding="utf-8"))["config"]
     expert = expert_from_config(config)
+
+    # Modality is read from the base checkpoint (LAB-106): an F/T base needs no wrist
+    # render (much faster rounds) and must retrain F/T-only, not vision. render_every
+    # is passed to the rollout only for a vision policy (None ⇒ no capture).
+    use_vision = load_checkpoint(Path(checkpoint)).config.use_vision
+    effective_render_every = render_every if use_vision else None
 
     all_summaries = seed_aggregate(base_dir, aggregate_dir)
     current_checkpoint = Path(checkpoint)
@@ -319,7 +326,7 @@ def run_dagger(
                 master_seed=rollout_master_seed,
                 rollout_index=rollout_index,
                 config=config,
-                render_every=render_every,
+                render_every=effective_render_every,
             )
             all_summaries.append(summary)
             successes += int(bool(summary["success"]))
@@ -339,21 +346,21 @@ def run_dagger(
         )
 
         run_name = f"dagger_round{round_index}"
+        vision_flags = (
+            ["--vision", "--freeze-image-encoder", "--num-workers", "4"] if use_vision else []
+        )
         subprocess.run(
             [
                 sys.executable,
                 str(train_script),
                 str(aggregate_dir),
-                "--vision",
-                "--freeze-image-encoder",
+                *vision_flags,
                 "--action-rate-weight",
                 str(action_rate_weight),
                 "--epochs",
                 str(epochs),
                 "--batch-size",
                 str(batch_size),
-                "--num-workers",
-                "4",
                 "--device",
                 device,
                 "--runs-root",

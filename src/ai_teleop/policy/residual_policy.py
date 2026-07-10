@@ -202,13 +202,18 @@ class LearnedResidual:
             quat_to_6d(command.target_quaternion),
         ])  # (9,)
         force_torque_vector = observation.wrist_ft - self._ft_bias  # (6,) bias-subtracted
-        proprioception_vector = np.concatenate([
+        proprioception_parts: list[np.ndarray] = [
             observation.ee_pose[:3],
             quat_to_6d(observation.ee_pose[3:7]),
             observation.joint_positions,
             observation.joint_velocities,
-            [observation.gripper_width],
-        ])  # (24,)
+            np.array([observation.gripper_width]),
+        ]
+        # LAB-106: mirror extract_training_episode's command_ee_delta feature exactly
+        # (same trailing position in the proprioception stream).
+        if self._model.config.use_command_ee_delta:
+            proprioception_parts.append(command.target_position - observation.ee_pose[:3])  # (3,)
+        proprioception_vector = np.concatenate(proprioception_parts)  # (24,) or (27,)
         return command_vector, force_torque_vector, proprioception_vector
 
     def _normalized_step_tensor(self, stream: str, vector: np.ndarray) -> Tensor:
