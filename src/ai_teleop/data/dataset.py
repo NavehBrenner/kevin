@@ -141,7 +141,10 @@ def _quaternions_to_6d(quaternions: np.ndarray) -> np.ndarray:
 
 
 def extract_training_episode(
-    full_episode: tuple[EpisodeColumns, EpisodeMetadata], *, imgs_dir: Path | None = None
+    full_episode: tuple[EpisodeColumns, EpisodeMetadata],
+    *,
+    imgs_dir: Path | None = None,
+    command_ee_delta: bool = False,
 ) -> Episode:
     """Assemble one **raw** (un-normalized) ``Episode`` from loaded npz columns.
 
@@ -151,6 +154,12 @@ def extract_training_episode(
 
     When ``imgs_dir`` is given, the episode's rendered wrist-cam frames are loaded
     alongside the trajectory (see ``ai_teleop.data.images.load_frame_stream``).
+
+    ``command_ee_delta`` (LAB-106): append the raw ``cmd_position − ee_position``
+    tracking-error vector to the proprioception stream, so the GRU is handed the
+    quantity the residual is ∝ to (and that → 0 in free space) as its own channel,
+    normalized as a unit rather than reconstructed from two separately-z-scored
+    streams. Mirror this in ``LearnedResidual._assemble_streams`` for deployment.
     """
     columns, metadata = full_episode
     images, image_frame_index = (
@@ -163,16 +172,16 @@ def extract_training_episode(
         [columns["cmd_position"], _quaternions_to_6d(columns["cmd_quaternion"])], axis=1
     )  # (T, 9)
     force_torque = columns["wrist_ft"]  # (T, 6)
-    proprioception = np.concatenate(
-        [
-            columns["ee_pose"][:, :3],
-            _quaternions_to_6d(columns["ee_pose"][:, 3:7]),
-            columns["joint_positions"],
-            columns["joint_velocities"],
-            columns["gripper_width"][:, None],
-        ],
-        axis=1,
-    )  # (T, 24)
+    proprioception_streams = [
+        columns["ee_pose"][:, :3],
+        _quaternions_to_6d(columns["ee_pose"][:, 3:7]),
+        columns["joint_positions"],
+        columns["joint_velocities"],
+        columns["gripper_width"][:, None],
+    ]
+    if command_ee_delta:
+        proprioception_streams.append(columns["cmd_position"] - columns["ee_pose"][:, :3])  # (T, 3)
+    proprioception = np.concatenate(proprioception_streams, axis=1)  # (T, 24) or (T, 27)
     delta = np.concatenate(
         [columns["delta_position"], columns["delta_orientation"], columns["delta_grip"][:, None]],
         axis=1,
@@ -235,12 +244,14 @@ class OfflineResidualBCDataset(Dataset):
         val_fraction: float = 0.2,
         seed: int = 0,
         norm_stats: NormStats | None = None,
+        command_ee_delta: bool = False,
     ) -> None:
         super().__init__()
         self.dataset_dir = Path(dataset_dir)
         self.metadata_path = self.dataset_dir / "metadata.json"
         self.load_images = load_images
         self.download = download
+        self.command_ee_delta = command_ee_delta
 
         with open(self.metadata_path, encoding="utf-8") as metadata_file:
             self.metadata: ResBCDatasetMetadata = json.load(metadata_file)
@@ -268,7 +279,10 @@ class OfflineResidualBCDataset(Dataset):
         raw_episodes: list[Episode] = []
         self._frame_paths: list[list[Path] | None] = []
         for summary in episode_summaries:
-            episode = extract_training_episode(load_episode(self.dataset_dir / summary["file"]))
+            episode = extract_training_episode(
+                load_episode(self.dataset_dir / summary["file"]),
+                command_ee_delta=self.command_ee_delta,
+            )
             paths: list[Path] | None = None
             if load_images:
                 imgs_dir = episode_imgs_dir(self.dataset_dir / "runs", summary["episode_index"])
@@ -349,6 +363,7 @@ def build_dataloaders(
     load_images: bool = False,
     num_workers: int = 0,
     pin_memory: bool = True,
+    command_ee_delta: bool = False,
 ) -> tuple[DataLoader, DataLoader, NormStats]:
     """Build train + val ``DataLoader``s over an M4 dataset directory.
 
@@ -368,6 +383,7 @@ def build_dataloaders(
         val_fraction=val_fraction,
         seed=seed,
         load_images=load_images,
+        command_ee_delta=command_ee_delta,
     )
     val_dataset = OfflineResidualBCDataset(
         dataset_dir,
@@ -377,6 +393,7 @@ def build_dataloaders(
         seed=seed,
         load_images=load_images,
         norm_stats=train_dataset.norm_stats,
+        command_ee_delta=command_ee_delta,
     )
     train_loader = DataLoader(
         train_dataset,
