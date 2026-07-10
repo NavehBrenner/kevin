@@ -32,6 +32,7 @@ from ai_teleop.common.seating import SeatingGeometry
 from ai_teleop.control import Controller, LockState
 from ai_teleop.data.trajectory import EpisodeRecorder, TerminalReason
 from ai_teleop.domain import Delta
+from ai_teleop.domain.interfaces import AssistProvider
 
 
 class _SeatingMetrics:
@@ -103,6 +104,18 @@ class EpisodeLogger:
     frame into the episode's ``imgs/`` folder. This is opt-in M7 plumbing: the
     F/T-only M5 corpus is generated with rendering off, and ``render_every`` is
     the cadence knob M7 will calibrate (1 ⇒ a frame per trajectory row).
+
+    **DAgger relabel mode (LAB-105).** When ``label_provider`` is set, the row's Δ
+    target is the *label provider's* correction at the visited state
+    (``label_provider.get_delta(obs, base_command)``) rather than the ``delta`` the
+    acting assist produced — the on-policy expert-relabel that closes the BC
+    covariate-shift gap. ``None`` (default) ⇒ record the acting Δ, bit-exact M4
+    behavior. In this mode a force-latched terminal state is *dropped* (not
+    recorded): once the controller latches HOLD the expert's label there is moot,
+    so training on it is noise. With ``save_observation_frame`` the frame the
+    acting policy already saw (``Observation.wrist_image``, rendered by the env's
+    own rate-limited capture) is saved as-is — no second render, half the render
+    tax of a fresh ``render_fn`` and the exact frame the policy conditioned on.
     """
 
     def __init__(
@@ -117,6 +130,8 @@ class EpisodeLogger:
         render_fn: Callable[[], np.ndarray] | None = None,
         imgs_dir: Path | None = None,
         render_every: int = 1,
+        label_provider: AssistProvider | None = None,
+        save_observation_frame: bool = False,
     ) -> None:
         self.recorder = EpisodeRecorder()
         self.terminal_reason = TerminalReason.TIMEOUT
@@ -129,11 +144,32 @@ class EpisodeLogger:
         self._render_fn = render_fn
         self._imgs_dir = imgs_dir
         self._render_every = render_every
+        self._label_provider = label_provider
+        self._save_observation_frame = save_observation_frame
         # Render throughput — offscreen rendering is ~500x a physics step
         # (project-wiki/entities/mujoco.md), so the full-corpus render cost is worth
         # tracking explicitly rather than inferred from total episode wall-time.
         self.frames_rendered = 0
         self.render_wall_time = 0.0
+
+    def _save_step_frame(self, step: int, observation: Observation) -> None:
+        """Persist this step's wrist frame, if a source is configured and it's a
+        cadence step. The env-capture source (``save_observation_frame``) reuses the
+        frame the policy already saw; ``render_fn`` renders a fresh one."""
+        if self._imgs_dir is None or step % self._render_every != 0:
+            return
+        if self._save_observation_frame:
+            frame = observation.wrist_image
+            if frame is None:
+                return  # capture not enabled this step — nothing to save
+        elif self._render_fn is not None:
+            render_start = time.perf_counter()
+            frame = self._render_fn()
+            self.render_wall_time += time.perf_counter() - render_start
+        else:
+            return
+        _save_frame(self._imgs_dir, step, frame)
+        self.frames_rendered += 1
 
     def __call__(
         self,
@@ -154,15 +190,22 @@ class EpisodeLogger:
             force_cap=self._force_cap,
         )
 
-        if (
-            self._render_fn is not None
-            and self._imgs_dir is not None
-            and step % self._render_every == 0
-        ):
-            render_start = time.perf_counter()
-            _save_frame(self._imgs_dir, step, self._render_fn())
-            self.render_wall_time += time.perf_counter() - render_start
-            self.frames_rendered += 1
+        # DAgger: a force-latched terminal state is a dead frame — the arm is frozen
+        # in HOLD, so the expert's correction there is unrealizable. Drop it rather
+        # than train the clone on it (LAB-105 build note).
+        if reason is TerminalReason.FORCE_ABORT and self._label_provider is not None:
+            self.terminal_reason = reason
+            return True
+
+        # DAgger relabel: the BC target is the expert's correction at the *visited*
+        # (on-policy) state, not the Δ the acting policy produced.
+        target = (
+            self._label_provider.get_delta(observation, base_command)
+            if self._label_provider is not None
+            else delta
+        )
+
+        self._save_step_frame(step, observation)
 
         self.recorder.add(
             step=step,
@@ -175,9 +218,9 @@ class EpisodeLogger:
             cmd_position=base_command.target_position,
             cmd_quaternion=base_command.target_quaternion,
             cmd_grip=base_command.delta_grip_force,
-            delta_position=delta.delta_position,
-            delta_orientation=delta.delta_orientation,
-            delta_grip=delta.delta_grip_force,
+            delta_position=target.delta_position,
+            delta_orientation=target.delta_orientation,
+            delta_grip=target.delta_grip_force,
             peg_pose=observation.peg_pose,
             target_hole_pose=metrics.hole_pose,
             distance=metrics.distance,
