@@ -65,3 +65,13 @@ class TrainConfig:
     min_delta: float = 1e-4  # smallest val-loss drop that counts as improvement
     lr_patience: int = 3  # ReduceLROnPlateau patience
     lr_factor: float = 0.5
+
+    # Memory levers for Stage-C image-encoder fine-tuning (unfrozen backbone). Both are
+    # training-time only — they change neither weights nor architecture, so they live
+    # here, not in the serialized PolicyConfig. Off by default (Phase-1 / frozen paths
+    # don't need them). See docs + concepts/vision-conditioned-policy.md (perception ceiling).
+    use_amp: bool = False  # mixed-precision autocast + GradScaler (halves activation VRAM)
+    checkpoint_image_encoder: bool = (
+        False  # recompute backbone activations in backward (biggest cut)
+    )
+    image_encode_chunk: int = 0  # cap frames/backbone-forward in encode_frames (0 = whole batch)
