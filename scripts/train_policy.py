@@ -96,10 +96,17 @@ def _epoch(
     *,
     tbptt_steps: int,
     optimizer: torch.optim.Optimizer | None,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> float:
-    """Run one epoch; return the step-weighted mean loss. Trains iff ``optimizer``."""
+    """Run one epoch; return the step-weighted mean loss. Trains iff ``optimizer``.
+
+    ``scaler`` (Stage C) enables mixed-precision: the forward runs under ``autocast``
+    and the loss is scaled before backward so tiny fp16 gradients don't underflow.
+    ``None`` ⇒ full fp32 (the Phase-1 / frozen path, unchanged).
+    """
     training = optimizer is not None
     model.train(training)
+    use_amp = scaler is not None
 
     total_loss = 0.0
     total_steps = 0.0
@@ -113,7 +120,11 @@ def _epoch(
             optimizer.zero_grad()
 
         hidden: Tensor | None = None
-        with torch.set_grad_enabled(training):
+        # autocast wraps the forward only; backward/step stay outside it (fp32 master).
+        with (
+            torch.set_grad_enabled(training),
+            torch.autocast(device.type, enabled=use_amp),
+        ):
             # Encode the CNN **once per batch** (LAB-102). The per-step image embedding is a
             # pure function of the frames — independent of the GRU's TBPTT truncation — so
             # re-running the whole backbone on every chunk was pure waste (and blew VRAM:
@@ -157,12 +168,15 @@ def _epoch(
                 total_loss += float(chunk_loss.detach()) * chunk_valid
                 total_steps += chunk_valid
 
-            if training and batch_loss is not None:
-                batch_loss.backward()
-
-        if training:
+        if training and batch_loss is not None:
             assert optimizer is not None
-            optimizer.step()
+            if scaler is not None:
+                scaler.scale(batch_loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                batch_loss.backward()
+                optimizer.step()
 
     return total_loss / total_steps if total_steps > 0 else math.nan
 
@@ -196,6 +210,14 @@ def train(
         optimizer, factor=train_config.lr_factor, patience=train_config.lr_patience
     )
 
+    # Stage-C memory levers (only bite with an *unfrozen* backbone on CUDA).
+    if config.use_vision:
+        assert model.image_encoder is not None
+        model.image_encoder.use_gradient_checkpoint = train_config.checkpoint_image_encoder
+        model.image_encoder.encode_chunk_size = train_config.image_encode_chunk
+    amp_enabled = train_config.use_amp and torch_device.type == "cuda"
+    scaler = torch.amp.GradScaler() if amp_enabled else None
+
     history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
     best_val_loss = math.inf
     best_state: dict[str, Tensor] | None = None
@@ -209,6 +231,7 @@ def train(
             torch_device,
             tbptt_steps=train_config.tbptt_steps,
             optimizer=optimizer,
+            scaler=scaler,
         )
         val_loss = _epoch(
             model,
@@ -299,6 +322,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Initialize the image backbone from scratch instead of ImageNet weights (with --vision).",
     )
     parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Stage C: mixed-precision training (autocast + GradScaler). Halves activation "
+        "VRAM; use with an unfrozen backbone. CUDA only (ignored on CPU).",
+    )
+    parser.add_argument(
+        "--checkpoint-image-encoder",
+        action="store_true",
+        help="Stage C: gradient-checkpoint the image backbone (recompute activations in "
+        "backward). The biggest VRAM cut — lets the unfrozen backbone fine-tune on 8 GB.",
+    )
+    parser.add_argument(
+        "--image-encode-chunk",
+        type=int,
+        default=0,
+        help="Stage C: max frames per backbone forward inside encode_frames (0 = whole "
+        "batch). Bounds peak VRAM to one chunk regardless of B·F; pair with "
+        "--checkpoint-image-encoder (e.g. 32) when fine-tuning on a small GPU.",
+    )
+    parser.add_argument(
         "--action-rate-weight",
         type=float,
         default=LossConfig.weight_action_rate,
@@ -366,11 +409,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.vision:
         log.info(
-            "vision ON │ backbone %s │ pretrained %s │ frozen %s │ embed %d",
+            "vision ON │ backbone %s │ pretrained %s │ frozen %s │ embed %d │ amp %s │ ckpt %s",
             config.image_backbone,
             config.image_pretrained,
             config.freeze_image_encoder,
             config.image_embed_dim,
+            args.amp,
+            args.checkpoint_image_encoder,
         )
     loss_config = LossConfig(weight_action_rate=args.action_rate_weight)
     train_config = TrainConfig(
@@ -378,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
         learning_rate=args.lr,
         tbptt_steps=args.tbptt_steps,
         patience=args.patience,
+        use_amp=args.amp,
+        checkpoint_image_encoder=args.checkpoint_image_encoder,
+        image_encode_chunk=args.image_encode_chunk,
     )
 
     started = time.perf_counter()

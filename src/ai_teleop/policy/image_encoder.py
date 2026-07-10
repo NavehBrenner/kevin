@@ -26,7 +26,9 @@ frames (``docs/design/policy-model.md`` latency budget).
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from ai_teleop.policy.config import PolicyConfig
 
@@ -81,6 +83,19 @@ class ImageEncoder(nn.Module):
         self.backbone, feature_dim = _build_backbone(config)
         self.projection = nn.Linear(feature_dim, config.image_embed_dim)
 
+        # Stage-C memory lever (set by the trainer, off by default): recompute the
+        # backbone's forward activations in backward instead of storing them. This is
+        # what lets an *unfrozen* backbone fine-tune on the 8 GB box — fine-tuning
+        # otherwise retains the activation graph for all B·F frames and OOMs (LAB-82).
+        # A no-op when frozen (no backbone grad to trade) or in eval (no backward).
+        self.use_gradient_checkpoint = False
+        # Stage-C memory lever (set by the trainer, 0 = off): cap how many frames go
+        # through the backbone in one forward inside `encode_frames`. Checkpointing the
+        # *whole* B·F-frame call still recomputes all B·F at once in backward, so peak
+        # VRAM stays pinned at B·F; encoding in chunks of this size bounds peak to one
+        # chunk. Same total compute, same "encode each unique frame once" (LAB-102).
+        self.encode_chunk_size = 0
+
         if config.freeze_image_encoder:
             # Freeze-fallback: backbone is a fixed extractor; only the projection trains.
             for parameter in self.backbone.parameters():
@@ -88,7 +103,13 @@ class ImageEncoder(nn.Module):
 
     def forward(self, images: Tensor) -> Tensor:
         """``(N, 3, 224, 224)`` frames → ``(N, image_embed_dim)`` embeddings."""
-        return self.projection(self.backbone(images))
+        if self.use_gradient_checkpoint and self.training and torch.is_grad_enabled():
+            # use_reentrant=False: the modern checkpoint path — preserves autocast
+            # state (AMP) and doesn't require inputs to carry requires_grad.
+            features = checkpoint(self.backbone, images, use_reentrant=False)
+        else:
+            features = self.backbone(images)
+        return self.projection(features)
 
     def encode_frames(self, frames: Tensor) -> Tensor:
         """Encode a per-episode compact frame stack ``(B, F, 3, 224, 224)`` → ``(B, F, embed)``.
@@ -99,5 +120,14 @@ class ImageEncoder(nn.Module):
         """
         batch_size, num_frames = frames.shape[0], frames.shape[1]
         flat = frames.reshape(batch_size * num_frames, *frames.shape[2:])
-        embeddings = self.forward(flat)
+        if 0 < self.encode_chunk_size < flat.shape[0]:
+            # Bound peak VRAM to one chunk (Stage-C fine-tune). Each self.forward applies
+            # the per-call gradient checkpoint, so backward recomputes one chunk at a time.
+            parts = [
+                self.forward(flat[start : start + self.encode_chunk_size])
+                for start in range(0, flat.shape[0], self.encode_chunk_size)
+            ]
+            embeddings = torch.cat(parts, dim=0)
+        else:
+            embeddings = self.forward(flat)
         return embeddings.reshape(batch_size, num_frames, self.config.image_embed_dim)

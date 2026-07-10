@@ -279,3 +279,47 @@ def test_vision_changes_the_output():
         )
 
     assert not torch.allclose(first, second)
+
+
+# ---------------------------------------------------------------------------
+# Stage-C memory levers (LAB-105) — must not change results, must still learn
+# ---------------------------------------------------------------------------
+
+
+def test_encode_frames_chunking_matches_unchunked():
+    """Frame chunking is a pure memory optimization: encoding the F frames in
+    sub-batches must give the same embeddings as one forward (LAB-105 Stage C)."""
+    model = _vision_model()  # eval mode ⇒ deterministic, checkpoint branch inactive
+    encoder = model.image_encoder
+    assert encoder is not None
+    frames = torch.randn(2, 5, 3, _IMG_HW, _IMG_HW, generator=torch.Generator().manual_seed(1))
+
+    with torch.no_grad():
+        encoder.encode_chunk_size = 0  # whole B·F=10 batch
+        whole = encoder.encode_frames(frames)
+        encoder.encode_chunk_size = 2  # forces >1 chunk
+        chunked = encoder.encode_frames(frames)
+
+    assert torch.allclose(whole, chunked, atol=1e-6)
+
+
+def test_gradient_checkpointing_reaches_the_unfrozen_backbone():
+    """Stage C unfreezes the backbone; with checkpointing + chunking on, backward
+    must still populate backbone gradients — otherwise the encoder can't learn to
+    localize the hole (the whole point of Stage C)."""
+    model = _vision_model().train()
+    encoder = model.image_encoder
+    assert encoder is not None
+    encoder.use_gradient_checkpoint = True
+    encoder.encode_chunk_size = 2
+    # B·F=8 with chunk 2 ⇒ even [2,2,2,2] chunks: batch ≥ 2 keeps train-mode BatchNorm
+    # valid even though these tiny 32² frames pool to 1×1 (real 224² frames stay 7×7).
+    frames = torch.randn(2, 4, 3, _IMG_HW, _IMG_HW, generator=torch.Generator().manual_seed(2))
+
+    encoder.encode_frames(frames).sum().backward()
+
+    backbone_grads = [p.grad for p in encoder.backbone.parameters() if p.requires_grad]
+    assert backbone_grads, "backbone should be trainable (unfrozen) under Stage C"
+    assert any(g is not None and float(g.abs().sum()) > 0 for g in backbone_grads), (
+        "checkpointed backward must reach the backbone weights"
+    )
