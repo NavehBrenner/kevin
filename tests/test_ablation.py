@@ -13,7 +13,14 @@ import numpy as np
 from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 from ai_teleop.domain.delta import Delta
-from ai_teleop.eval.ablation import HUMAN_ONLY, Config, replay_kpis, run_paired, run_trial
+from ai_teleop.eval.ablation import (
+    HUMAN_ONLY,
+    INSERTION_MAX_STEPS,
+    Config,
+    replay_kpis,
+    run_paired,
+    run_trial,
+)
 from ai_teleop.eval.schema import TrialKPIs, TrialOutcome
 from ai_teleop.eval.trace import TRACE_NPZ_NAME, load_eval_trace
 
@@ -142,3 +149,16 @@ def test_controller_watchdog_trip_is_classified_force_abort():
     """
     kpis = run_trial(0, RAM_INTO_WALL, max_steps=3000, max_dpos=0.1, generated_walls=False)
     assert kpis.outcome is TrialOutcome.FORCE_ABORT
+
+
+def test_ablation_runners_default_to_insertion_budget():
+    """LAB-107 regression: the paired-ablation entry points must default to the
+    insertion step budget. Callers that omit ``max_steps`` — notably
+    ``dagger._reablate`` — rely on this default, and ``scripts/evaluate.py`` anchors
+    its own ``--max-steps`` default on the same ``INSERTION_MAX_STEPS`` constant. If
+    this default drifts back to the generic sim budget the two eval paths silently
+    disagree again (the DAgger path read human-only 25% vs evaluate.py's 35%)."""
+    import inspect
+
+    assert inspect.signature(run_paired).parameters["max_steps"].default == INSERTION_MAX_STEPS
+    assert inspect.signature(run_trial).parameters["max_steps"].default == INSERTION_MAX_STEPS

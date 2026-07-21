@@ -49,7 +49,7 @@ from ai_teleop.input.scripted_noisy_human import (
 )
 from ai_teleop.sim.config import EnvConfig, episode_wall_seed
 from ai_teleop.sim.env_setup import make_env
-from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, run_episode
+from ai_teleop.sim.runner import run_episode
 
 # Both generated walls and the static escape hatch place the goal at hole_0; the
 # expert/observer/operator are all aimed there (the env stays target-agnostic).
@@ -113,7 +113,12 @@ def run_trial(
     *,
     master_seed: int = 0,
     generated_walls: bool = True,
-    max_steps: int = DEFAULT_MAX_STEPS,
+    # Default is the insertion budget (9000), NOT the generic sim budget: eval must
+    # use the same task budget as data-gen or timeouts measure the budget, not the
+    # policy. LAB-107: this default silently disagreed with scripts/evaluate.py's
+    # (which always passed INSERTION_MAX_STEPS), so callers that omit max_steps —
+    # e.g. dagger._reablate — under-budgeted at 5000 and depressed human-only.
+    max_steps: int = INSERTION_MAX_STEPS,
     max_dpos: float = DEFAULT_MAX_DPOS,
     joint_damping: float = DEFAULT_JOINT_DAMPING,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
@@ -220,7 +225,7 @@ def run_paired(
     master_seed: int = 0,
     out_dir: str | Path | None = None,
     generated_walls: bool = True,
-    max_steps: int = DEFAULT_MAX_STEPS,
+    max_steps: int = INSERTION_MAX_STEPS,  # insertion budget; see run_trial note (LAB-107)
     max_dpos: float = DEFAULT_MAX_DPOS,
     joint_damping: float = DEFAULT_JOINT_DAMPING,
     operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
