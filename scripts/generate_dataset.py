@@ -28,21 +28,17 @@ from ai_teleop.common.log import (  # noqa: E402
     get_logger,
 )
 from ai_teleop.data.generate import (  # noqa: E402
-    DEFAULT_DELTA_CLAMP,
-    DEFAULT_EXPERT_BRAKE_GAIN,
-    DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
-    DEFAULT_EXPERT_D_FAR,
-    DEFAULT_JOINT_DAMPING,
-    DEFAULT_MAX_DPOS,
-    DEFAULT_MAX_STEPS,
-    DEFAULT_SPEED_LOGNORMAL_MEDIAN,
-    DEFAULT_SPEED_LOGNORMAL_SIGMA,
     SCENE_PATH,
+    GenerationConfig,
     generate_dataset,
     regenerate_from_metadata,
 )
 
 log = get_logger("datagen")
+
+# The CLI's flag defaults ARE the corpus defaults — read off the config object so
+# the two cannot drift.
+DEFAULTS = GenerationConfig()
 
 
 def main() -> int:
@@ -60,11 +56,13 @@ def main() -> int:
         action="store_true",
         help="Skip the paired human-only (NoAssist) baseline rollout (~halves wall-clock).",
     )
-    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Per-episode cap.")
+    parser.add_argument(
+        "--max-steps", type=int, default=DEFAULTS.max_steps, help="Per-episode cap."
+    )
     parser.add_argument(
         "--max-dpos",
         type=float,
-        default=DEFAULT_MAX_DPOS,
+        default=DEFAULTS.max_dpos,
         help="Controller command clamp in m/step. Default is the deployment (teleop) "
         "config the recorded reference corpus ran under (LAB-96), not the Controller's "
         "careful-insertion 0.025.",
@@ -72,46 +70,46 @@ def main() -> int:
     parser.add_argument(
         "--joint-damping",
         type=float,
-        default=DEFAULT_JOINT_DAMPING,
+        default=DEFAULTS.joint_damping,
         help="Controller joint-space velocity damping kd. Default is the deployment "
         "(teleop) config (LAB-96), not the Controller's careful-insertion 4.0.",
     )
     parser.add_argument(
         "--expert-d-far",
         type=float,
-        default=DEFAULT_EXPERT_D_FAR,
+        default=DEFAULTS.expert_d_far,
         help="Distance (m) at which the expert starts engaging.",
     )
     parser.add_argument(
         "--expert-brake-gain",
         type=float,
-        default=DEFAULT_EXPERT_BRAKE_GAIN,
+        default=DEFAULTS.expert_brake_gain,
         help="Expert approach-speed brake gain (LAB-98): allowed command lead is "
         "gain * distance + floor; 0 disables the brake (pre-LAB-98 aim-only expert).",
     )
     parser.add_argument(
         "--expert-brake-lead-floor",
         type=float,
-        default=DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
+        default=DEFAULTS.expert_brake_lead_floor,
         help="Expert brake lead floor (m) — the minimum allowed command lead.",
     )
     parser.add_argument(
         "--speed-lognormal-median",
         type=float,
-        default=DEFAULT_SPEED_LOGNORMAL_MEDIAN,
+        default=DEFAULTS.speed_lognormal_median,
         help="Median (m/s) of the operator's per-episode lognormal max_approach_speed "
         "draw (LAB-96); 0 disables the draw (fixed max_approach_speed).",
     )
     parser.add_argument(
         "--speed-lognormal-sigma",
         type=float,
-        default=DEFAULT_SPEED_LOGNORMAL_SIGMA,
+        default=DEFAULTS.speed_lognormal_sigma,
         help="Log-space sigma of that draw (0.76 fits the recorded corpus' p90/median).",
     )
     parser.add_argument(
         "--delta-clamp",
         type=float,
-        default=DEFAULT_DELTA_CLAMP,
+        default=DEFAULTS.delta_clamp,
         help="Shared expert/policy per-step Δ-position bound (m) — the label bound BC "
         "clones and the brake's authority ceiling (LAB-100). Pre-LAB-100 corpora used 0.02.",
     )
@@ -176,16 +174,18 @@ def main() -> int:
     written = generate_dataset(
         out_dir,
         args.episodes,
-        seed=args.seed,
-        max_steps=args.max_steps,
-        max_dpos=args.max_dpos,
-        joint_damping=args.joint_damping,
-        expert_d_far=args.expert_d_far,
-        expert_brake_gain=args.expert_brake_gain,
-        expert_brake_lead_floor=args.expert_brake_lead_floor,
-        speed_lognormal_median=args.speed_lognormal_median,
-        speed_lognormal_sigma=args.speed_lognormal_sigma,
-        delta_clamp=args.delta_clamp,
+        GenerationConfig(
+            seed=args.seed,
+            max_steps=args.max_steps,
+            max_dpos=args.max_dpos,
+            joint_damping=args.joint_damping,
+            expert_d_far=args.expert_d_far,
+            expert_brake_gain=args.expert_brake_gain,
+            expert_brake_lead_floor=args.expert_brake_lead_floor,
+            speed_lognormal_median=args.speed_lognormal_median,
+            speed_lognormal_sigma=args.speed_lognormal_sigma,
+            delta_clamp=args.delta_clamp,
+        ),
         cache=not args.force,
         baseline=not args.no_baseline,
         render_images=args.record == "all",

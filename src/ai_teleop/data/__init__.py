@@ -16,7 +16,11 @@ from ai_teleop.data.dataset import (
     collate_episodes,
     split_episodes,
 )
-from ai_teleop.data.generate import generate_dataset, regenerate_from_metadata
+from ai_teleop.data.generate import (
+    GenerationConfig,
+    generate_dataset,
+    regenerate_from_metadata,
+)
 from ai_teleop.data.schema import (
     DatasetConfig,
     EpisodeColumns,
@@ -65,6 +69,7 @@ __all__ = [
     "build_dataloaders",
     "OfflineResidualBCDataset",
     # generation pipeline
+    "GenerationConfig",
     "generate_dataset",
     "regenerate_from_metadata",
 ]

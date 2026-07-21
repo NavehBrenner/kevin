@@ -39,8 +39,10 @@ The on-disk schema is the stable contract M5 reads — see
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -151,45 +153,130 @@ _LEGACY_EXPERT_BRAKE_GAIN = 0.0
 _LEGACY_DELTA_CLAMP = 0.02
 
 
-def _episode_fingerprint(
-    *,
-    seed: int,
-    max_steps: int,
-    max_dpos: float,
-    expert_d_far: float,
-    generated_walls: bool,
-    joint_damping: float = _LEGACY_JOINT_DAMPING,
-    speed_lognormal_median: float = _LEGACY_SPEED_LOGNORMAL_MEDIAN,
-    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
-    expert_brake_gain: float = _LEGACY_EXPERT_BRAKE_GAIN,
-    expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
-    delta_clamp: float = _LEGACY_DELTA_CLAMP,
-) -> str:
-    """Stable hash of every input that determines an episode's trajectory.
+# Fields of `GenerationConfig` deliberately left out of the fingerprint payload.
+# The three termination thresholds *do* shape a trajectory (the episode logger
+# halts the run when one trips), so this is a real hole — but they were never
+# hashed, and folding them in now would invalidate every committed manifest:
+# dataset_2/3/4 ran `lateral_tolerance=0.006`, dataset_6 onwards 0.010, and both
+# groups currently reproduce their committed hash. Recorded as a finding
+# (docs/review/code-audit.md, C-1a) rather than silently rehashing history.
+_UNFINGERPRINTED = frozenset({"success_depth", "lateral_tolerance", "force_cap"})
 
-    Two runs with the same fingerprint produce byte-identical episodes, so a
-    cached file carrying this fingerprint can be reused instead of re-simulated.
-    The per-episode wall is derived deterministically from ``(seed, episode_index)``,
-    so ``seed`` (hashed here) + the episode index (in the file path) already pin it;
-    only the wall *mode* (``generated_walls``) needs to enter the hash.
 
-    The LAB-96 knobs extend the payload only when they leave the legacy config
-    (kd=4.0, no speed draw — behavior-identical to pre-LAB-96 code, RNG
-    included), so a legacy dataset's committed fingerprint still matches its
-    regeneration. The LAB-98 expert-brake knobs follow the same pattern (gain 0
-    == the brake-free pre-LAB-98 expert, bit-exact), as does the LAB-100
-    Δ-clamp (the legacy ±2 cm bound == pre-LAB-100 behavior, bit-exact).
+@dataclass(frozen=True)
+class GenerationConfig:
+    """Every input that determines an episode's trajectory — the corpus config.
+
+    Exists so the fingerprint is derived from *the whole config object* instead of
+    a hand-maintained argument list: a new knob added here is caught by
+    ``tests/test_dataset.py::test_fingerprint_covers_every_config_field`` unless it
+    is consciously listed in ``_UNFINGERPRINTED``. Everything here round-trips
+    through ``metadata.json`` (see ``to_dataset_config`` / ``from_metadata``), so a
+    dataset is reproducible from its committed manifest alone.
+
+    Defaults are the current corpus recipe; see the module constants for the
+    calibration provenance of each.
     """
-    import hashlib
 
-    payload = f"{seed}|{max_steps}|{max_dpos:.6f}|{expert_d_far:.6f}|{generated_walls}"
-    if joint_damping != _LEGACY_JOINT_DAMPING or speed_lognormal_median > 0.0:
-        payload += f"|{joint_damping:.6f}|{speed_lognormal_median:.6f}|{speed_lognormal_sigma:.6f}"
-    if expert_brake_gain > 0.0:
-        payload += f"|{expert_brake_gain:.6f}|{expert_brake_lead_floor:.6f}"
-    if delta_clamp != _LEGACY_DELTA_CLAMP:
-        payload += f"|clamp{delta_clamp:.6f}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    seed: int = 0
+    max_steps: int = DEFAULT_MAX_STEPS
+    max_dpos: float = DEFAULT_MAX_DPOS
+    joint_damping: float = DEFAULT_JOINT_DAMPING
+    expert_d_far: float = DEFAULT_EXPERT_D_FAR
+    expert_brake_gain: float = DEFAULT_EXPERT_BRAKE_GAIN
+    expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR
+    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN
+    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA
+    delta_clamp: float = DEFAULT_DELTA_CLAMP
+    generated_walls: bool = True
+    success_depth: float = DEFAULT_SUCCESS_DEPTH
+    lateral_tolerance: float = DEFAULT_LATERAL_TOLERANCE
+    force_cap: float = DEFAULT_FORCE_CAP
+
+    def fingerprint(self) -> str:
+        """Stable hash of the trajectory-determining config.
+
+        Two runs with the same fingerprint produce byte-identical episodes, so a
+        cached file carrying this fingerprint can be reused instead of re-simulated.
+        The per-episode wall is derived deterministically from ``(seed, episode_index)``,
+        so ``seed`` (hashed here) + the episode index (in the file path) already pin it;
+        only the wall *mode* (``generated_walls``) needs to enter the hash.
+
+        The LAB-96 knobs extend the payload only when they leave the legacy config
+        (kd=4.0, no speed draw — behavior-identical to pre-LAB-96 code, RNG
+        included), so a legacy dataset's committed fingerprint still matches its
+        regeneration. The LAB-98 expert-brake knobs follow the same pattern (gain 0
+        == the brake-free pre-LAB-98 expert, bit-exact), as does the LAB-100
+        Δ-clamp (the legacy ±2 cm bound == pre-LAB-100 behavior, bit-exact).
+        """
+        payload = (
+            f"{self.seed}|{self.max_steps}|{self.max_dpos:.6f}"
+            f"|{self.expert_d_far:.6f}|{self.generated_walls}"
+        )
+        if self.joint_damping != _LEGACY_JOINT_DAMPING or self.speed_lognormal_median > 0.0:
+            payload += (
+                f"|{self.joint_damping:.6f}|{self.speed_lognormal_median:.6f}"
+                f"|{self.speed_lognormal_sigma:.6f}"
+            )
+        if self.expert_brake_gain > 0.0:
+            payload += f"|{self.expert_brake_gain:.6f}|{self.expert_brake_lead_floor:.6f}"
+        if self.delta_clamp != _LEGACY_DELTA_CLAMP:
+            payload += f"|clamp{self.delta_clamp:.6f}"
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    def to_dataset_config(self) -> DatasetConfig:
+        """The ``metadata.json`` ``config`` block this corpus was generated under."""
+        return {
+            "max_steps": self.max_steps,
+            "max_dpos": self.max_dpos,
+            "joint_damping": self.joint_damping,
+            "expert_d_far": self.expert_d_far,
+            "expert_brake_gain": self.expert_brake_gain,
+            "expert_brake_lead_floor": self.expert_brake_lead_floor,
+            "speed_lognormal_median": self.speed_lognormal_median,
+            "speed_lognormal_sigma": self.speed_lognormal_sigma,
+            "delta_clamp": self.delta_clamp,
+            "success_depth": self.success_depth,
+            "lateral_tolerance": self.lateral_tolerance,
+            "force_cap": self.force_cap,
+            "scene": _GENERATED_SCENE_LABEL if self.generated_walls else SCENE_PATH.name,
+        }
+
+    @classmethod
+    def from_metadata(cls, metadata: ResBCDatasetMetadata) -> GenerationConfig:
+        """Rebuild the config a committed ``metadata.json`` was generated under.
+
+        Keys absent from older manifests resolve to the legacy value that was
+        behavior-identical at the time they were written, so a legacy dataset
+        regenerates byte-identically and keeps its committed fingerprint.
+        """
+        config = metadata["config"]
+        return cls(
+            seed=metadata["master_seed"],
+            max_steps=config["max_steps"],
+            max_dpos=config["max_dpos"],
+            # Walls are reproduced from their seeds, not loaded from disk: the
+            # `scene` label records whether this dataset used per-episode generated
+            # walls or the static one. Anything but the static name means generated.
+            generated_walls=config["scene"] != SCENE_PATH.name,
+            joint_damping=config.get("joint_damping", _LEGACY_JOINT_DAMPING),
+            expert_d_far=config["expert_d_far"],
+            expert_brake_gain=config.get("expert_brake_gain", _LEGACY_EXPERT_BRAKE_GAIN),
+            expert_brake_lead_floor=config.get(
+                "expert_brake_lead_floor", DEFAULT_EXPERT_BRAKE_LEAD_FLOOR
+            ),
+            speed_lognormal_median=config.get(
+                "speed_lognormal_median", _LEGACY_SPEED_LOGNORMAL_MEDIAN
+            ),
+            speed_lognormal_sigma=config.get(
+                "speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA
+            ),
+            # Absent ⇒ pre-LAB-100 corpus, clamped at the legacy ±2 cm bound.
+            delta_clamp=config.get("delta_clamp", _LEGACY_DELTA_CLAMP),
+            success_depth=config["success_depth"],
+            lateral_tolerance=config["lateral_tolerance"],
+            force_cap=config["force_cap"],
+        )
 
 
 def _cached_matches(path: Path, fingerprint: str) -> bool:
@@ -216,11 +303,8 @@ def _human_seed(seed: int, episode_index: int) -> int:
 def _make_human(
     target_position: np.ndarray,
     home_quaternion: np.ndarray,
-    *,
-    seed: int,
+    config: GenerationConfig,
     episode_index: int,
-    speed_lognormal_median: float,
-    speed_lognormal_sigma: float,
 ) -> ScriptedNoisyHuman:
     """Build the per-episode operator. ``(seed, episode_index)`` plus the speed-
     draw config fully determine its command stream (the per-episode approach-speed
@@ -228,9 +312,9 @@ def _make_human(
     the same operator — what the paired expert/baseline runs rely on."""
     return ScriptedNoisyHuman(
         np.concatenate([target_position, home_quaternion]),
-        seed=_human_seed(seed, episode_index),
-        speed_lognormal_median=speed_lognormal_median,
-        speed_lognormal_sigma=speed_lognormal_sigma,
+        seed=_human_seed(config.seed, episode_index),
+        speed_lognormal_median=config.speed_lognormal_median,
+        speed_lognormal_sigma=config.speed_lognormal_sigma,
     )
 
 
@@ -266,21 +350,8 @@ def _run_baseline(
 def generate_dataset(
     out_dir: str | Path,
     n_episodes: int,
+    config: GenerationConfig | None = None,
     *,
-    seed: int = 0,
-    max_steps: int = DEFAULT_MAX_STEPS,
-    success_depth: float = DEFAULT_SUCCESS_DEPTH,
-    lateral_tolerance: float = DEFAULT_LATERAL_TOLERANCE,
-    force_cap: float = DEFAULT_FORCE_CAP,
-    max_dpos: float = DEFAULT_MAX_DPOS,
-    joint_damping: float = DEFAULT_JOINT_DAMPING,
-    expert_d_far: float = DEFAULT_EXPERT_D_FAR,
-    expert_brake_gain: float = DEFAULT_EXPERT_BRAKE_GAIN,
-    expert_brake_lead_floor: float = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
-    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
-    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
-    delta_clamp: float = DEFAULT_DELTA_CLAMP,
-    generated_walls: bool = True,
     cache: bool = True,
     baseline: bool = True,
     render_images: bool = False,
@@ -292,22 +363,23 @@ def generate_dataset(
     Writes ``out_dir/runs/episode_NNNNN/episode.npz`` (the BC corpus) — one
     folder per episode, each with an ``imgs/`` subfolder — plus
     ``out_dir/metadata.json`` (dataset-level statistics). Keeps every episode
-    (success or failure). Each is reproducible from ``(seed, episode_index)``
-    plus the controller/expert config: the per-episode wall and the noisy human
-    both derive from the seed.
+    (success or failure). Each is reproducible from ``(config.seed,
+    episode_index)`` plus the rest of ``config``: the per-episode wall and the
+    noisy human both derive from the seed.
 
-    The controller runs the **deployment (teleop) config** by default
-    (``joint_damping=1.5, max_dpos=0.3`` — what live vision teleop and the
-    ``data/recorded`` reference corpus run), not the Controller's own
-    careful-insertion defaults, and the operator draws a per-episode
-    ``max_approach_speed`` from a lognormal (``speed_lognormal_*``) — the
-    LAB-95/96 recipe that closes the scripted-vs-recorded force-abort and
-    motion-tail gaps. All of these are fingerprinted corpus parameters. When ``cache`` is set, an existing episode file
-    whose stored ``fingerprint`` matches the current config is reused instead of
-    being re-simulated.
+    ``config`` (a `GenerationConfig`, defaulting to the current corpus recipe)
+    carries every trajectory-determining knob. The controller runs the
+    **deployment (teleop) config** by default (``joint_damping=1.5,
+    max_dpos=0.3`` — what live vision teleop and the ``data/recorded`` reference
+    corpus run), not the Controller's own careful-insertion defaults, and the
+    operator draws a per-episode ``max_approach_speed`` from a lognormal
+    (``speed_lognormal_*``) — the LAB-95/96 recipe that closes the
+    scripted-vs-recorded force-abort and motion-tail gaps. When ``cache`` is set,
+    an existing episode file whose stored ``fingerprint`` matches the current
+    config is reused instead of being re-simulated.
 
-    With ``generated_walls`` (the default) each episode runs on its own freshly
-    built procedural wall (a fresh, clean ``SimEnv`` per episode, seeded
+    With ``config.generated_walls`` (the default) each episode runs on its own
+    freshly built procedural wall (a fresh, clean ``SimEnv`` per episode, seeded
     deterministically from ``(seed, episode_index)``) — genuine per-episode wall
     diversity. ``generated_walls=False`` runs every episode on the static
     hand-authored wall instead (no ``scenegen``/CadQuery), varying only the
@@ -322,34 +394,20 @@ def generate_dataset(
     folder. This is opt-in M7 (vision) plumbing — off by default, so the M5
     F/T-only corpus is unchanged and ``imgs/`` stays empty.
     """
+    config = config if config is not None else GenerationConfig()
     out_dir = Path(out_dir)
     runs_dir = out_dir / "runs"
     expert = Expert(
-        d_far=expert_d_far,
-        brake_gain=expert_brake_gain,
-        brake_lead_floor=expert_brake_lead_floor,
+        d_far=config.expert_d_far,
+        brake_gain=config.expert_brake_gain,
+        brake_lead_floor=config.expert_brake_lead_floor,
         target_hole_index=_TARGET_HOLE_INDEX,
         # Explicit per-corpus bound (not the module default): regenerating a
         # legacy dataset must clamp the expert at the bound it was recorded
         # under, whatever the deployed bound is today (LAB-100).
-        max_delta_position=delta_clamp,
+        max_delta_position=config.delta_clamp,
     )
-    thresholds = dict(
-        success_depth=success_depth, lateral_tolerance=lateral_tolerance, force_cap=force_cap
-    )
-    fingerprint = _episode_fingerprint(
-        seed=seed,
-        max_steps=max_steps,
-        max_dpos=max_dpos,
-        expert_d_far=expert_d_far,
-        generated_walls=generated_walls,
-        joint_damping=joint_damping,
-        speed_lognormal_median=speed_lognormal_median,
-        speed_lognormal_sigma=speed_lognormal_sigma,
-        expert_brake_gain=expert_brake_gain,
-        expert_brake_lead_floor=expert_brake_lead_floor,
-        delta_clamp=delta_clamp,
-    )
+    fingerprint = config.fingerprint()
 
     written: list[Path] = []
     summaries: list[dict[str, object]] = []
@@ -367,10 +425,14 @@ def generate_dataset(
         # A fresh, clean env per episode: its own wall (generated ⇒ a distinct
         # procedural wall per index; static ⇒ the same hand-authored wall every
         # time). The env owns physics only; reset() restores its home state.
-        wall_seed = episode_wall_seed(seed, episode_index) if generated_walls else None
+        wall_seed = (
+            episode_wall_seed(config.seed, episode_index) if config.generated_walls else None
+        )
         environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
         controller = Controller(
-            environment, max_dpos_per_step=max_dpos, joint_damping=joint_damping
+            environment,
+            max_dpos_per_step=config.max_dpos,
+            joint_damping=config.joint_damping,
         )
         home_quaternion = controller.home_pose[3:]
         observation = environment.reset()
@@ -383,27 +445,25 @@ def generate_dataset(
         imgs_dir = episode_imgs_dir(runs_dir, episode_index)
         imgs_dir.mkdir(parents=True, exist_ok=True)
 
-        human = _make_human(
-            target_position,
-            home_quaternion,
-            seed=seed,
-            episode_index=episode_index,
-            speed_lognormal_median=speed_lognormal_median,
-            speed_lognormal_sigma=speed_lognormal_sigma,
-        )
+        human = _make_human(target_position, home_quaternion, config, episode_index)
         logger = EpisodeLogger(
             ft_bias,
             controller,
             target_hole_index=_TARGET_HOLE_INDEX,
-            success_depth=success_depth,
-            lateral_tolerance=lateral_tolerance,
-            force_cap=force_cap,
+            success_depth=config.success_depth,
+            lateral_tolerance=config.lateral_tolerance,
+            force_cap=config.force_cap,
             render_fn=environment.render_wrist_camera if render_images else None,
             imgs_dir=imgs_dir,
             render_every=render_every,
         )
         run_episode(
-            environment, controller, human, expert, max_steps=max_steps, step_callback=logger
+            environment,
+            controller,
+            human,
+            expert,
+            max_steps=config.max_steps,
+            step_callback=logger,
         )
         frames_rendered += logger.frames_rendered
         render_wall_time += logger.render_wall_time
@@ -415,17 +475,12 @@ def generate_dataset(
                 environment,
                 controller,
                 # fresh operator with the same seed ⇒ identical command stream
-                _make_human(
-                    target_position,
-                    home_quaternion,
-                    seed=seed,
-                    episode_index=episode_index,
-                    speed_lognormal_median=speed_lognormal_median,
-                    speed_lognormal_sigma=speed_lognormal_sigma,
-                ),
+                _make_human(target_position, home_quaternion, config, episode_index),
                 target_hole_index=_TARGET_HOLE_INDEX,
-                max_steps=max_steps,
-                **thresholds,
+                max_steps=config.max_steps,
+                success_depth=config.success_depth,
+                lateral_tolerance=config.lateral_tolerance,
+                force_cap=config.force_cap,
             )
 
         environment.close()
@@ -435,30 +490,30 @@ def generate_dataset(
             # so a replay logs source=scripted (not "unknown") and can note the recorded policy.
             "source": "scripted",
             "policy": "expert",
-            "master_seed": seed,
+            "master_seed": config.seed,
             "episode_index": episode_index,
             # scene_seed roots the per-episode derivations in (master_seed,
             # episode_index); human_seed is the concrete int seeding the scripted
             # operator; wall_seed (when generated) is the env's procedural wall.
-            "scene_seed": [seed, episode_index],
-            "human_seed": _human_seed(seed, episode_index),
+            "scene_seed": [config.seed, episode_index],
+            "human_seed": _human_seed(config.seed, episode_index),
             "fingerprint": fingerprint,
-            "max_dpos": max_dpos,
-            "joint_damping": joint_damping,
-            "speed_lognormal_median": speed_lognormal_median,
-            "speed_lognormal_sigma": speed_lognormal_sigma,
-            "expert_d_far": expert_d_far,
-            "expert_brake_gain": expert_brake_gain,
-            "expert_brake_lead_floor": expert_brake_lead_floor,
-            "delta_clamp": delta_clamp,
+            "max_dpos": config.max_dpos,
+            "joint_damping": config.joint_damping,
+            "speed_lognormal_median": config.speed_lognormal_median,
+            "speed_lognormal_sigma": config.speed_lognormal_sigma,
+            "expert_d_far": config.expert_d_far,
+            "expert_brake_gain": config.expert_brake_gain,
+            "expert_brake_lead_floor": config.expert_brake_lead_floor,
+            "delta_clamp": config.delta_clamp,
             "target_hole_index": _TARGET_HOLE_INDEX,
-            "generated_wall": generated_walls,
+            "generated_wall": config.generated_walls,
             "wall_seed": wall_seed,
             "terminal_reason": logger.terminal_reason.value,
             "episode_success": logger.terminal_reason is TerminalReason.SUCCESS,
-            "success_depth": success_depth,
-            "lateral_tolerance": lateral_tolerance,
-            "force_cap": force_cap,
+            "success_depth": config.success_depth,
+            "lateral_tolerance": config.lateral_tolerance,
+            "force_cap": config.force_cap,
         }
         if baseline_reason is not None:
             episode_metadata["baseline_terminal_reason"] = baseline_reason.value
@@ -478,23 +533,13 @@ def generate_dataset(
                 tail,
             )
 
-    config: DatasetConfig = {
-        "max_steps": max_steps,
-        "max_dpos": max_dpos,
-        "joint_damping": joint_damping,
-        "expert_d_far": expert_d_far,
-        "expert_brake_gain": expert_brake_gain,
-        "expert_brake_lead_floor": expert_brake_lead_floor,
-        "speed_lognormal_median": speed_lognormal_median,
-        "speed_lognormal_sigma": speed_lognormal_sigma,
-        "delta_clamp": delta_clamp,
-        "success_depth": success_depth,
-        "lateral_tolerance": lateral_tolerance,
-        "force_cap": force_cap,
-        "scene": _GENERATED_SCENE_LABEL if generated_walls else SCENE_PATH.name,
-    }
     _write_dataset_metadata(
-        out_dir, summaries, seed=seed, fingerprint=fingerprint, baseline=baseline, config=config
+        out_dir,
+        summaries,
+        seed=config.seed,
+        fingerprint=fingerprint,
+        baseline=baseline,
+        config=config.to_dataset_config(),
     )
     if render_images and frames_rendered:
         log.info(
@@ -621,61 +666,20 @@ def regenerate_from_metadata(
     """
     metadata_path = Path(metadata_path)
     metadata: ResBCDatasetMetadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    config = metadata["config"]
-
-    # Walls are reproduced from their seeds, not loaded from disk: the `scene`
-    # label records whether this dataset used per-episode generated walls or the
-    # static one. Anything other than the static scene-file name means generated.
-    generated_walls = config["scene"] != SCENE_PATH.name
-
-    # Metadata written before LAB-96 carries no controller/speed-draw keys — it
-    # was generated under the legacy config, so regenerate under it. Same for
-    # the LAB-98 expert-brake keys (absent ⇒ brake off).
-    joint_damping = config.get("joint_damping", _LEGACY_JOINT_DAMPING)
-    speed_lognormal_median = config.get("speed_lognormal_median", _LEGACY_SPEED_LOGNORMAL_MEDIAN)
-    speed_lognormal_sigma = config.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
-    expert_brake_gain = config.get("expert_brake_gain", _LEGACY_EXPERT_BRAKE_GAIN)
-    expert_brake_lead_floor = config.get("expert_brake_lead_floor", DEFAULT_EXPERT_BRAKE_LEAD_FLOOR)
-    # Absent ⇒ pre-LAB-100 corpus, clamped at the legacy ±2 cm bound.
-    delta_clamp = config.get("delta_clamp", _LEGACY_DELTA_CLAMP)
+    config = GenerationConfig.from_metadata(metadata)
 
     target = Path(out_dir) if out_dir is not None else metadata_path.parent
     written = generate_dataset(
         target,
         metadata["n_episodes"],
-        seed=metadata["master_seed"],
-        max_steps=config["max_steps"],
-        success_depth=config["success_depth"],
-        lateral_tolerance=config["lateral_tolerance"],
-        force_cap=config["force_cap"],
-        max_dpos=config["max_dpos"],
-        joint_damping=joint_damping,
-        expert_d_far=config["expert_d_far"],
-        expert_brake_gain=expert_brake_gain,
-        expert_brake_lead_floor=expert_brake_lead_floor,
-        speed_lognormal_median=speed_lognormal_median,
-        speed_lognormal_sigma=speed_lognormal_sigma,
-        delta_clamp=delta_clamp,
-        generated_walls=generated_walls,
+        config,
         cache=not force,
         baseline="baseline_no_assist" in metadata,
         progress=progress,
     )
 
     expected = metadata.get("fingerprint")
-    actual = _episode_fingerprint(
-        seed=metadata["master_seed"],
-        max_steps=config["max_steps"],
-        max_dpos=config["max_dpos"],
-        expert_d_far=config["expert_d_far"],
-        generated_walls=generated_walls,
-        joint_damping=joint_damping,
-        speed_lognormal_median=speed_lognormal_median,
-        speed_lognormal_sigma=speed_lognormal_sigma,
-        expert_brake_gain=expert_brake_gain,
-        expert_brake_lead_floor=expert_brake_lead_floor,
-        delta_clamp=delta_clamp,
-    )
+    actual = config.fingerprint()
     if expected is not None and actual != expected:
         log.warning(
             "fingerprint mismatch (metadata %s != regenerated %s); "

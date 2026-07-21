@@ -199,6 +199,43 @@ refactor in the audit, and it is mostly mechanical.
 **Caveat for Phase 2:** dataset metadata is committed and `regenerate_from_metadata()`
 (`generate.py:599`) must keep reading old manifests byte-identically. Wrap, don't rewrite.
 
+*Applied note:* deriving the hash from `asdict(config)` verbatim turned out to be wrong — see
+C-1a. The payload keeps its legacy conditional structure; what makes drift impossible is a
+test that perturbs **every** field and asserts the hash flips.
+
+### C-1a · the fingerprint has two real holes · **DOCUMENT, do not fix**
+
+Surfaced by `scripts/dev/lab42_fingerprint_audit.py`, written as the before/after guard for
+C-1. It recomputes each committed manifest's fingerprint the way `regenerate_from_metadata()`
+does and compares it to the stored value. **Two of ten manifests already disagree:**
+
+```
+DRIFT data/dataset_0  committed=0cb4240c72f75635  recomputed=00d01ffe4b68395f
+DRIFT data/dataset_1  committed=290f175018e5b9d3  recomputed=01c463abd0fb84c2
+```
+
+Both are `schema_version` 1.0 (2026-06-16), written before `generated_walls` entered the hash
+payload. So the exact failure mode C-1 warns about has *already happened once*: a knob was
+added to generation and the two oldest manifests silently stopped reproducing their own hash.
+They are superseded corpora (the live operating points are `dataset_9` and `dataset_vision`,
+both `ok`), so rehashing them buys nothing — but it is the concrete evidence that the guard
+was needed.
+
+**Hole 2:** the three termination thresholds — `success_depth`, `lateral_tolerance`,
+`force_cap` — are **not** in the payload, yet they *do* determine a trajectory: `EpisodeLogger`
+returns truthy when one trips and `sim/runner.py:160-163` breaks the loop on it. Two corpora
+differing only in `lateral_tolerance` therefore collide on fingerprint, and the cache would
+happily reuse the wrong episodes. Committed history is split across both settings
+(`dataset_2/3/4` at 0.006, `dataset_6`→`dataset_vision` at 0.010), so folding them in now
+invalidates one group or the other whichever legacy default is chosen.
+
+**Verdict: DOCUMENT.** The three names are listed in `_UNFINGERPRINTED` (`generate.py`) with
+the reasoning inline, and `test_fingerprint_covers_every_config_field` asserts that set is
+exactly the set of unhashed fields — so the hole cannot silently grow. Closing it properly
+means a fingerprint **version** prefix (v2 payload includes the thresholds; v1 manifests keep
+matching), which is a real change to a committed contract and belongs to whoever next needs to
+vary a threshold — not to a cleanup pass.
+
 ### C-2 · `run_episode.py` is 891 lines but *not* a mess · **KEEP — correction to the plan**
 
 The planning note flagged this file on raw LOC. Reading it, the size is **organized**:
@@ -218,6 +255,12 @@ eyeball.
 
 **Verdict: FIX (low priority)** — a shared `TrialConfig` would make the parity test
 unnecessary. Worth doing only if C-1's refactor establishes the pattern anyway.
+
+*Applied note:* fixed by **deletion**, not by a config object — `run_paired` never *used* the
+13 parameters, it only forwarded them, so `**trial_kwargs` removes the duplicate defaults
+outright. A config type here would have added a third home for the same values (alongside
+`run_trial`'s signature and the `Config` ablation arm). C-1's pattern was the right call for
+`generate_dataset`, which genuinely *owns* its knobs; it is the wrong call for a forwarder.
 
 ---
 
@@ -361,7 +404,7 @@ Gate after every change: **ruff clean, mypy clean, 227 tests pass** (was 226 —
 | # | Finding | Status | Note |
 |---|---|---|---|
 | 1 | A-1 `--policy vision` | ✅ done | Flag value removed; the **checkpoint** now selects modality (`use_vision`), and `main` auto-enables wrist capture, duck-typed exactly like `eval.ablation.run_trial`. Proven end-to-end: `kvn episode --policy tf --checkpoint .../vision_frozen_lab82/checkpoint.pt` runs, logs *"vision checkpoint — enabling wrist capture every 20 ticks"*, and completes. Also de-duplicated `DEFAULT_WRIST_RENDER_EVERY` into `sim/scene.py` as the one source of truth. |
-| 2 | C-1 `generate_dataset()` | ⬜ **deferred** | The 240-line / 21-param refactor needs its own session — it must keep `regenerate_from_metadata()` reading committed manifests byte-identically. Highest-value item remaining. |
+| 2 | C-1 `generate_dataset()` | ✅ done | 21 params → 8; the 14 corpus knobs became a frozen `GenerationConfig` that owns `fingerprint()`, `to_dataset_config()` and `from_metadata()`. The last two kill a duplicated legacy-defaults block in `regenerate_from_metadata()`, which shrank 60 lines → 12. The payload construction is byte-identical, verified two ways: `scripts/dev/lab42_fingerprint_audit.py` recomputes all 10 committed manifests' fingerprints before/after (identical output), and the pinned dataset_6 / dataset_8 golden hashes still assert. New guard: `test_fingerprint_covers_every_config_field` perturbs every field and asserts the hash flips — an unhashed new knob now fails the suite. CLI flag defaults now read off `GenerationConfig()` instead of nine imported `DEFAULT_*` constants. |
 | 3 | B-1 hole shapes | ✅ done | −79 lines. `HoleShape` narrowed to `Literal["circle"]`; 4 `NotImplementedError` sites, the 1-entry dispatch dict, the 5-branch bounding chain and 3 dead `SamplingRanges` fields all gone. **Verified byte-identical geometry** by generating wall seed 17 under a git worktree at the pre-change commit: every hole position, diameter, chamfer, orientation and all 9 mesh hashes match. Only the header's provenance block loses the 4 dead keys. |
 | 4 | F dev-script prune | ✅ done | 67 → 37 files (**−31**, ~3.5k LOC). Kept every script *cited* by `src/`, `docs/`, or the wiki — including brace-form citations like `lab106_{delta_target_audit,error_decomp,ft_checkpoint_sweep}.py`, which a naive filename grep misses. Deleting a script that a source comment names as a constant's provenance would break the "constants carry their experiments" property this audit praised. |
 | 5 | D-1 rotation modules | ✅ done | `common/utils/` deleted; all six helpers now live in `common/geometry.py` and are exported from `common/__init__`. ~20 import sites rewritten. |
@@ -370,7 +413,7 @@ Gate after every change: **ruff clean, mypy clean, 227 tests pass** (was 226 —
 | 7 | E-1 mypy scope | ⬜ **split out → LAB-113** | Turning on `scripts` + `tests` surfaces **41 errors in 18 files** — five of them likely real bugs (a TypedDict mismatch in recorded metadata, a success-rate generator typed `object`, a Pillow-10 break in the demo-grid tool). Too large to fold in here without masking regressions. One freebie taken: `_fast_exit` is now `-> NoReturn`, which was causing a false *Missing return statement* on `main()`. |
 | 8 | A-2 keyboard promise | ✅ done | Removed from `README.md`; struck through in `docs/milestones.md` with the reason. |
 | 9 | B-2 `command_ee_delta` | ✅ done | Comment cut 7 lines → 5 and re-headed **`NEGATIVE RESULT — do not enable`**. Knob kept: it is load-bearing evidence for the M7 result. |
-| 10 | C-3 `TrialConfig` | ⬜ deferred | Gated on C-1, per the original ranking. |
+| 10 | C-3 `TrialConfig` | ✅ done — **not** as specified | No new config type. `run_paired` was a pure forwarder that re-declared 10 of `run_trial`'s defaults; it now takes `**trial_kwargs` and forwards. −25 lines, no new abstraction, and the defect class is *gone* rather than re-housed: there is exactly one definition of each default left. All four call sites already passed keywords, so none changed. The LAB-107 parity test now asserts `run_trial`'s default **and** that `run_paired` no longer has a second copy. (A shared `TrialConfig` would have been a third place for the same values to live, next to the existing `Config` ablation-arm type — worse, not better.) |
 
 ### Correction to finding F
 

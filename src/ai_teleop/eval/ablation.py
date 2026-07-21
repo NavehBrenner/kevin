@@ -220,23 +220,21 @@ def run_paired(
     episode_index: int,
     configs: list[Config],
     *,
-    master_seed: int = 0,
     out_dir: str | Path | None = None,
-    generated_walls: bool = True,
-    max_steps: int = INSERTION_MAX_STEPS,  # insertion budget; see run_trial note (LAB-107)
-    max_dpos: float = DEFAULT_MAX_DPOS,
-    joint_damping: float = DEFAULT_JOINT_DAMPING,
-    operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
-    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
-    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
-    force_cap: float = DEFAULT_FORCE_CAP,
-    wrist_render_every: int = DEFAULT_WRIST_RENDER_EVERY,
-    **observer_kwargs: Any,
+    **trial_kwargs: Any,
 ) -> dict[str, TrialKPIs]:
     """Run one paired trial — the same ``episode_index`` under each config.
 
     Returns ``{config.label: TrialKPIs}``. When ``out_dir`` is set, each config's
-    trace is written to ``out_dir/<label>/episode_<NNNNN>/trace.npz``.
+    trace is written to ``out_dir/<label>/episode_<NNNNN>/trace.npz``. Everything
+    else (``master_seed``, ``max_steps``, the controller/operator knobs, observer
+    kwargs) is forwarded verbatim to `run_trial` — see its signature for the
+    defaults.
+
+    It forwards rather than re-declares deliberately: LAB-107 was caused by this
+    function carrying its own copy of ``max_steps``'s default, which drifted from
+    `run_trial`'s and silently under-budgeted the DAgger eval path by 4000 steps.
+    One definition of each default is the fix (audit finding C-3).
     """
     results: dict[str, TrialKPIs] = {}
     for config in configs:
@@ -246,20 +244,7 @@ def run_paired(
                 Path(out_dir) / config.label / f"episode_{episode_index:05d}" / TRACE_NPZ_NAME
             )
         results[config.label] = run_trial(
-            episode_index,
-            config,
-            master_seed=master_seed,
-            generated_walls=generated_walls,
-            max_steps=max_steps,
-            max_dpos=max_dpos,
-            joint_damping=joint_damping,
-            operator_error_scale=operator_error_scale,
-            speed_lognormal_median=speed_lognormal_median,
-            speed_lognormal_sigma=speed_lognormal_sigma,
-            force_cap=force_cap,
-            wrist_render_every=wrist_render_every,
-            trace_path=trace_path,
-            **observer_kwargs,
+            episode_index, config, trace_path=trace_path, **trial_kwargs
         )
     return results
 

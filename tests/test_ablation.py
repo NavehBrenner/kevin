@@ -157,8 +157,12 @@ def test_ablation_runners_default_to_insertion_budget():
     ``dagger._reablate`` — rely on this default, and ``scripts/evaluate.py`` anchors
     its own ``--max-steps`` default on the same ``INSERTION_MAX_STEPS`` constant. If
     this default drifts back to the generic sim budget the two eval paths silently
-    disagree again (the DAgger path read human-only 25% vs evaluate.py's 35%)."""
+    disagree again (the DAgger path read human-only 25% vs evaluate.py's 35%).
+
+    ``run_paired`` now *forwards* to ``run_trial`` instead of re-declaring the knob
+    (audit C-3), so there is only one default left to drift — asserted here, along
+    with the absence of the second copy that caused the bug."""
     import inspect
 
-    assert inspect.signature(run_paired).parameters["max_steps"].default == INSERTION_MAX_STEPS
     assert inspect.signature(run_trial).parameters["max_steps"].default == INSERTION_MAX_STEPS
+    assert "max_steps" not in inspect.signature(run_paired).parameters
