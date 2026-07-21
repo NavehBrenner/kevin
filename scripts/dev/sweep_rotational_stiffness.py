@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ai_teleop.common.utils.rotations import axis_from_quat
+from ai_teleop.common.geometry import axis_from_quat
 from ai_teleop.control import Controller
 from ai_teleop.domain import apply_delta
 from ai_teleop.expert import Expert

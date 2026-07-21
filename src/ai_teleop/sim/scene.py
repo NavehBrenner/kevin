@@ -25,6 +25,13 @@ from ai_teleop.sim.config import EnvConfig
 
 RenderMode = Literal["viewer", "headless"]
 
+# Wrist-camera capture cadence for a vision policy: render a new frame every N
+# observation ticks and hold it between (the env is the frame-rate limiter — see
+# `SimEnv.enable_wrist_capture`). 20 matches the M7 corpus's `render_every`
+# (dataset_vision) so a deployed frame stream decimates like the training one;
+# every caller that turns capture on should anchor on this rather than repeat 20.
+DEFAULT_WRIST_RENDER_EVERY = 20
+
 # Hardcoded for M1 — the scene XML names these explicitly. Anything reading
 # them by string lives here so a rename in the MJCF is a one-place fix.
 _ARM_JOINT_NAMES = (
@@ -281,7 +288,7 @@ class SimEnv:
             wrist_image=self._capture_wrist_frame(),
         )
 
-    def enable_wrist_capture(self, render_every: int = 20) -> None:
+    def enable_wrist_capture(self, render_every: int = DEFAULT_WRIST_RENDER_EVERY) -> None:
         """Start stamping a wrist-camera frame onto each ``Observation`` (LAB-83).
 
         The env becomes the frame-rate limiter for the vision policy: it renders a

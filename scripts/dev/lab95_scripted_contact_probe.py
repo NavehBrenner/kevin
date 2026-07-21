@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np  # noqa: E402
 from lab95_recorded_forensics import contact_forensics, print_forensics_table  # noqa: E402
 
-from ai_teleop.common.utils.rotations import axis_from_quat  # noqa: E402
+from ai_teleop.common.geometry import axis_from_quat  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data.step_callbacks import TerminationProbe  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402

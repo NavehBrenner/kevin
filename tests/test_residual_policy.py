@@ -205,6 +205,28 @@ def test_checkpoint_round_trips_outputs(tmp_path: Path):
     assert delta_original.delta_grip_force == pytest.approx(delta_restored.delta_grip_force)
 
 
+def test_checkpoint_with_retired_config_key_still_loads(tmp_path: Path):
+    """A checkpoint carrying a config key the current PolicyConfig no longer defines
+    must still load (LAB-110 / A-3).
+
+    Retiring a knob — ``use_tanh_head`` was the first — otherwise strands every
+    checkpoint trained before the removal, since ``PolicyConfig(**payload)`` raises on
+    an unexpected keyword. All 12 of the project's trained runs carried that key.
+    """
+    config = PolicyConfig(hidden_size=16, num_layers=1)
+    path = tmp_path / "legacy.pt"
+    save_checkpoint(
+        path, model=ResidualPolicy(config).eval(), config=config, norm_stats=_identity_stats()
+    )
+
+    # Re-write the payload with a key no current field matches, as an old run would have.
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload["config"]["use_tanh_head"] = False
+    torch.save(payload, path)
+
+    assert load_checkpoint(path).config == config
+
+
 # ---------------------------------------------------------------------------
 # Real-time latency budget
 # ---------------------------------------------------------------------------

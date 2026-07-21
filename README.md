@@ -65,7 +65,9 @@ at runtime with `kvn episode --input {scripted,vision}` (default `scripted`):
   hold an open palm still for 3 s) to re-anchor; make a fist to squeeze, open your
   hand to release. Needs the `stereo-input` extra, a one-time stereo calibration,
   and the viewer (no `--headless`).
-- **keyboard** — developer fallback, *deferred* (not yet implemented).
+
+A keyboard fallback was scoped in M8 and **dropped** — `scripted` covers repeatable
+benchmarking and `vision` covers the live demo, so nothing needed it.
 
 ### Stereo (vision) setup
 

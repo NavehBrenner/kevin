@@ -51,8 +51,8 @@ from __future__ import annotations
 import numpy as np
 
 from ai_teleop.common.command import Command
+from ai_teleop.common.geometry import axis_from_quat, quat_to_matrix
 from ai_teleop.common.observation import Observation
-from ai_teleop.common.utils.rotations import axis_from_quat, quat_to_matrix
 from ai_teleop.domain import ZERO_DELTA, Delta, clamp_delta
 
 

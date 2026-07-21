@@ -14,12 +14,11 @@ class PolicyConfig:
     force_torque_dim: int = 6
     proprioception_dim: int = 24
 
-    # LAB-106: append the raw (command_position − ee_position) tracking-error vector
-    # (3-d) to the proprioception stream. Inputs are z-scored per stream, so the GRU
-    # cannot recover this difference from the separately-normalized cmd/ee channels;
-    # handed it as its own channel it can learn the free-space zero the expert enforces
-    # structurally (the residual ∝ this vector → 0 when the arm tracks the command).
-    # Off by default so Phase-1/vision checkpoints stay byte-identical and loadable.
+    # NEGATIVE RESULT — do not enable. Appends the (command_position − ee_position)
+    # tracking error to the proprioception stream (LAB-106). It improves the offline
+    # metric and *collapses* closed-loop success, because it is a feedback feature the
+    # policy amplifies into its own tracking error. Retained only so the M7 result stays
+    # reproducible. Why, in full: project-wiki/synthesis/imitation-limits-closed-loop.md.
     use_command_ee_delta: bool = False
 
     @property
@@ -56,7 +55,6 @@ class PolicyConfig:
     num_layers: int = 2
     head_hidden: tuple[int, ...] = (128,)
     dropout: float = 0
-    use_tanh_head: bool = False
 
     # outputs
     output_dim: int = 7

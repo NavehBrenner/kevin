@@ -35,21 +35,6 @@ def _drill_circle(workpiece: cq.Workplane, hole: HoleSpec) -> cq.Workplane:
     return workpiece.faces("<X").workplane().pushPoints([(-y_mm, z_mm)]).hole(diameter_mm)
 
 
-# Dispatch by shape. The shape library beyond "circle" is filled in during the
-# shape-library build step; the single-hole proof only needs the round bore.
-_CUTTERS = {
-    "circle": _drill_circle,
-}
-
-
-def _cut_hole(workpiece: cq.Workplane, hole: HoleSpec) -> cq.Workplane:
-    try:
-        cutter = _CUTTERS[hole.shape]
-    except KeyError:
-        raise NotImplementedError(f"hole shape {hole.shape!r} not implemented yet") from None
-    return cutter(workpiece, hole)
-
-
 def _chamfer_hole(workpiece: cq.Workplane, hole: HoleSpec, thickness_mm: float) -> cq.Workplane:
     """Chamfer just this hole's robot-facing rim, by its own width.
 
@@ -71,10 +56,9 @@ def build_wall_solid(spec: WallSpec) -> cq.Workplane:
     thickness, width, height = (v * MM_PER_M for v in spec.wall_size)
     workpiece = cq.Workplane("YZ").box(width, height, thickness)
 
-    # Cut + chamfer each hole individually so per-hole chamfer widths (and, with
-    # the shape library, per-hole shapes) are honoured.
+    # Cut + chamfer each hole individually so per-hole chamfer widths are honoured.
     for hole in spec.holes:
-        workpiece = _cut_hole(workpiece, hole)
+        workpiece = _drill_circle(workpiece, hole)
         workpiece = _chamfer_hole(workpiece, hole, thickness)
 
     return workpiece

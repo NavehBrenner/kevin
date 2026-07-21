@@ -24,7 +24,7 @@ milestone is started.
 | M5 | Residual policy — Phase 1 (F/T-only) | Phase 1 | 4 | ⬜ |
 | M6 | Evaluation harness + Phase 1 results | Phase 1 | 6 | ⬜ |
 | M7 | Vision-conditioned residual — Phase 2 | Phase 2 | 4 (vision) | ⬜ |
-| M8 | Human teleop input (MediaPipe + keyboard) | Phase 2 | 5 | ⬜ |
+| M8 | Human teleop input (stereo hand tracking) | Phase 2 | 5 | ⬜ |
 | M9 | Final evaluation + polish | Delivery | 6, 7 | ⬜ |
 
 Two **graded course checkpoints** (D1, D2) draw on these — see *Course checkpoints* below.
@@ -189,7 +189,7 @@ contribution of vision; runs in real time within the control budget.
 
 ---
 
-### M8 — Human teleop input (MediaPipe + keyboard)
+### M8 — Human teleop input (stereo hand tracking)
 
 **Goal**: let a real human drive the arm — for the demo and qualitative validation.
 
@@ -199,7 +199,8 @@ contribution of vision; runs in real time within the control budget.
   EE command).
 - Workspace calibration (metric camera-rig → robot-space), clutching + open-palm recenter,
   gain, jitter filter (one-euro), drop-out handling, 6-DoF mirroring.
-- `KeyboardInput` fallback strategy.
+- ~~`KeyboardInput` fallback strategy.~~ **Dropped (LAB-42 review):** `scripted` covers
+  repeatable benchmarking and `vision` covers the live demo, so nothing needed it.
 - All input strategies interchangeable behind the common interface.
 
 **History**: a monocular MediaPipe baseline (LAB-50/51) shipped first, then was **removed**
@@ -211,7 +212,7 @@ unchanged. Full rationale in [`design/teleop-input.md`](design/teleop-input.md).
 **Deferred**: MediaPipe Holistic / full-arm tracking (stretch).
 
 **Acceptance**: a person can drive the arm via the stereo rig and complete assisted insertions;
-keyboard fallback works; a handful of qualitative runs are recordable.
+a handful of qualitative runs are recordable.
 
 **Depends on**: M3 (input interface), works with any assist mode. **Component**: 5.
 **Rough effort**: 12–16 h (baseline) + ~10–14 h for the stereo work.

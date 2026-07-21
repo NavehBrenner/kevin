@@ -50,6 +50,7 @@ from ai_teleop.input.scripted_noisy_human import (
 from ai_teleop.sim.config import EnvConfig, episode_wall_seed
 from ai_teleop.sim.env_setup import make_env
 from ai_teleop.sim.runner import run_episode
+from ai_teleop.sim.scene import DEFAULT_WRIST_RENDER_EVERY
 
 # Both generated walls and the static escape hatch place the goal at hole_0; the
 # expert/observer/operator are all aimed there (the env stays target-agnostic).
@@ -77,12 +78,9 @@ INSERTION_MAX_STEPS = 9000
 # the F/T residual has a lever and human-only sits below ceiling with headroom.
 DEFAULT_OPERATOR_ERROR_SCALE = 1.0
 
-# Wrist-camera capture cadence for a vision trial: render a new frame every N
-# observation ticks and hold it between (the env is the frame-rate limiter — see
-# SimEnv.enable_wrist_capture). Matches the M7 corpus's render_every=20
-# (dataset_vision), so the deploy frame stream decimates like the training one. Only
-# a vision policy triggers capture; F/T-only and human-only render nothing.
-DEFAULT_WRIST_RENDER_EVERY = 20
+# Wrist-camera capture cadence for a vision trial — the shared env default
+# (`sim.scene.DEFAULT_WRIST_RENDER_EVERY`). Only a vision policy triggers capture;
+# F/T-only and human-only render nothing.
 
 
 @dataclass(frozen=True)

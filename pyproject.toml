@@ -43,8 +43,10 @@ ml = [
 # Stereo two-webcam hand input (metric 3D, 6-DoF) — the live teleop sensor.
 # stereohand brings its own opencv-contrib + mediapipe (Tasks API) transitively.
 # See docs/design/teleop-input.md.
+# Pinned to a tag, not a bare branch: D2's acceptance is "clean clone -> run", and an
+# unpinned git dep silently re-resolves to whatever the default branch holds that day.
 stereo-input = [
-    "stereohand @ git+https://github.com/NavehBrenner/stereohand.git",
+    "stereohand @ git+https://github.com/NavehBrenner/stereohand.git@v0.1.0",
 ]
 # Visualisation / recording for dev scripts (MP4 + GIF episode captures).
 # Not imported by the sim runtime; only the scripts/dev recorders use it.
@@ -112,6 +114,10 @@ preview = true
 
 [tool.mypy]
 python_version = "3.12"
+# The gate type-checks the package only. `scripts/` + `tests/` (14.7k LOC, more than
+# src/) are deliberately outside it *for now*: turning them on surfaces 41 pre-existing
+# errors in 18 files, which is its own piece of work rather than something to fold into
+# an unrelated change. Inventory + plan: LAB-113. Widen this list when that lands.
 files = ["src"]
 # Third-party scientific/CAD libs (mujoco, trimesh, shapely, scipy, cadquery)
 # ship no type stubs; don't fail the gate on their missing-import noise.
