@@ -73,7 +73,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="DataLoader worker processes. With --vision, use >0 (e.g. 4) so wrist frames "
         "decode in parallel worker processes instead of the main process.",
     )
-    parser.add_argument("--seed", type=int, default=0, help="Train/val split seed.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed for weight init, batch shuffling and the train/val split.",
+    )
     parser.add_argument("--hidden-size", type=int, default=PolicyConfig.hidden_size)
     parser.add_argument("--num-layers", type=int, default=PolicyConfig.num_layers)
     parser.add_argument("--tbptt-steps", type=int, default=DEFAULT_TBPTT_STEPS)

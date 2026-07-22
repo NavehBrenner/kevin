@@ -20,6 +20,7 @@ companion. Matplotlib is a core dependency, so the plot is always produced; the
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import asdict
@@ -146,5 +147,11 @@ def write_run_artifacts(
     )
     (run_dir / HISTORY_NAME).write_text(json.dumps(history, indent=2) + "\n")
     plot_history(history, run_dir / HISTORY_PLOT_NAME)
+    # Checkpoints are gitignored, so a published number can outlive its weights (audit H-8).
+    # The metadata *is* committed, and it now identifies exactly which file produced the
+    # number — so a checkpoint found later can be confirmed as (or ruled out from being) it.
+    metadata["checkpoint_sha256"] = hashlib.sha256(
+        (run_dir / CHECKPOINT_NAME).read_bytes()
+    ).hexdigest()
     (run_dir / METADATA_NAME).write_text(json.dumps(metadata, indent=2) + "\n")
     return run_dir
