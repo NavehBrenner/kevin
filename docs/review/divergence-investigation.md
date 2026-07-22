@@ -39,7 +39,18 @@ plausible draws.
 · *Confirms:* G2's spread across ≥5 seeds spans ≳20 pp, or its range covers both values.
 · *Kills:* the spread is tight (say ≤5 pp) around ~46%, making 70.0% an outlier the recipe
 does not produce.
-· *Prior:* **high.** It requires no additional mechanism — unseeded init is already proven.
+· *Prior:* **high, but do not over-anchor** — see the counter-observation below. It requires
+no additional mechanism, since unseeded init is already proven.
+
+> **Counter-observation, and the reason G2 must actually be run rather than assumed.** The two
+> 2026-07-22 checkpoints (`ar0` and `ar100`) are *different* policies — different loss config,
+> different unseeded init, and they disagree on *which* seeds flip (`ar100`: {4,8,11,13,21,22,27};
+> `ar0`: {0,1,8,13,18,19,24↑,26,27}) — yet they land on the **identical aggregate, 14/30 =
+> 46.7%**. Two independent draws agreeing exactly is weak evidence that the recipe's spread on
+> this corpus is *tight*, with a mean near 46%, which would make 70.0% a poor fit for H-A and
+> raise H-B/H-C instead. n=2 cannot distinguish "tight spread" from "coincidence at the count
+> level", which is exactly why ≥5 seeds is the minimum and why the *range* matters more than
+> the mean. **Enter G2 without a favourite.**
 
 **H-B: corpus drift moved the training distribution.**
 `dataset_10` differs from `dataset_9` in 35 of 200 trajectories (H-9).
@@ -108,6 +119,40 @@ it be decided by which number is quoted first.
 Run H-B / H-C only if G2's spread fails to account for the gap. Both are one-variable
 extensions of the Phase-2 harness.
 
+## G2 also adjudicates the M7 vision negative — read this before scoping it
+
+The M7 conclusion ("the vision residual never beats F/T-only") rests on the **same n=1
+per-condition design**, at **20 eval seeds** rather than 100. Its quantitative comparisons are
+2–4 episodes wide:
+
+| Comparison | F/T-only | vision | margin |
+|---|---|---|---|
+| LAB-104, es1.0 | 20% (4/20) | 20% (4/20) | 0 episodes |
+| LAB-106 Stage C, es1.0 | 20% (4/20) | 10% (2/20) | 2 episodes |
+| LAB-106 Stage C, es0.4 | 40% (8/20) | 40% (8/20) | 0 episodes |
+
+**What survives regardless of G2:** the *mechanism*. LAB-77's identifiability argument
+(the operator command already proxies the hole, so vision carries little marginal signal) is
+theory plus byte-identical parameter sweeps, and does not depend on any checkpoint. Likewise
+the LAB-105 DAgger structural explanation (a bounded expert cannot demonstrate recovery from
+the visited force-abort states).
+
+**What G2 puts at risk:** the *directional* claims. "Vision harms out-of-band, ties in-band,
+never beats F/T" is a statement about sign, drawn from single checkpoints at margins of 0–2
+episodes. If G2 finds a wide spread, those margins are inside the noise floor and the honest
+claim weakens from *"vision does not help"* to *"no vision benefit was detectable at this
+power"* — a materially different sentence in a report, and the safer one to have checked.
+
+Note the asymmetry that makes this less alarming than the Phase-1 case: **underpowering
+cannot manufacture a null.** A weak test failing to find an effect is "not shown", which is
+close to what M7 already claims. The Phase-1 failure was the opposite and worse — a *positive*
+manufactured by two lucky draws. So M7 needs its wording audited; it does not need re-running.
+
+**Concretely:** once G2's spread is known, re-read `synthesis/imitation-limits-closed-loop`
+and `concepts/vision-conditioned-policy` in the wiki and qualify any sign-claim whose margin
+is smaller than the measured spread. **No new M7 compute** — this is a wording audit against a
+number G2 produces anyway.
+
 ## Constraints and guardrails
 
 - **Do not re-run anything that already has a committed record.** The three existing 100-seed
@@ -128,4 +173,16 @@ extensions of the Phase-2 harness.
 - [ ] ≥5 seeds trained and evaluated at 100 paired seeds; spread reported with mean and range.
 - [ ] `best_val_loss` vs closed-loop success plotted across those seeds.
 - [ ] The Phase-1 claim rewritten as a distribution, in `docs/phase-1-results.md` and D-4.
+- [ ] M7's sign-claims audited against the measured spread (wording only, no new compute).
 - [ ] LAB-42 / LAB-101 updated with the outcome; this file deleted or folded into D-4.
+
+## Before you start — two things left in a fragile state (2026-07-22)
+
+1. **The two checkpoints behind this session's published numbers are gitignored.**
+   `outputs/policy/runs/lab101_ft_{ar0,ar100}_ds10/` are **768 KB each** and `outputs/` is in
+   `.gitignore:55`. Their results are now quoted in `docs/phase-1-results.md`. This is
+   **H-8 repeating** — the exact failure that made the original headline unarbitrable. Fix it
+   in Phase 1 of this investigation, before training anything new: either commit small
+   checkpoints, or record a SHA-256 of each in its `metadata.json`. Decide the policy once.
+2. **The branch is unpushed** (12 commits on `feat/lab-42-project-state-review`) and has no PR.
+   All of this session's findings exist on one machine.
