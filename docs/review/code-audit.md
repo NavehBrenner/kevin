@@ -366,8 +366,7 @@ Recorded so a later cleanup pass doesn't mistake deliberate design for accident:
 ## G. Round-2 findings — Naveh's read (2026-07-22)
 
 Two findings from Naveh reading the post-Phase-2 tree. Both verified with `file:line` and, for
-G-2, against episodes on disk. **Neither is fixed yet** — they are the agreed next work item,
-ahead of the 1A round-2 sweep.
+G-2, against episodes on disk. **Both fixed 2026-07-22** — outcomes at the end of this section.
 
 ### G-1 · Training lives in `scripts/`, so `dagger.py` shells out to it · **FIX**
 
@@ -527,3 +526,47 @@ rewritten, because a reconstruction that produced different numbers would be wor
 `record_comparison_grid.py` was **not** promoted to `scripts/` + the `kvn` CLI as planned:
 mypy flags `Image.NEAREST` at line 99, removed in Pillow 10, so the project's demo-video tool
 may currently be broken. Promoting a broken tool is worse than leaving it. Tracked in LAB-113.
+
+### G outcomes (2026-07-22)
+
+Gate green after both: ruff clean, mypy clean (**60 files**, was 59), **230 tests** (was 229).
+
+| # | Status | What landed |
+|---|---|---|
+| G-1 | ✅ done | Training moved to `ai_teleop/policy/train.py`; `scripts/train_policy.py` is now a 200-line argparse front door over it (was 504 lines of pipeline). New `train_policy()` returns a frozen `TrainedRun` carrying `checkpoint_path`. `dagger.py` calls it directly — the `subprocess`/`sys` imports, the resolved script path and the 14-element argv are gone, as is the `runs_root / name / "checkpoint.pt"` string convention. |
+| G-2 | ✅ done | `EpisodeMetadata` split into `EpisodeSpec` (what a writer supplies) + `EpisodeMetadata` (adds the two keys `EpisodeRecorder.save` stamps). Writers annotated: `save()`, both `episode_metadata` blobs, `_episode_summary`, `_summary_from_cache`, `_write_dataset_metadata`, `seed_aggregate`, `append_summaries`, `rollout_and_relabel`. mypy now checks the write side. |
+
+**G-1 paid for itself immediately.** Moving 400 lines from `scripts/` into `src/` put them under
+mypy for the first time (`scripts/` is still out of scope — LAB-113), which surfaced **5 real
+type errors** in code that had been running for months: `per_step_image_embedding` called with
+`Tensor | None` on both arguments, and three `len(loader.dataset)` calls on a `Dataset` that
+isn't `Sized`. Fixed with an assert documenting the invariant (`train_policy` ties
+`load_images` to `config.use_vision`, so a vision batch always has frames) and one `_n_episodes`
+helper. Two `PolicyConfig`-vs-argparse desync paths closed as a side effect: `load_images` and
+`command_ee_delta` now derive from the config object rather than being passed separately.
+
+**G-2 failed first exactly where predicted.** With the writers annotated, mypy flagged
+`dagger.py` and nothing else — three errors, all the missing-keys drift. The fix stamps the
+values the rollout genuinely ran under, read from the same `config` that builds the relabeling
+expert (`expert_from_config`) and seeds the operator: `expert_d_far`, `expert_brake_gain`,
+`expert_brake_lead_floor`, `delta_clamp`, `speed_lognormal_median`, `speed_lognormal_sigma`.
+Nothing was invented and no key was demoted out of the required base. Also removed a bare `0.03`
+magic number in `expert_from_config` (now `DEFAULT_DELTA_CLAMP`) and de-duplicated the
+speed-draw config reads, which had been done twice in one function.
+
+The bug class is now caught **twice**, verified by mutation — deleting the `expert_d_far` line
+gives:
+
+```
+mypy:    dagger.py:211: error: Missing key "expert_d_far" for TypedDict "EpisodeSpec"
+pytest:  AssertionError: missing required keys: ['expert_d_far']
+```
+
+The runtime half is `tests/test_dagger.py`, asserting a *written* episode against
+`EpisodeMetadata.__required_keys__` — static typing alone can't prove what actually reached
+disk, which is how the original drift survived.
+
+**Not done, deliberately:** the existing `data/dagger_*_agg/` episodes on disk still lack the
+key. They are untracked scratch corpora from the LAB-105 rounds, already superseded, and
+rewriting their metadata would change artifacts whose provenance is the point. The fix applies
+to everything written from here.

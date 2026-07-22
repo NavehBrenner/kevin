@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,7 +49,12 @@ import numpy as np
 
 from ai_teleop.common.log import get_logger
 from ai_teleop.control import Controller
-from ai_teleop.data.schema import DatasetConfig, ResBCDatasetMetadata
+from ai_teleop.data.schema import (
+    DatasetConfig,
+    EpisodeSpec,
+    EpisodeSummary,
+    ResBCDatasetMetadata,
+)
 from ai_teleop.data.step_callbacks import EpisodeLogger, TerminationProbe
 from ai_teleop.data.trajectory import (
     SCHEMA_VERSION,
@@ -410,7 +414,7 @@ def generate_dataset(
     fingerprint = config.fingerprint()
 
     written: list[Path] = []
-    summaries: list[dict[str, object]] = []
+    summaries: list[EpisodeSummary] = []
     frames_rendered = 0
     render_wall_time = 0.0
     for episode_index in range(n_episodes):
@@ -485,7 +489,7 @@ def generate_dataset(
 
         environment.close()
 
-        episode_metadata: dict[str, object] = {
+        episode_metadata: EpisodeSpec = {
             # Base commands came from the scripted noisy human, corrected by the expert —
             # so a replay logs source=scripted (not "unknown") and can note the recorded policy.
             "source": "scripted",
@@ -551,12 +555,10 @@ def generate_dataset(
     return written
 
 
-def _episode_summary(
-    path: Path, episode_metadata: Mapping[str, object], *, n_steps: int
-) -> dict[str, object]:
+def _episode_summary(path: Path, episode_metadata: EpisodeSpec, *, n_steps: int) -> EpisodeSummary:
     """Compact per-episode entry for the dataset ``metadata.json`` (an
     ``EpisodeSummary`` shape; see ``data.schema``)."""
-    summary: dict[str, object] = {
+    summary: EpisodeSummary = {
         "episode_index": episode_metadata["episode_index"],
         "file": f"runs/{path.parent.name}/{path.name}",
         "n_steps": n_steps,
@@ -573,7 +575,7 @@ def _episode_summary(
     return summary
 
 
-def _summary_from_cache(path: Path, *, baseline: bool) -> dict[str, object]:
+def _summary_from_cache(path: Path, *, baseline: bool) -> EpisodeSummary:
     """Rebuild a per-episode summary from a cached episode file's metadata."""
     columns, metadata = load_episode(path)
     # metadata is JSON-loaded (values typed `object`); n_steps is an int on disk
@@ -589,7 +591,7 @@ def _summary_from_cache(path: Path, *, baseline: bool) -> dict[str, object]:
     return summary
 
 
-def _rate(summaries: list[dict[str, object]], key: str) -> tuple[dict[str, int], float | None]:
+def _rate(summaries: list[EpisodeSummary], key: str) -> tuple[dict[str, int], float | None]:
     """Counts-by-terminal-reason and success rate over a ``*_terminal_reason`` /
     ``*success`` pair; rate is ``None`` if any episode is missing the field."""
     reason_key = "terminal_reason" if key == "success" else "baseline_terminal_reason"
@@ -608,7 +610,7 @@ def _rate(summaries: list[dict[str, object]], key: str) -> tuple[dict[str, int],
 
 def _write_dataset_metadata(
     dataset_dir: Path,
-    summaries: list[dict[str, object]],
+    summaries: list[EpisodeSummary],
     *,
     seed: int,
     fingerprint: str,
@@ -618,7 +620,7 @@ def _write_dataset_metadata(
     """Write ``dataset_dir/metadata.json`` with dataset-level statistics
     (a ``ResBCDatasetMetadata`` shape; see ``data.schema``)."""
     expert_counts, expert_rate = _rate(summaries, "success")
-    metadata: dict[str, object] = {
+    metadata: ResBCDatasetMetadata = {
         "schema_version": SCHEMA_VERSION,
         "master_seed": seed,
         "n_episodes": len(summaries),

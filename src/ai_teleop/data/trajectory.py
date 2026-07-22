@@ -56,7 +56,7 @@ from typing import cast
 
 import numpy as np
 
-from ai_teleop.data.schema import EpisodeColumns, EpisodeMetadata
+from ai_teleop.data.schema import EpisodeColumns, EpisodeMetadata, EpisodeSpec
 
 # 2.0: on-disk *layout* changed from a flat ``runs/episode_NNNNN.npz`` to a
 # per-episode folder ``runs/episode_NNNNN/{episode.npz, imgs/}``. The per-step
@@ -146,7 +146,7 @@ class EpisodeRecorder:
     def __len__(self) -> int:
         return len(self._rows)
 
-    def save(self, path: str | Path, metadata: dict[str, object]) -> None:
+    def save(self, path: str | Path, metadata: EpisodeSpec) -> None:
         if not self._rows:
             raise ValueError("cannot save an empty episode")
         path = Path(path)

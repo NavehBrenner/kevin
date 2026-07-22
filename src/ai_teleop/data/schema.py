@@ -82,11 +82,17 @@ class DatasetConfig(TypedDict):
     delta_clamp: NotRequired[float]
 
 
-class _EpisodeMetadataBase(TypedDict):
-    """Required keys of a per-episode ``episode.npz`` ``metadata`` blob."""
+class _EpisodeSpecBase(TypedDict):
+    """Required keys every **writer** of an episode must supply.
 
-    schema_version: str
-    n_steps: int
+    Split out from `EpisodeMetadata` (the on-disk shape) because two keys —
+    ``schema_version`` and ``n_steps`` — are stamped by `EpisodeRecorder.save`, not
+    by the caller. Annotating the writers against this type is what stops the two
+    hand-rolled metadata blobs (data generation and DAgger rollouts) from drifting
+    apart, which they had: DAgger silently omitted ``expert_d_far`` and five
+    optional corpus knobs (audit finding G-2).
+    """
+
     master_seed: int
     episode_index: int
     scene_seed: list[int]  # [master_seed, episode_index]
@@ -102,8 +108,8 @@ class _EpisodeMetadataBase(TypedDict):
     force_cap: float
 
 
-class EpisodeMetadata(_EpisodeMetadataBase, total=False):
-    """Per-episode metadata; the ``baseline_*`` keys appear iff a baseline ran."""
+class EpisodeSpec(_EpisodeSpecBase, total=False):
+    """What a writer hands to `EpisodeRecorder.save`; ``baseline_*`` iff a baseline ran."""
 
     baseline_terminal_reason: str | None
     baseline_success: bool | None
@@ -137,6 +143,18 @@ class EpisodeMetadata(_EpisodeMetadataBase, total=False):
     # Shared expert/policy Δ-position bound (LAB-100). Stamped by data
     # generation; absent on pre-LAB-100 episodes (⇒ the legacy ±2 cm bound).
     delta_clamp: float
+
+
+class EpisodeMetadata(EpisodeSpec):
+    """The full on-disk ``episode.npz`` ``metadata`` blob — what a reader gets back.
+
+    `EpisodeSpec` plus the two keys `EpisodeRecorder.save` stamps itself, so the
+    writer type and the reader type stay one definition apart instead of two
+    hand-maintained lists.
+    """
+
+    schema_version: str
+    n_steps: int
 
 
 class _EpisodeSummaryBase(TypedDict):

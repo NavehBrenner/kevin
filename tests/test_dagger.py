@@ -16,6 +16,7 @@ import numpy as np
 
 from ai_teleop.dagger import append_summaries, rollout_and_relabel, seed_aggregate
 from ai_teleop.data import build_dataloaders
+from ai_teleop.data.schema import EpisodeMetadata
 from ai_teleop.data.trajectory import load_episode
 from ai_teleop.domain import Delta
 
@@ -65,6 +66,12 @@ def test_relabel_records_label_not_acting_delta(tmp_path: Path) -> None:
     assert summary["n_steps"] > 0
     columns, metadata = load_episode(runs_dir / "episode_00000" / "episode.npz")
     assert metadata["source"] == "dagger"
+    # G-2 regression: a DAgger episode must carry the *whole* declared spec, like a
+    # generated one. It used to omit the required `expert_d_far` (plus five optional
+    # corpus knobs), so every DAgger episode on disk violated `EpisodeMetadata` and
+    # nothing noticed — both writers were untyped dicts.
+    missing = EpisodeMetadata.__required_keys__ - set(metadata)
+    assert not missing, f"missing required keys: {sorted(missing)}"
     # Every recorded row carries the *label* provider's Δ, not the acting policy's.
     assert np.allclose(columns["delta_position"], label.delta_position)
     assert np.allclose(columns["delta_orientation"], label.delta_orientation)

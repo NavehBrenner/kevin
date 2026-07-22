@@ -43,6 +43,7 @@ import numpy as np
 from ai_teleop.common.log import get_logger
 from ai_teleop.control import Controller
 from ai_teleop.data.generate import (
+    DEFAULT_DELTA_CLAMP,
     DEFAULT_EXPERT_BRAKE_GAIN,
     DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
     DEFAULT_EXPERT_D_FAR,
@@ -56,7 +57,7 @@ from ai_teleop.data.generate import (
     DEFAULT_SUCCESS_DEPTH,
     _episode_summary,
 )
-from ai_teleop.data.schema import DatasetConfig
+from ai_teleop.data.schema import DatasetConfig, EpisodeSpec, EpisodeSummary
 from ai_teleop.data.step_callbacks import EpisodeLogger
 from ai_teleop.data.trajectory import (
     SCHEMA_VERSION,
@@ -106,7 +107,7 @@ def expert_from_config(config: Mapping[str, Any]) -> Expert:
         brake_lead_floor=float(
             config.get("expert_brake_lead_floor", DEFAULT_EXPERT_BRAKE_LEAD_FLOOR)
         ),
-        max_delta_position=float(config.get("delta_clamp", 0.03)),
+        max_delta_position=float(config.get("delta_clamp", DEFAULT_DELTA_CLAMP)),
     )
 
 
@@ -121,7 +122,7 @@ def rollout_and_relabel(
     config: Mapping[str, Any],
     render_every: int | None,
     generated_walls: bool = True,
-) -> dict[str, object]:
+) -> EpisodeSummary:
     """Run one on-policy rollout, relabel every visited state with ``expert``, and
     write it as ``runs_dir/episode_<dagger_index>/`` in the corpus schema.
 
@@ -135,11 +136,25 @@ def rollout_and_relabel(
     max_dpos = float(config.get("max_dpos", DEFAULT_MAX_DPOS))
     joint_damping = float(config.get("joint_damping", DEFAULT_JOINT_DAMPING))
     max_steps = int(config.get("max_steps", DEFAULT_MAX_STEPS))
-    thresholds = dict(
-        success_depth=float(config.get("success_depth", DEFAULT_SUCCESS_DEPTH)),
-        lateral_tolerance=float(config.get("lateral_tolerance", DEFAULT_LATERAL_TOLERANCE)),
-        force_cap=float(config.get("force_cap", DEFAULT_FORCE_CAP)),
+    # Expert + operator knobs this rollout runs under, read from the corpus config
+    # exactly as `expert_from_config` reads them. Bound to locals because they are
+    # both *used* here (the operator's speed draw) and *stamped* into the episode
+    # metadata below — a DAgger episode carries the same spec as a generated one.
+    expert_d_far = float(config.get("expert_d_far", DEFAULT_EXPERT_D_FAR))
+    expert_brake_gain = float(config.get("expert_brake_gain", DEFAULT_EXPERT_BRAKE_GAIN))
+    expert_brake_lead_floor = float(
+        config.get("expert_brake_lead_floor", DEFAULT_EXPERT_BRAKE_LEAD_FLOOR)
     )
+    delta_clamp = float(config.get("delta_clamp", DEFAULT_DELTA_CLAMP))
+    speed_lognormal_median = float(
+        config.get("speed_lognormal_median", DEFAULT_SPEED_LOGNORMAL_MEDIAN)
+    )
+    speed_lognormal_sigma = float(
+        config.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
+    )
+    success_depth = float(config.get("success_depth", DEFAULT_SUCCESS_DEPTH))
+    lateral_tolerance = float(config.get("lateral_tolerance", DEFAULT_LATERAL_TOLERANCE))
+    force_cap = float(config.get("force_cap", DEFAULT_FORCE_CAP))
 
     wall_seed = episode_wall_seed(master_seed, rollout_index) if generated_walls else None
     environment = make_env(EnvConfig(wall_seed=wall_seed), render_mode="headless")
@@ -160,12 +175,8 @@ def rollout_and_relabel(
         human = ScriptedNoisyHuman(
             np.concatenate([target_position, home_quaternion]),
             seed=_human_seed(master_seed, rollout_index),
-            speed_lognormal_median=float(
-                config.get("speed_lognormal_median", DEFAULT_SPEED_LOGNORMAL_MEDIAN)
-            ),
-            speed_lognormal_sigma=float(
-                config.get("speed_lognormal_sigma", DEFAULT_SPEED_LOGNORMAL_SIGMA)
-            ),
+            speed_lognormal_median=speed_lognormal_median,
+            speed_lognormal_sigma=speed_lognormal_sigma,
         )
         if hasattr(policy, "reset"):
             policy.reset()  # fresh GRU hidden state + F/T bias for this episode
@@ -176,9 +187,9 @@ def rollout_and_relabel(
             ft_bias,
             controller,
             target_hole_index=_TARGET_HOLE_INDEX,
-            success_depth=thresholds["success_depth"],
-            lateral_tolerance=thresholds["lateral_tolerance"],
-            force_cap=thresholds["force_cap"],
+            success_depth=success_depth,
+            lateral_tolerance=lateral_tolerance,
+            force_cap=force_cap,
             label_provider=expert,
             save_observation_frame=render_every is not None,
             imgs_dir=imgs_dir if render_every is not None else None,
@@ -189,7 +200,15 @@ def rollout_and_relabel(
         )
 
         path = episode_npz_path(runs_dir, dagger_index)
-        episode_metadata: dict[str, object] = {
+        # The full corpus spec, not a subset: these episodes land in the same
+        # aggregate manifest as generated ones, so they carry the same keys. Every
+        # value below is what this rollout actually ran under — the expert knobs come
+        # from the same `config` that built the relabeling expert (`expert_from_config`),
+        # and the speed draw from the same config that seeded the operator. Before
+        # G-2 this blob was an untyped dict that silently omitted `expert_d_far`
+        # (required) and the five optional knobs, so every DAgger episode on disk
+        # violated the declared schema.
+        episode_metadata: EpisodeSpec = {
             "source": "dagger",
             "policy": "learned_residual",
             "master_seed": master_seed,
@@ -199,12 +218,20 @@ def rollout_and_relabel(
             "fingerprint": "dagger",  # rollout-derived, not seed-regenerable
             "max_dpos": max_dpos,
             "joint_damping": joint_damping,
+            "expert_d_far": expert_d_far,
+            "expert_brake_gain": expert_brake_gain,
+            "expert_brake_lead_floor": expert_brake_lead_floor,
+            "delta_clamp": delta_clamp,
+            "speed_lognormal_median": speed_lognormal_median,
+            "speed_lognormal_sigma": speed_lognormal_sigma,
             "target_hole_index": _TARGET_HOLE_INDEX,
             "generated_wall": generated_walls,
             "wall_seed": wall_seed,
             "terminal_reason": logger.terminal_reason.value,
             "episode_success": logger.terminal_reason is TerminalReason.SUCCESS,
-            **thresholds,
+            "success_depth": success_depth,
+            "lateral_tolerance": lateral_tolerance,
+            "force_cap": force_cap,
         }
         logger.recorder.save(path, metadata=episode_metadata)
         return _episode_summary(path, episode_metadata, n_steps=len(logger.recorder))
@@ -212,7 +239,7 @@ def rollout_and_relabel(
         environment.close()
 
 
-def seed_aggregate(base_dir: str | Path, aggregate_dir: str | Path) -> list[dict[str, object]]:
+def seed_aggregate(base_dir: str | Path, aggregate_dir: str | Path) -> list[EpisodeSummary]:
     """Seed the aggregate corpus from ``base_dir`` and return its episode summaries.
 
     The seed corpus's episode folders are **symlinked** (not copied) into
@@ -240,7 +267,7 @@ def seed_aggregate(base_dir: str | Path, aggregate_dir: str | Path) -> list[dict
 
 def append_summaries(
     aggregate_dir: str | Path,
-    all_summaries: list[dict[str, object]],
+    all_summaries: list[EpisodeSummary],
     *,
     config: DatasetConfig | Mapping[str, object] | None = None,
 ) -> None:
@@ -288,13 +315,9 @@ def run_dagger(
     """
     # Heavy / torch-only imports are lazy so the sim-only rollout path (and its
     # tests) need neither torch nor a checkpoint on disk.
-    import subprocess
-    import sys
-
-    from ai_teleop.policy import LearnedResidual
+    from ai_teleop.policy import LearnedResidual, LossConfig, PolicyConfig, TrainConfig
     from ai_teleop.policy.residual_policy import load_checkpoint
-
-    train_script = Path(__file__).resolve().parents[2] / "scripts" / "train_policy.py"
+    from ai_teleop.policy.train import train_policy
 
     base_dir = Path(base_dir)
     aggregate_dir = Path(aggregate_dir)
@@ -345,32 +368,20 @@ def run_dagger(
             len(all_summaries),
         )
 
-        run_name = f"dagger_round{round_index}"
-        vision_flags = (
-            ["--vision", "--freeze-image-encoder", "--num-workers", "4"] if use_vision else []
+        # Retrain on the aggregate. Vision rounds reuse the frozen-encoder recipe and
+        # decode frames in worker processes; an F/T-only base trains F/T-only (LAB-106).
+        trained = train_policy(
+            aggregate_dir,
+            config=PolicyConfig(use_vision=use_vision, freeze_image_encoder=use_vision),
+            loss_config=LossConfig(weight_action_rate=action_rate_weight),
+            train_config=TrainConfig(epochs=epochs),
+            runs_root=runs_root,
+            name=f"dagger_round{round_index}",
+            batch_size=batch_size,
+            num_workers=4 if use_vision else 0,
+            device=device,
         )
-        subprocess.run(
-            [
-                sys.executable,
-                str(train_script),
-                str(aggregate_dir),
-                *vision_flags,
-                "--action-rate-weight",
-                str(action_rate_weight),
-                "--epochs",
-                str(epochs),
-                "--batch-size",
-                str(batch_size),
-                "--device",
-                device,
-                "--runs-root",
-                str(runs_root),
-                "--name",
-                run_name,
-            ],
-            check=True,
-        )
-        current_checkpoint = Path(runs_root) / run_name / "checkpoint.pt"
+        current_checkpoint = trained.checkpoint_path
 
         ablation = _reablate(
             current_checkpoint,

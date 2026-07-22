@@ -1,38 +1,21 @@
-"""Tests for the BC training loop (LAB-34) — ``scripts/train_policy.train``.
+"""Tests for the BC training loop (LAB-34) — ``ai_teleop.policy.train``.
 
 The training core takes prebuilt ``DataLoader``s, so it is exercised on a small
 synthetic corpus with a *learnable* signal (each step's Δ is a fixed linear map of
 that step's inputs) — no sim and no corpus on disk. The acceptance check is the
 spec's "sane curves": both train and validation loss fall over a handful of epochs.
-``scripts/`` is not importable as a package, so it is loaded by file path.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
+import pytest
 import torch
 from torch.utils.data import DataLoader
 
 from ai_teleop.data.dataset import Episode, collate_episodes
-from ai_teleop.policy import PolicyConfig, save_checkpoint
+from ai_teleop.policy import LossConfig, PolicyConfig, TrainConfig, save_checkpoint
 from ai_teleop.policy.residual_policy import load_checkpoint
-
-_TRAIN_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "train_policy.py"
-
-
-def _load_train_module():
-    spec = importlib.util.spec_from_file_location("train_policy", _TRAIN_SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["train_policy"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-train_policy = _load_train_module()
+from ai_teleop.policy.train import _epoch, train, train_policy
 
 
 def _linear_episode(index: int, length: int, weight: torch.Tensor, *, seed: int = 0) -> Episode:
@@ -65,11 +48,11 @@ def test_train_drives_train_and_val_loss_down():
     train_loader = _loader(weight, n_episodes=8, base_index=0, seed=1)
     val_loader = _loader(weight, n_episodes=3, base_index=100, seed=2)
 
-    _, history = train_policy.train(
+    _, history = train(
         train_loader,
         val_loader,
         config=PolicyConfig(hidden_size=32, num_layers=1),
-        train_config=train_policy.TrainConfig(epochs=25, learning_rate=1e-2, patience=25),
+        train_config=TrainConfig(epochs=25, learning_rate=1e-2, patience=25),
     )
 
     assert len(history["train_loss"]) >= 5
@@ -121,10 +104,10 @@ def test_vision_epoch_encodes_cnn_once_per_batch_regardless_of_tbptt():
             return original(*args, **kwargs)
 
         model.per_step_image_embedding = counting  # type: ignore[method-assign]
-        train_policy._epoch(
+        _epoch(
             model,
             loader,
-            train_policy.LossConfig(),
+            LossConfig(),
             device,
             tbptt_steps=tbptt_steps,
             optimizer=torch.optim.Adam(model.parameters()),
@@ -162,3 +145,11 @@ def test_checkpoint_persists_training_history(tmp_path):
     loaded = load_checkpoint(path)
     assert loaded.train_history == history
     assert loaded.policy_checkpoint_version != "unknown"
+
+
+def test_train_policy_rejects_a_non_dataset_directory(tmp_path):
+    """The programmatic seam `ai_teleop.dagger` calls *raises*; the CLI front door is
+    what turns that into exit code 2. Before G-1 the only entry point was a
+    subprocess, so a bad corpus path surfaced as a CalledProcessError with no type."""
+    with pytest.raises(FileNotFoundError, match="metadata.json"):
+        train_policy(tmp_path)
