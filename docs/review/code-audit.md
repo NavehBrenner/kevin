@@ -1173,3 +1173,30 @@ have checked almost nothing while reporting a green gate — type-checking theat
 `src/` was already clean under `check_untyped_defs`, so the flag is set globally rather than
 per-module. Gate coverage went **60 → 86 files**. `scripts/` (19 errors in 8 files, including
 the Pillow-10 break in the demo-grid tool) stays out — that remains LAB-113.
+
+---
+
+## I. Observed while writing the architecture tour (stage 1D, 2026-07-22)
+
+Read-only stage; recorded here rather than fixed.
+
+### I-1 · Two modules have no module docstring, and D-1's claim about that is now stale · **FIX (trivial)**
+
+`policy/config.py` and `policy/model.py` open on an import, with no module docstring. Every
+other module in `src/` has one, and they are load-bearing — the tour was written almost
+entirely out of them.
+
+These two are the least excusable places for the gap: `config.py` owns `PolicyConfig`, the
+dataclass serialized into every checkpoint (so its back-compat rule — *every new field must be
+defaulted* — is stated nowhere at module level), and `model.py` owns `ResidualPolicy`, whose
+dual `forward`/`step` surface is the whole train-vs-deploy contract. The class docstrings carry
+some of it; the package `__init__` carries the architecture rationale. Neither is where a
+reader lands when they open the file.
+
+Also a correction to **D-1**, which asserted `common/utils/rotations.py` was *"the only module
+in `src/` with no docstring"*. That was wrong when written — these two predate it — and the
+sentence is now doubly stale since D-1's merge deleted `common/utils/` entirely.
+
+**Verdict: FIX (trivial)** — two paragraphs. Worth a mechanical check in the gate rather than a
+one-time fix, since the convention is otherwise perfect: ruff's `D100` over `src/` would hold
+it, and would currently flag exactly these two files.
