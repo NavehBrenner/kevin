@@ -239,7 +239,13 @@ number G2 produces anyway.
 - [x] ≥5 seeds trained and evaluated at 100 paired seeds; spread reported with mean and range.
 - [x] `best_val_loss` vs closed-loop success plotted across those seeds.
 - [ ] The Phase-1 claim rewritten as a distribution, in `docs/phase-1-results.md` and D-4.
-- [ ] M7's sign-claims audited against the measured spread (wording only, no new compute).
+- [x] M7's sign-claims audited against the measured spread (wording only, no new compute).
+      Done S5, wiki-side only — `docs/` carries no M7 numbers (1B: `phase-1-results.md` is the
+      only doc with a measured outcome). `concepts/vision-conditioned-policy` now reads *"no
+      vision benefit was detectable at any operating point tested"*; the margins that survive
+      (40 vs 10, 40 vs 15) are separated from the draws (35 vs 40, 40 vs 30) in
+      `synthesis/imitation-limits-closed-loop`; the noise floor itself is
+      `concepts/training-seed-variance`.
 - [ ] LAB-42 / LAB-101 updated with the outcome; this file deleted or folded into D-4.
 
 ## Before you start — two things left in a fragile state (2026-07-22)
