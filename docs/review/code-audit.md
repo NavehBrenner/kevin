@@ -632,6 +632,142 @@ already exists, at a **+12 pp** lift rather than +33.3 pp, at an older operating
 must place it in the ledger; D-6 must score that candidate knowing it is a *re*-run at the
 current operating point, not a first measurement.
 
+### H-8 · The checkpoint behind the headline result no longer exists · **RETRAIN (decided)**
+
+Elaborating H-7 turned up something worse than a stale run. `docs/phase-1-results.md:159-166`
+gives the repro recipe for the project's flagship positive: train on `data/dataset_9`, run
+the paired ablation in-band. The checkpoint that produced 36.7 → **70.0%** is described in the
+wiki as *"a CPU-trained checkpoint on `dataset_9`, early-stopped at epoch 22"*
+(`concepts/privileged-learning.md:178`) and named `lab38_ft_residual` in the recipe.
+
+**It is not on disk.** Thirteen checkpoints survive under `outputs/policy/runs/`; every one is
+`device: cuda`, and **none** was trained on `dataset_9` — they are `dataset_1`
+(`lab34_baseline`), `dataset_vision` (the whole M7 family), or `dagger_ft_agg`. `outputs/` is
+gitignored (`.gitignore:55`), so nothing preserved it.
+
+Consequences, in order of how much they hurt:
+
+1. **The headline cannot be re-evaluated at any n.** Not at 100 seeds, not at 30. Every
+   forward-looking use of that result requires a retrain first.
+2. **A retrain is a different policy.** Different device, different epoch count, different
+   init — so a new number *replaces* 36.7 → 70.0 rather than refining it. This is why D-6's
+   "scale to ~100 seeds — pure compute, zero research risk" was mis-scored: the compute is
+   trivial (~15 min, below), but the research risk is real.
+3. **It is the second irreplaceable-artifact loss**, after `scripts/dev/lab104_residual_magnitude.py`
+   (finding F correction). Both are untracked artifacts that documentation depends on. The
+   pattern, not the instance, is the finding: *if a doc cites it, the repo must carry it or
+   the doc must say it is gone.*
+
+**How loosely the headline is pinned.** +33.3 pp rests on **12 discordant pairs** (11 won by
+the residual, 1 by human-only). McNemar's p=0.006 establishes the *sign*; it says nothing
+about the magnitude. Exact (Clopper-Pearson, conditional on the discordant count) intervals —
+`scripts/dev/lab42_headline_interval.py`, new, kept:
+
+| Result | pairs | discordant | difference | McNemar p | 95% CI |
+|---|---|---|---|---|---|
+| band es0.4 (**headline**) | 30 | 12 (11/1) | **+33.3 pp** | 0.006 | **+9.2 … +39.8 pp** |
+| flat wall es1.0 | 30 | 4 (2/2) | +0.0 pp | 1.000 | −11.5 … +11.5 pp |
+| 100-seed LAB-53 | 100 | 30 (21/9) | +12.0 pp | 0.043 | +0.4 … +21.2 pp |
+
+The headline effect is solidly positive and its size is wide open — a 30-point-wide interval
+behind a number quoted to one decimal. That is the actual case for more seeds, and it is a
+stronger case than "the run is preliminary".
+
+**Verdict: RETRAIN + 100 seeds** (Naveh, 2026-07-22), and — deliberately breaking the review's
+*no re-runs in Phases 0–3* constraint for this one item — **run it now, in parallel with 1B/1D**
+rather than deferring to D-6, so D-4 is written against final numbers instead of preliminary
+ones. The constraint existed to stop the review turning into another research arc; a 118-second
+retrain and a ~15-minute eval is not that. Recorded here because a plan constraint was
+knowingly relaxed, not forgotten.
+
+Cost, measured rather than estimated: `ftonly_ar100`'s metadata records **118 s wall** for an
+F/T-only GPU train, and the LAB-53 log ran **200 trials in 13 min 10 s** on CPU
+(`runs/eval/run.log`, 12:15:53 → 12:29:03). The retrain folds in LAB-104's action-rate penalty
+(`--action-rate-weight 100`), which `phase-1-results.md:175` and the M6 spec already name as
+the intended next step for the 5× jerk regression.
+
+### H-9 · Loading a corpus can silently regenerate it **and rewrite its committed manifest** · **FIX**
+
+Found by consequence, not by reading: acting on H-8 (retrain on `dataset_9`) produced
+
+```
+INFO  [train] loading corpus from data/dataset_9 ...
+INFO  [dataset] Missing 15 episodes. Regenerating from metadata...
+```
+
+and, as a side effect of a **read**, rewrote the tracked `data/dataset_9/metadata.json` —
+stamping `generated_at` from `2026-07-06T21:24:10Z` to today. No prompt, no warning level,
+no `--force`. The manifest is the provenance of the project's headline result; a load path
+must not be able to overwrite it. Restored from git; both versions kept as evidence.
+
+Two separate defects in one line of log output:
+
+1. **A read path writes.** `--force` exists on the *generation* CLI precisely so a rebuild is
+   opt-in; the loader bypasses that intent entirely. Fix: regeneration on load should require
+   an explicit flag, and it must never rewrite `metadata.json` — a rebuilt episode can be
+   written without restamping the corpus's identity.
+2. **It regenerates against an unchanged fingerprint.** Which is C-1a/G-4's hole, now firing
+   on a corpus that matters.
+
+**And it falsified G-4's carve-out.** G-4 concluded *"the quoted results are safe —
+`dataset_9` and `dataset_vision` are post-LAB-91."* Comparing the committed manifest against
+the one the reload produced (both saved under the session scratchpad):
+
+| | committed | re-derived 2026-07-22 |
+|---|---|---|
+| fingerprint | `54dccad9cc778bba` | **identical** |
+| config | — | **identical** |
+| expert success | 143 / 200 | **143 / 200** |
+| terminal reasons | — | **all 200 match** |
+| episodes with a different `n_steps` | — | **35 of 200** |
+| largest divergences | — | ep25 7389 → 7438; **ep32 8061 → 3978** |
+
+So the *labels* are stable and the *trajectories* are not. For a BC corpus the trajectories
+**are** the training data, so `dataset_9` is not exactly reconstructible either — the
+post-LAB-91 exemption was too generous, and the honest statement is that **no corpus in this
+repo is byte-reproducible from its manifest**; some merely drift less than others.
+
+Compounding H-8: `dataset_9` was **already 15 episodes short on disk** before any of this —
+episodes are gitignored, so those originals were never recoverable. The corpus behind the
+headline result was incomplete, and nothing said so.
+
+**Verdict: FIX** (the read-path write, in Phase 2/3) and **DOCUMENT** (the reproducibility
+claim in `docs/data-schema.md`, already flagged by G-4, now with a measured example).
+
+**Action taken (2026-07-22, Naveh's call):** rather than train on the resulting hybrid
+(185 original + 15 regenerated episodes), the corpus was **rebuilt wholesale** from
+`dataset_9`'s committed config into a *new* directory — `generate_dataset.py --from-metadata
+data/dataset_9/metadata.json --out data/dataset_10 --force` — so the retrain runs on a corpus
+that is internally consistent, self-dated, and honestly described as *"dataset_9's config,
+generated under 2026-07-22 code."* `dataset_9` itself is left alone. Note `dataset_10` will
+carry the **same fingerprint** as `dataset_9` with different trajectories — the clearest
+possible demonstration of G-4, now sitting in the repo as two directories. The checkpoint
+trained on the hybrid was discarded rather than annotated.
+
+### H-7 addendum · the outcome mix shows the mechanism
+
+`scripts/dev/lab42_outcome_breakdown.py` (new, kept) prints each config's success /
+force-abort / timeout split. Two things fall out that no document currently states:
+
+| eval set | date | human_only | residual | median peak F |
+|---|---|---|---|---|
+| 100-seed LAB-53 | 06-28 | 31 / **0** / 69 | 43 / **0** / 57 | 27.8 → 24.5 N |
+| band es0.4 (headline) | 07-07 | 11 / **19** / 0 | 21 / **9** / 0 | 32.6 → 24.3 N |
+| flat wall es1.0 | 07-07 | 6 / **21** / 3 | 6 / **21** / 3 | 31.3 → 31.7 N |
+| every M7 set | 07-08…10 | ~3 / ~13 / ~4 | ~4 / ~14 / ~2 | 31–33 N |
+
+1. **The residual's lever is preventing the force-abort, and only in-band.** In the chamfer
+   band it halves force-aborts (19 → 9) and drops median peak force 32.6 → 24.3 N. On the flat
+   wall it changes neither (21 → 21; 31.3 → 31.7 N). That is
+   [[concepts/privileged-learning]]'s identifiability ceiling readable straight off the outcome
+   counts — a mechanism-level result for D-4 that costs nothing to state.
+2. **The 100-seed run measured a different task.** It is the only eval set with *zero*
+   force-aborts, and its median peak force (27.8 N) sits *below* the 30 N observer cap while
+   every later set sits *above* it (31–33 N). The whole force distribution moved up ~5 N when
+   the scripted operator stopped teleporting-and-freezing (LAB-78, then LAB-91/96/98/100). Its
+   +12 pp is not a weaker measurement of the same quantity — it is a measurement of a task
+   that no longer exists, five behaviour changes back. **Ledger row, not reusable data.**
+
 ### Outcomes — H-1…H-6 applied (2026-07-22)
 
 Gate green after: ruff clean, mypy **86 files**, **230 → 233 tests**.
