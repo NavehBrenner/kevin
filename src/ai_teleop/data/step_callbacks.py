@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 from ai_teleop.common.seating import SeatingGeometry
 from ai_teleop.control import Controller, LockState
@@ -39,8 +40,9 @@ class _SeatingMetrics:
     """Seating geometry plus the force read needed to decide termination.
 
     The geometry (penetration / lateral error / distance) comes from the shared
-    ``common.seating`` definition so generation and the M6 eval harness cannot
-    drift on what "seated" means; the force magnitude is data-generation's own
+    ``common.seating`` definition so generation and the M6 eval harness cannot drift on
+    what "seated" *measures* — the rule each applies to it does differ (see
+    :func:`episode_terminal_reason`); the force magnitude is data-generation's own
     concern. The termination *policy* is the module-level
     :func:`episode_terminal_reason` so any caller can reuse it without coupling to
     this private struct.
@@ -69,7 +71,12 @@ def episode_terminal_reason(
 
     Shared by data generation *and* the ``kvn episode`` run CLI so the two can't
     drift on when an episode is "over" (the structural cause of replays not
-    matching their generated episode). SUCCESS once seated; FORCE_ABORT if the
+    matching their generated episode). **Not shared with the M6 eval harness** —
+    :class:`~ai_teleop.eval.observer.TrialObserver` scores the same geometry under a
+    stricter rule (seating must be *sustained*; a 30 N raw-force cap and no ``locked``
+    check), so corpus success rates are an upper bound on eval success rates for the
+    same rollout. LAB-42 finding H-4; the asymmetry is spelled out in ``observer.py``.
+    SUCCESS once seated; FORCE_ABORT if the
     controller's force-cap watchdog has latched HOLD (``locked`` — the arm is
     frozen, so further steps are dead frames) or the raw wrist force exceeds
     ``force_cap``; else ``None`` to keep going. Takes primitives (not the private
@@ -175,9 +182,9 @@ class EpisodeLogger:
         self,
         step: int,
         observation: Observation,
-        base_command,
+        base_command: Command,
         delta: Delta,
-        command,
+        command: Command,
     ) -> bool:
         metrics = _SeatingMetrics(observation, self._target_hole_index)
         reason = episode_terminal_reason(
@@ -259,7 +266,12 @@ class TerminationProbe:
         self._force_cap = force_cap
 
     def __call__(
-        self, step: int, observation: Observation, base_command, delta: Delta, command
+        self,
+        step: int,
+        observation: Observation,
+        base_command: Command,
+        delta: Delta,
+        command: Command,
     ) -> bool:
         metrics = _SeatingMetrics(observation, self._target_hole_index)
         reason = episode_terminal_reason(

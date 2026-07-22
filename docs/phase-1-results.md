@@ -94,16 +94,20 @@ calibrated band. Vision (M7) is what lifts the success ceiling into the free-spa
 
 ### In the chamfer-contact band (error-scale 0.4) — the headline
 
-| KPI | human_only | residual | Δ (paired) | p |
-|---|---|---|---|---|
-| **Success rate** | 36.7% | **70.0%** | **+33.3 pp** | **0.006** |
-| Time to insert (s) | 7.53 | 7.58 | +0.04 s | 0.557 |
-| Peak contact force (N) | 29.61 | 24.22 | −5.40 N | 0.092 |
-| Contact events | 1.00 | 1.00 | +0.00 | — |
-| Trajectory jerk (∫\|jerk\|) | 31.15 | 149.06 | +117.91 | <0.001 |
+| KPI | n | human_only | residual | Δ (paired) | p |
+|---|---|---|---|---|---|
+| **Success rate** | 30 | 36.7% | **70.0%** | **+33.3 pp** | **0.006** |
+| Time to insert (s) | 10 | 7.53 | 7.58 | +0.04 s | 0.557 |
+| Peak contact force (N) | 30 | 29.61 | 24.22 | −5.40 N | 0.092 |
+| Contact events | 30 | 1.00 | 1.00 | +0.00 | — |
+| Trajectory jerk (∫\|jerk\|) | 30 | 31.15 | 149.06 | +117.91 | <0.001 |
 
 Paired over 30 matched seeds — discordant success pairs: **11 won by residual, 1 by
 human_only** (both 10, neither 8). Records: `results/phase-1/band_scale0.4_trials.csv`.
+
+**Read the `n` column.** Time-to-insert is defined only on a seated trial, so a pair
+contributes to it only when *both* arms seated — 10 of the 30 seeds here, not 30. Its
+p=0.557 is over those 10 pairs. The other KPIs are over all 30.
 
 ![Insertion success, assist off vs on](results/phase-1/success_rates.png)
 
@@ -117,13 +121,17 @@ trajectory jerk ~5×** (31 → 149) — see the caveat below.
 
 ### At the training σ's (error-scale 1.0) — the flat-wall ceiling check
 
-| KPI | human_only | residual | Δ (paired) | p |
-|---|---|---|---|---|
-| **Success rate** | 20.0% | 20.0% | +0.0 pp | 1.000 |
-| Time to insert (s) | 9.14 | 8.94 | −0.19 s | 0.625 |
-| Peak contact force (N) | 31.73 | 31.67 | −0.07 N | 0.903 |
-| Contact events | 1.00 | 1.00 | +0.00 | — |
-| Trajectory jerk (∫\|jerk\|) | 40.38 | 155.77 | +115.39 | <0.001 |
+| KPI | n | human_only | residual | Δ (paired) | p |
+|---|---|---|---|---|---|
+| **Success rate** | 30 | 20.0% | 20.0% | +0.0 pp | 1.000 |
+| Time to insert (s) | 4 | 9.14 | 8.94 | −0.19 s | 0.625 |
+| Peak contact force (N) | 30 | 31.73 | 31.67 | −0.07 N | 0.903 |
+| Contact events | 30 | 1.00 | 1.00 | +0.00 | — |
+| Trajectory jerk (∫\|jerk\|) | 30 | 40.38 | 155.77 | +115.39 | <0.001 |
+
+Only **4** of the 30 seeds seated on both arms, so the time-to-insert row is a 4-pair
+comparison — a signed-rank test cannot reach p<0.05 below n=6, so read that row as
+"not measurable here", not "measured and null".
 
 Paired over 30 matched seeds (2 discordant success pairs each way → net zero). Records:
 `results/phase-1/flatwall_scale1.0_trials.csv`. Exactly as the ceiling predicts: on the

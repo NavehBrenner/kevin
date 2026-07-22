@@ -13,6 +13,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from ai_teleop.eval.report import (
     build_report,
     compare_paired,
@@ -230,3 +232,53 @@ def test_paired_table_reports_discordant_footer() -> None:
 
     assert "matched seeds" in table
     assert "won by residual" in table
+
+
+def test_paired_table_reports_each_kpi_own_pair_count() -> None:
+    """A success-only KPI's n is *not* the footer's matched-seed count (LAB-42 H-4).
+
+    Ten matched seeds, but only two where both arms seated — so time-to-insert's p is
+    over 2 pairs, not 10. Rendering that n is the whole point: below n=6 a signed-rank
+    test cannot reach p<0.05, and a reader who assumes the footer's 10 cannot know that.
+    """
+    both_success = range(2)
+    baseline = [make_kpi(seed=s, config_label="human_only") for s in both_success] + [
+        make_kpi(seed=s, config_label="human_only", outcome=TrialOutcome.TIMEOUT)
+        for s in range(2, 10)
+    ]
+    treatment = [make_kpi(seed=s, config_label="residual") for s in range(10)]
+    comparison = compare_paired(
+        baseline, treatment, baseline_label="human_only", treatment_label="residual"
+    )
+
+    time_stat = next(s for s in comparison.kpi_stats if s.label == "Time to insert")
+    force_stat = next(s for s in comparison.kpi_stats if s.label == "Peak contact force")
+    assert (time_stat.n_pairs, force_stat.n_pairs) == (2, 10)
+
+    table = format_paired_table(comparison)
+    time_row = next(line for line in table.splitlines() if line.startswith("| Time to insert"))
+    assert time_row.split("|")[2].strip() == "2"
+    assert "Paired over 10 matched seeds" in table
+
+
+def test_marginal_table_carries_n_for_success_only_kpis() -> None:
+    """The time-to-insert mean is over successes only, so its cell states that n."""
+    trials = [make_kpi(seed=0, config_label="human_only")] + [
+        make_kpi(seed=s, config_label="human_only", outcome=TrialOutcome.TIMEOUT)
+        for s in range(1, 4)
+    ]
+    table = format_marginal_table([summarize_config("human_only", trials)])
+
+    time_row = next(line for line in table.splitlines() if line.startswith("| Time to insert"))
+    force_row = next(line for line in table.splitlines() if line.startswith("| Peak contact force"))
+    assert "(n=1)" in time_row  # one success out of four trials
+    assert "(n=" not in force_row  # over every trial — the success row already states 4
+
+
+def test_pair_by_seed_rejects_a_repeated_seed() -> None:
+    """Concatenated eval sets reuse seeds; silently overwriting them would fake a result."""
+    baseline = [make_kpi(seed=0, config_label="human_only")] * 2
+    treatment = [make_kpi(seed=0, config_label="residual")]
+
+    with pytest.raises(ValueError, match="repeated seeds"):
+        pair_by_seed(baseline, treatment)

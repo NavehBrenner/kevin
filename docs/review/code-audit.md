@@ -458,6 +458,204 @@ base rather than writing a fake one.
 
 ---
 
+## H. Round-2 findings — the eval path (2026-07-22)
+
+Read line-by-line: `eval/report.py` (599), `eval/observer.py` (213), `eval/trace.py` (190),
+`sim/runner.py` (208), `data/step_callbacks.py` (277), plus `eval/ablation.py`'s trial loop.
+This is the path Phase 3's KPI dashboard is built on, so it was read for **correctness first**.
+
+**The reassuring headline: `report.py`'s statistics are right.** The McNemar p is the exact
+binomial over the discordant split (`report.py:263`) — correct, not the χ² approximation.
+Wilcoxon is guarded against the all-zero-difference case (`:312`). `pair_by_seed` drops
+unmatched seeds rather than silently zero-filling. And the marginal and paired success rates
+use different denominators (all trials vs matched pairs) but **agree on every committed
+`trials.csv`** — verified by `scripts/dev/lab42_report_audit.py` (new, kept) over all eight
+files. No number in the Phase-1 doc is wrong because of this module.
+
+What is wrong is what the module **doesn't say**, and one constant it copies.
+
+### H-1 · The paired table prints p-values without their sample size · **FIX**
+
+`KpiPairedStat` computes `n_pairs` per KPI (`report.py:201`) and `format_paired_table` never
+renders it (`:396-412`). The only pair count a reader sees is the footer's *overall* count
+(`:414`). For a `success_only` KPI those two numbers are wildly different — time-to-insert
+contributes only when **both** trials seated (`:286`), so at 10–40% success rates the per-KPI
+n collapses to single digits while the footer still says 20 or 30.
+
+This is **already published**. `docs/phase-1-results.md:123` reads:
+
+| KPI | human_only | residual | Δ (paired) | p |
+|---|---|---|---|---|
+| Time to insert (s) | 9.14 | 8.94 | −0.19 s | 0.625 |
+
+under the footer *"Paired over 30 matched seeds"*. Recomputed from the committed records
+(`docs/results/phase-1/flatwall_scale1.0_trials.csv`): that p is over **4 pairs**. The
+headline table's `p=0.557` (`:100`) is over **10**. Across the six eval sets the audit script
+finds per-KPI p-values over **1 or 2 pairs** presented under a 20-seed footer — e.g.
+`runs/eval_ftgate_es0p4/`, human_only vs ftonly, *"Time to insert p=1.000"* over **one** pair.
+A signed-rank test cannot return p<0.05 below n=6 at all, so those cells are structurally
+incapable of significance and nothing on the row says so.
+
+Nothing is miscalculated — the number is the correct p for the pairs that exist. But a grader
+reading the table gets the wrong n. Same gap on the marginal side: `KpiStat.n` (`:126`) is
+computed and never rendered, so `format_marginal_table` shows a time-to-insert **mean over
+successes only** in a column headed by a 20-trial config.
+
+**Verdict: FIX** — add an `n` column to both tables (the fields already exist; this is
+rendering, not new statistics), and regenerate `docs/phase-1-results.md`'s tables from the
+committed CSVs in Phase 3. Two further fields are computed and never rendered anywhere:
+`KpiStat.median` / `.std` (`:128-129`) and `KpiPairedStat.median_delta` (`:205`) — and the
+wiki quotes *"median peak force 27.5→24.5 N"* for the LAB-53 run, a number the reporting tool
+**cannot currently produce**. D-4 wants medians for the skewed KPIs (jerk, time-to-insert);
+rendering the three dead fields is the same one-line-per-column change.
+
+### H-2 · The runner's only extension seam is the one untyped contract in `src/` · **FIX**
+
+`run_episode`'s `step_callback` parameter has **no annotation at all** (`sim/runner.py:84`) —
+implicit `Any`. Every other parameter in that signature is typed. It is not a minor hook: it
+is how data generation records the BC corpus, how the eval harness computes every KPI, and
+how DAgger relabels. Five implementations, four different signatures:
+
+| Implementation | Signature |
+|---|---|
+| `sim/runner.py:84` (the contract) | *unannotated* |
+| `eval/observer.py:128` `TrialObserver.__call__` | `base_command: object, delta: object, command: object` |
+| `data/step_callbacks.py:174` `EpisodeLogger.__call__` | `base_command`, `command` **bare**; `delta: Delta` |
+| `data/step_callbacks.py:261` `TerminationProbe.__call__` | same partial shape |
+| `eval/ablation.py:191` (inline closure) | all five params bare |
+
+So the same 5-argument, `bool`-returning contract is written four ways and enforced nowhere —
+mypy checks neither the arity, nor the argument types, nor the return. This is **G-2 one level
+up**: the contract is asserted where it is consumed and untyped where it is defined. It is
+also why the *"returning a truthy value ends the episode"* protocol (`runner.py:160`,
+`bool(step_callback(...))`) has no compiler support, and C-1a already found that these
+truthy returns shape trajectories.
+
+**Verdict: FIX (small)** — one `StepCallback` alias next to `run_episode`
+(`Callable[[int, Observation, Command, Delta, Command], bool]`), annotate the parameter, and
+annotate the five implementations. Parameter types are contravariant, so `TrialObserver`'s
+`object` params stay legal. ~10 lines; mypy then checks all five sites. **No new Protocol** —
+a callable alias is the whole contract, and B-1's rule says don't build a seam where a type
+does.
+
+### H-3 · `INSERTION_MAX_STEPS` is a hardcoded copy of the data-gen budget — the LAB-107 bug class · **FIX (one line)**
+
+`eval/ablation.py:73` declares `INSERTION_MAX_STEPS = 9000` with a comment saying it *"moves
+in lockstep with data.generate.DEFAULT_MAX_STEPS"*. Lockstep by comment. Nine lines above it,
+the same file does the correct thing for the sibling constant:
+
+```python
+from ai_teleop.data.generate import DEFAULT_MAX_DPOS as _DATAGEN_MAX_DPOS   # ablation.py:39
+DEFAULT_MAX_DPOS = _DATAGEN_MAX_DPOS                                        # ablation.py:65
+```
+
+One knob is linked, the identically-motivated one next to it is copied. And this exact
+divergence is a **bug the project has already paid for**: LAB-107 was a harness bug where eval
+ran at `max_steps` 5000 while data-gen used 9000, which made cross-path numbers
+incomparable — the reason `master` needed that fix before the review could start.
+
+A third value of the same name is still live: `sim/runner.py:38` `DEFAULT_MAX_STEPS = 5000`,
+imported by `scripts/run_episode.py:67` and used as its fallback budget (`:474`). So
+`DEFAULT_MAX_STEPS` names **two different numbers** in two modules, and whichever one a new
+caller imports silently sets a different task. `dagger.py:54` gets the 9000 one (from
+`data.generate`) — correctly, but by import discipline alone.
+
+**Verdict: FIX** — `INSERTION_MAX_STEPS = _DATAGEN_MAX_STEPS`, mirroring the line above it,
+and rename `runner.DEFAULT_MAX_STEPS` to `DEFAULT_VIEWER_MAX_STEPS` (or similar) so the two
+constants cannot be confused at an import site.
+
+### H-4 · Data-gen and eval do **not** share the success definition, and both files say they do · **DOCUMENT**
+
+`observer.py:53-55` states the shared-definition claim outright: *"the one shared definition
+data-gen and this harness both use, so a 'success' here means the same thing it meant when
+the BC corpus was scored."* `step_callbacks.py:41-46` makes the mirror claim. What they
+genuinely share is the **geometry** (`common/seating.py` — penetration, lateral error). The
+**decision rule on top of it differs**, in two ways:
+
+| | data-gen (`episode_terminal_reason`, `step_callbacks.py:78-82`) | eval (`TrialObserver.__call__`, `observer.py:157-169`) |
+|---|---|---|
+| Seating | SUCCESS on the **first** seated step | must hold `sustained_duration_s` = 0.05 s (25 ticks) |
+| Force abort | `locked or force > 50 N` (`generate.DEFAULT_FORCE_CAP`) | `force > 30 N`, **no `locked` check** |
+
+The force asymmetry *is* documented, carefully, at `observer.py:64-70` (LAB-94). The
+**sustained-seating asymmetry is documented nowhere** — the string `sustain` does not appear
+anywhere in `data/`. The bias has a known direction: a transient touch that pops back out
+scores as a data-gen success and an eval timeout, so **corpus-reported success rates are
+upper bounds on eval-reported success rates for the same rollout.** Any sentence comparing a
+corpus success rate with an eval success rate is therefore comparing two metrics.
+
+Not a bug — both definitions are defensible, and eval's stricter one is the right one for a
+headline. But it is a live trap for D-4's operating-point ledger, which has to reconcile
+human-only baselines quoted at 36.7 / 35 / 31 / 20 / 15%. **Verdict: DOCUMENT** — correct the
+two docstrings to claim shared *geometry* rather than shared *success*, and give the ledger a
+"scored by" column (data-gen probe vs `TrialObserver`). Do **not** unify the rules: changing
+either one invalidates every committed number, and no re-runs are in budget.
+
+### H-5 · `pair_by_seed` silently collapses duplicate seeds · **FIX (small guard)**
+
+`report.py:236` builds `{t.seed: t for t in treatment}`. A repeated seed on the treatment side
+is silently overwritten (last row wins); a repeated seed on the baseline side silently emits
+two pairs against that single survivor. Either way the paired result is computed over a
+quietly wrong set and the footer's pair count still looks plausible.
+
+Verified **not live**: no duplicate seeds in any of the eight committed `trials.csv`
+(`scripts/dev/lab42_report_audit.py`). It becomes live the moment Phase 3 concatenates eval
+sets to compare operating points — different runs reuse seeds 0…19 by construction, so
+`cat`ing two files guarantees collisions.
+
+**Verdict: FIX** — raise on a duplicate `(config_label, seed)` in `load_trials` or
+`pair_by_seed`. This is the trust boundary between raw records and every headline number in
+the project; a loud failure is cheap and a silent one is not recoverable after the fact.
+
+### H-6 · A zero paired delta plots as a regression · **FIX (trivial)**
+
+`KpiPairedStat.treatment_better` returns `None` when `mean_delta == 0.0` (`report.py:212`),
+and `plot_paired_deltas` colors on truthiness (`:489`), so an exactly-flat KPI renders in the
+regression red. The `contact_events` KPI is exactly 1.00 on both arms in both published
+tables, so this is the *expected* case, not a corner. One-line fix; it is in a D-4 plot.
+
+### H-7 · Archaeology note (feeds 1C / D-4, not a code fix)
+
+`runs/eval/trials.csv` — untracked, 2026-06-28 — is the **LAB-53 100-seed** paired run:
+human_only **31.0%** → residual **43.0%** over 100 matched seeds, matching the wiki's
+`index.md:30` figure. Two things make it non-comparable to the Phase-1 headline (36.7 → 70.0%,
+30 seeds, 2026-07-07) beyond the operating point:
+
+- its outcome mix is **74 success / 126 timeout and zero force-aborts**, while every later
+  eval set is ~70% force-abort (41/60 typical). The observer's force cap moved 50 → 30 N
+  (LAB-94) between them, so "timeout" and "force_abort" do not partition the same way.
+- it predates the LAB-100 step-budget change (6000 → 9000).
+
+It matters because Phase 4's go-forward list proposes *"scale the Phase-1 ablation to ~100
+paired seeds"* as the low-risk way to upgrade the positive result — and a 100-seed run
+already exists, at a **+12 pp** lift rather than +33.3 pp, at an older operating point. D-4
+must place it in the ledger; D-6 must score that candidate knowing it is a *re*-run at the
+current operating point, not a first measurement.
+
+### Outcomes — H-1…H-6 applied (2026-07-22)
+
+Gate green after: ruff clean, mypy **86 files**, **230 → 233 tests**.
+
+| # | Status | What landed |
+|---|---|---|
+| H-1 | ✅ done | `n` column in the paired table; `(n=…)` on success-only cells in the marginal table. **Published tables regenerated** — `docs/phase-1-results.md`'s two tables now carry n and a one-line read-this note. Every other number reproduced **byte-identically** from the committed CSVs (36.7 / 70.0 / +33.3 pp / p=0.006 unchanged), so this is disclosure, not a restatement. `median`/`std`/`median_delta` deliberately still unrendered — D-4 decides whether its tables want medians; adding columns nobody has asked for is the wrong default. |
+| H-2 | ✅ done | `StepCallback` alias in `sim/runner.py`, the parameter annotated, and the four partially/un-annotated implementations completed. **Mutation-verified**: retyping `EpisodeLogger.__call__`'s `delta` to `int` now fails mypy at `generate.py:470` *and* `dagger.py:199` with *"incompatible type EpisodeLogger; expected Callable[[int, Observation, Command, Delta, Command], bool]"* — before, that argument was `Any` and accepted anything. `TrialObserver.__call__` keeps its `object` params (contravariance makes them legal, and they honestly say "unused here"). |
+| H-3 | ✅ done | `INSERTION_MAX_STEPS = _DATAGEN_MAX_STEPS`, mirroring the `DEFAULT_MAX_DPOS` alias nine lines above. `runner.DEFAULT_MAX_STEPS` → **`DEFAULT_LIVE_MAX_STEPS`** (3 call sites in `run_episode.py`), with a comment naming LAB-107 — so `DEFAULT_MAX_STEPS` now means exactly one number in the codebase. |
+| H-4 | ✅ done (documented) | The false shared-success claim corrected in both directions: `observer.py` now spells out the two-way asymmetry (sustained seating; 30 N raw vs 50 N + `locked`) and its consequence — corpus success is an **upper bound** on eval success for the same rollout — and `episode_terminal_reason` points at it. Rules deliberately **not** unified: either change invalidates every committed number, and no re-runs are in budget. |
+| H-5 | ✅ done | `pair_by_seed` raises on a repeated seed in either arm, naming the concatenated-eval-set cause. Regression test asserts it. |
+| H-6 | ✅ done | An exactly-flat KPI plots grey (matching the palette's baseline grey) instead of regression red. |
+| H-7 | — | Archaeology, not a code fix — carried to D-4/D-6 via `PROJECT-REVIEW.md`. |
+
+Three tests added (`test_eval_report.py`): the per-KPI pair count is rendered and differs from
+the footer's matched-seed count; the marginal table carries `n` only for success-only KPIs;
+a repeated seed raises. The first is the one that matters — the paired table gained a column
+and the **existing** suite stayed green, which is why it needed a guard.
+
+Verified end to end: `kvn smoke --no-viewer`, `kvn episode --seed 7 --headless --max-steps 2000`,
+and `report_results.py` over both committed Phase-1 CSVs.
+
+---
+
 ## Coverage — what this round actually read
 
 Honest scope, so round 2 knows where to look:
@@ -472,6 +670,16 @@ Honest scope, so round 2 knows where to look:
 
 Round 2 priority: `data/generate.py` (C-1's target) and `eval/report.py` — the latter feeds
 the KPI dashboard, so a bug there would corrupt Phase 3.
+
+**Round 2 (2026-07-22) closed the eval path** — `eval/{report,observer,trace}.py`,
+`sim/runner.py`, `data/step_callbacks.py`, `eval/ablation.py`'s trial loop all read
+line-by-line (section H). `data/generate.py` was read closely during C-1's fix rather than as
+an audit pass.
+
+**Still not read line-by-line after round 2:** `data/dataset.py`, `sim/scene.py`, `dagger.py`,
+`input/{vision_input,scripted_noisy_human,hand_tracker}.py`, the test suite. Of these,
+`data/dataset.py` is the one with a correctness stake (D-2's stream-assembly guard lives
+there); the rest are lower risk for Phase 3.
 
 ---
 

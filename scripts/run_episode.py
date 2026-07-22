@@ -64,7 +64,7 @@ from ai_teleop.input import (  # noqa: E402
     calibrate_neutral,
 )
 from ai_teleop.sim.config import EnvConfig  # noqa: E402
-from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, SIM_DT, run_episode  # noqa: E402
+from ai_teleop.sim.runner import DEFAULT_LIVE_MAX_STEPS, SIM_DT, run_episode  # noqa: E402
 from ai_teleop.sim.scene import DEFAULT_WRIST_RENDER_EVERY, SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
 
@@ -453,7 +453,7 @@ def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
 
     A replay plays back exactly the recorded commands, so it runs for the recorded length;
     a regenerated baseline (see ``replay_as_baseline``) runs for the recorded baseline length
-    so it reproduces the scored human-only rollout; live input falls back to DEFAULT_MAX_STEPS.
+    so it reproduces the scored human-only rollout; live input falls back to DEFAULT_LIVE_MAX_STEPS.
     Probe-terminated recordings get one extra iteration — see
     :func:`_terminal_callback_extra`. Explicit 0/negative => run effectively forever
     (``range()`` is lazy, so ``sys.maxsize`` costs nothing).
@@ -471,7 +471,7 @@ def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
             config.replay_meta.get("terminal_reason")
         )
     else:
-        requested_steps = DEFAULT_MAX_STEPS
+        requested_steps = DEFAULT_LIVE_MAX_STEPS
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
     budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
     return max_steps, budget
@@ -565,7 +565,7 @@ def add_run_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Episode step budget (one step == one 2 ms sim tick). Default: the recorded "
         f"length when --input is an episode path (so a replay reproduces it to the step), "
-        f"else {DEFAULT_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
+        f"else {DEFAULT_LIVE_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
         "Ctrl-C (handy for free-play with --input vision).",
     )
     group.add_argument(

@@ -50,15 +50,28 @@ from ai_teleop.common.observation import Observation
 from ai_teleop.common.seating import PEG_HALF_LENGTH, SeatingGeometry
 from ai_teleop.eval.schema import TrialKPIs, TrialOutcome
 
-# ``PEG_HALF_LENGTH`` and the seating geometry come from ``common.seating`` — the
-# one shared definition data-gen and this harness both use, so a "success" here
-# means the same thing it meant when the BC corpus was scored.
+# ``PEG_HALF_LENGTH`` and the seating geometry come from ``common.seating`` — the one
+# shared *geometry* data-gen and this harness both measure (penetration, lateral error).
+# The **decision rule on top of it is not shared**; see the asymmetry note below.
 __all__ = ["PEG_HALF_LENGTH", "TrialObserver"]
 
-# Classification thresholds. Success depth/tolerance default match the
-# data-generation seating definition (``data.generate.DEFAULT_*``) so a "success"
-# here means the same thing it meant when the BC corpus was scored; LAB-37
-# calibrates the operating point (these are the knobs it sweeps).
+# Classification thresholds. Success depth/tolerance default to the data-generation
+# values (``data.generate.DEFAULT_*``); LAB-37 calibrates the operating point (these are
+# the knobs it sweeps).
+#
+# **Not the same success rule as data generation** (LAB-42 finding H-4). Given identical
+# geometry the two disagree in two ways, both deliberate:
+#
+#   * *Sustained seating.* This observer requires the peg to stay seated for
+#     ``sustained_duration_s``; ``data.step_callbacks.episode_terminal_reason`` ends the
+#     episode on the **first** seated step. A transient overshoot that pops back out is a
+#     data-gen success and an eval timeout.
+#   * *Force abort.* Data-gen aborts on ``locked or force > 50 N``; this observer has no
+#     controller reference (LAB-36 decoupling) and aborts on raw ``force > 30 N``.
+#
+# Consequence for any table that mixes them: **a corpus-reported success rate is an upper
+# bound on the eval-reported rate for the same rollout.** They are two metrics; the
+# operating-point ledger records which one scored each number.
 DEFAULT_SUCCESS_DEPTH = 0.015  # penetration past the hole entry → seated (m)
 DEFAULT_LATERAL_TOLERANCE = 0.010  # max lateral tip error for a seated peg (m); LAB-77 calibration
 # Matches `Controller`'s own watchdog (`force_cap_n`, default 30N in
