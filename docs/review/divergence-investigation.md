@@ -57,6 +57,47 @@ anti-predictive result across *interventions*. At n=5 that is a direction, not a
 but it means checkpoint selection by validation loss is not actively harmful within a recipe.
 Plot: `docs/results/phase-1/lab114_val_loss_vs_success.png`.
 
+### H-B — unanswerable: `data/dataset_9`'s episode files are `dataset_10`'s (commit `fcd91d5`)
+
+The H-B arm was launched (5 seeds on `dataset_9`) and stopped after three, because its first
+three checkpoints came back with **`checkpoint_sha256` identical to the `dataset_10` runs**,
+seed for seed, and their evals returned identical success counts. `scripts/dev/lab114_corpus_identity.py`
+found the cause:
+
+- All 200 episode files are **content-identical** across the two directories — distinct files,
+  no symlinks or hard links, byte-identical arrays.
+- `dataset_10`'s manifest matches those arrays on all 200 episodes. **`dataset_9`'s own
+  manifest disagrees with them on 35.**
+
+So `data/dataset_9/` holds the 2026-07-22 regeneration under a 2026-07-06 manifest: the corpus
+that trained the headline **no longer exists on disk**. H-B cannot be tested — not refuted,
+*unanswerable*. **This is H-8 repeating one layer down**: the checkpoint behind the headline
+was lost because `outputs/` is gitignored; the corpus behind it was overwritten in place, and
+only its committed manifest survived to prove the overwrite happened.
+
+What that surviving manifest still buys us, and it is worth having: regenerating from the same
+committed config under 2026-07-22 code **did** change the trajectories — the concrete size of
+the G-4 hole (a config hash cannot see code drift):
+
+| | |
+|---|---|
+| episodes whose `n_steps` changed | 35 of 200 |
+| median \|Δ n_steps\| | **1 step** (34 of the 35 are ≤ 100) |
+| the one large change | episode 32: 8061 → 3978 steps |
+| baseline outcome flips | **1** (episode 114) |
+| corpus baseline success | 22.5% → 23.0% |
+
+So corpus drift is **real but tiny** — one flipped outcome in 200. It remains a poor candidate
+for a 20+ pp shift in a trained policy, which is the prior the spec assigned it. The honest
+statement is that H-B is untestable *and* implausible, not that it was ruled out.
+
+### H-C — the last live hypothesis (running)
+
+CPU vs GPU training is now the only recorded difference between the original run and every
+retrain that can still be varied. Note the limit up front: it can only be tested against
+*today's* corpus, so a null here does not reconstruct the original conditions — it leaves the
+2026-07-07 checkpoint's provenance **unknown**, which is then the finding.
+
 ---
 
 ## Why this exists
