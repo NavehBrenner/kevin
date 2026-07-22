@@ -1,8 +1,63 @@
 # Spec — the checkpoint-divergence investigation (LAB-42 follow-on)
 
-> **Status:** not started. Written 2026-07-22, at the end of the session that found the
-> problem. Self-contained: a session picking this up needs no other context than this file
-> and `docs/review/code-audit.md` §H.
+> **Status (2026-07-22, S5):** **G1 done** (training is seeded, with a test). **G2 done** —
+> the spread is **18 pp** and it does **not** contain the headline. **Phase 4 is therefore
+> required, not optional**: H-B is running. G3 waits on it. Results below, under
+> *Findings*; the plan they came from is unchanged beneath it.
+
+## Findings (S5, 2026-07-22)
+
+### G1 — training is reproducible (commit `07629ed`)
+
+`torch.manual_seed(seed)` in `train_policy` now seeds weight init, batch shuffling and
+worker seeds from the same `--seed` that already picked the train/val split; the metadata
+key is `seed`, not `split_seed`. `tests/test_train_policy.py::test_train_policy_is_reproducible_at_a_fixed_seed`
+trains twice at seed 0 and asserts bit-identical weights, and once at seed 1 to prove the
+seed does something. `write_run_artifacts` also records a `checkpoint_sha256`, and the
+retention policy is written down in `docs/results/phase-1/checkpoints/README.md`: after G1 a
+checkpoint is regenerable from corpus + seed + commit, so only the two pre-G1 checkpoints
+behind published numbers are committed.
+
+### G2 — the spread is 18 pp, and 70.0% is outside it (commit `9b9e2d1`)
+
+Five seeds, one recipe (`dataset_10`, hyperparameters byte-identical to `lab101_ft_ar0_ds10`),
+each against `human_only` on the same 100 paired eval seeds. Records:
+`docs/results/phase-1/lab114/`.
+
+| train seed | best_val_loss | epochs | human_only | residual | Δ pp | b/c | McNemar p | n | residual on the 30 headline seeds |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 0.00144 | 22 | 50.0% | 48.0% | −2.0 | 13/15 | 0.8506 | 100 | 53.3% (n=30) |
+| 1 | 0.00170 | 25 | 50.0% | 47.0% | −3.0 | 13/16 | 0.7111 | 100 | 46.7% (n=30) |
+| 2 | 0.00182 | 13 | 50.0% | 35.0% | −15.0 | 7/22 | 0.0081 | 100 | 26.7% (n=30) |
+| 3 | 0.00197 | 15 | 50.0% | 47.0% | −3.0 | 12/15 | 0.7011 | 100 | 46.7% (n=30) |
+| 4 | 0.00117 | 26 | 50.0% | 53.0% | +3.0 | 19/16 | 0.7359 | 100 | 53.3% (n=30) |
+
+- **Paired Δ: mean −4.0 pp, range [−15.0, +3.0], spread 18 pp.** Residual success 35.0–53.0%.
+- **`human_only` returned exactly 50.0% in all five runs** (and exactly 36.7% on the 30-seed
+  subset, matching the 2026-07-07 record). The harness has now been shown bit-stable across
+  three weeks and eight runs; the spread above is training variance alone.
+- One seed (2) is a genuine outlier: it early-stopped at 13 epochs and is the only run whose
+  regression is significant on its own (p=0.008). A single checkpoint *can* land there —
+  which is the whole point.
+
+**Verdict on H-A: half-confirmed, and not sufficient.** The spread is easily wide enough to
+swallow every single-checkpoint comparison in M5–M7 — the ≤2-episode M7 margins are noise at
+this power. But it does **not** contain the headline: re-scored on the exact 30 seeds that
+produced 70.0%, the five checkpoints span **26.7–53.3%**, leaving 70.0% **16.7 pp above the
+best of five**. Whatever produced the 2026-07-07 checkpoint, this recipe on this corpus does
+not reproduce it. So **H-B (corpus) and H-C (device) are now live, and Phase 4 is required**.
+
+*(The counter-observation that `ar0` and `ar100` both landed on 14/30 was coincidence at the
+count level, as the spec warned it might be. n=2 could not tell; n=5 can.)*
+
+**Secondary question, answered:** `best_val_loss` vs closed-loop success across seeds gives
+Spearman ρ = **−0.82** (p=0.089, n=5) — lower val loss, higher success. Across *seeds of one
+recipe* the offline metric is directionally predictive, the opposite of LAB-106's
+anti-predictive result across *interventions*. At n=5 that is a direction, not a measurement,
+but it means checkpoint selection by validation loss is not actively harmful within a recipe.
+Plot: `docs/results/phase-1/lab114_val_loss_vs_success.png`.
+
+---
 
 ## Why this exists
 
@@ -114,10 +169,21 @@ success lift**, and the project's positive result becomes the *bounded-force gua
 the mechanism findings — not a success-rate improvement. Decide that deliberately; do not let
 it be decided by which number is quoted first.
 
-### Phase 4 — G4, only if needed
+### Phase 4 — G4, **now required** (G2's spread did not account for the gap)
 
-Run H-B / H-C only if G2's spread fails to account for the gap. Both are one-variable
-extensions of the Phase-2 harness.
+Both are one-variable extensions of the Phase-2 harness, read against the same 100 eval
+seeds and the same 30-seed subset.
+
+- **H-B (running, S5):** 5 seeds on `dataset_9` — the corpus the headline was trained on —
+  GPU, otherwise identical. Confirmed if its distribution separates from `dataset_10`'s
+  by more than the 18 pp within-corpus spread. Remember the caveat: `dataset_9` on disk is
+  now a 185-original/15-regenerated hybrid, so a null here is weak evidence, not proof.
+- **H-C (queued):** CPU training at fixed seeds, the one condition present in the original
+  run and absent from every retrain. Slow to run; do it only if H-B comes back null.
+
+If **both** come back null, the 2026-07-07 checkpoint is not reproducible by any recorded
+combination of corpus, device and seed — and the honest conclusion is that its provenance is
+unknown, not that it was fraudulent. Say exactly that, and let the distribution be the claim.
 
 ## G2 also adjudicates the M7 vision negative — read this before scoping it
 
@@ -169,9 +235,9 @@ number G2 produces anyway.
 
 ## Definition of done
 
-- [ ] `torch.manual_seed` wired from `--seed`; a same-seed-twice test asserts identical weights.
-- [ ] ≥5 seeds trained and evaluated at 100 paired seeds; spread reported with mean and range.
-- [ ] `best_val_loss` vs closed-loop success plotted across those seeds.
+- [x] `torch.manual_seed` wired from `--seed`; a same-seed-twice test asserts identical weights.
+- [x] ≥5 seeds trained and evaluated at 100 paired seeds; spread reported with mean and range.
+- [x] `best_val_loss` vs closed-loop success plotted across those seeds.
 - [ ] The Phase-1 claim rewritten as a distribution, in `docs/phase-1-results.md` and D-4.
 - [ ] M7's sign-claims audited against the measured spread (wording only, no new compute).
 - [ ] LAB-42 / LAB-101 updated with the outcome; this file deleted or folded into D-4.
