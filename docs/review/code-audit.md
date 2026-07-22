@@ -547,6 +547,64 @@ one-implementation abstraction B-1 deleted. Two `type: ignore`s in one test file
 side of that trade — recorded here so a future reader doesn't "fix" it and re-introduce the
 inconsistency in the other direction.
 
+### G-4 · The fingerprint hashes the *config* but not the *code* — pre-LAB-91 corpora do not regenerate · **DOCUMENT (highest-value finding of round 2)**
+
+Found while checking whether the untracked `data/dataset_42/` could be deleted. It can't, and
+the reason matters more than the disk space.
+
+`regenerate_from_metadata()` promises byte-identical reproduction and verifies it via the
+fingerprint. `dataset_42` (8 episodes, generated 2026-07-02, the only corpus with episodes
+still on disk) **recomputes its committed fingerprint exactly** — `5a3e69f4e2807ee3` — and then
+regenerates **different trajectories**:
+
+```
+n_steps  6000 → 6000        terminal  timeout → timeout
+cmd_position   max|Δ| = 7.2 mm   first differing step = 631
+ee_pose        max|Δ| = 0.19 mm  first differing step = 632
+wrist_ft       max|Δ| = 6.2 N    first differing step = 632
+11 of 17 columns differ
+```
+
+The **operator command** diverges first (step 631) and the physics follows one step later — so
+this is a behaviour change in `ScriptedNoisyHuman`, not float noise. The cause is dated:
+**LAB-91 (2026-07-04, `40f4758`) made the approach speed distance-proportional**, replacing the
+flat near-field profile. `dataset_42` was generated 2026-07-02, two days earlier. That change
+has **no config knob**, so the "legacy config ⇒ legacy behaviour, bit-exact" trick the
+fingerprint relies on (see C-1a) does not cover it — and the hash cannot see it.
+
+**Which committed corpora are affected.** Six of the ten predate LAB-91:
+
+| Corpus | Generated | Reproducible today? |
+|---|---|---|
+| `dataset_0`, `dataset_1` | 2026-06-16 | No — *and* their fingerprint already mismatches (C-1a) |
+| `dataset_2`, `dataset_3_lowdiv`, `dataset_4`, `dataset_6` | 2026-07-03 | **No — yet the fingerprint reports a match** |
+| `dataset_7`, `dataset_8`, `dataset_9`, `dataset_vision` | 2026-07-06 → 07-07 | Yes (post-LAB-91) |
+
+The four 2026-07-03 corpora are the dangerous row: `regenerate_from_metadata` would rebuild
+them, log no warning, and hand back a *different corpus* under a matching hash.
+
+**The reassuring part, and it should be stated in the KPI dashboard:** every corpus behind a
+quoted result — `dataset_9` (the Phase-1 headline) and `dataset_vision` (the M7 arc) — is
+post-LAB-91 and reproduces. The hole is confined to superseded corpora.
+
+**Verdict: DOCUMENT.** The real fix is to stamp a **code version** into the fingerprint payload
+(a git SHA or a hand-bumped `GENERATION_BEHAVIOUR_VERSION` incremented whenever the
+operator/expert/controller changes observably), which is the same versioned-payload change
+C-1a already needs — do them together, once, rather than twice. Two immediate consequences for
+the review:
+
+- **Phase 3 (D-4)**: the operating-point ledger must carry a *code era* column, not just corpus
+  and difficulty. "Same config" has been proven insufficient to mean "same task".
+- **`docs/data-schema.md`** currently asserts regeneration is byte-identical. That claim is
+  false for six of ten committed manifests and must be qualified — it is also part of D2's
+  "clean clone → reproduce" acceptance story.
+
+**`data/dataset_42/` is therefore kept**, and its `metadata.json` (3.5 KB) is now committed like
+every other corpus manifest. Its 9.6 MB of episodes stay local — already gitignored by the
+`runs/` rule — because they are the **only** on-disk evidence that can demonstrate this hole:
+no other pre-LAB-91 corpus still has its trajectories. It is also cited four times in the wiki
+as the LAB-88 non-determinism corpus.
+
 ### G outcomes (2026-07-22)
 
 Gate green after both: ruff clean, mypy clean (**60 files**, was 59), **230 tests** (was 229).
