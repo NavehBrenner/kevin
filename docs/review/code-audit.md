@@ -505,7 +505,7 @@ Gate after every change: **ruff clean, mypy clean, 227 tests pass** (was 226 —
 | 5 | D-1 rotation modules | ✅ done | `common/utils/` deleted; all six helpers now live in `common/geometry.py` and are exported from `common/__init__`. ~20 import sites rewritten. |
 | 6 | A-3 `use_tanh_head` | ✅ done | Removed, **with** a drop-unknown-keys shim in `load_checkpoint` that logs what it drops. Verified against all 13 on-disk checkpoints — every one carried `use_tanh_head`, so without the shim the removal would have stranded the project's entire trained-model history. Regression test: `test_checkpoint_with_retired_config_key_still_loads`. |
 | 7 | E-2 / E-3 | ✅ done | `stereohand` pinned to `@v0.1.0`; `data/` sweep + probe dirs gitignored by pattern (named `dataset_<n>/` dirs deliberately still visible, since their `metadata.json` is committed on purpose). |
-| 7 | E-1 mypy scope | ⬜ **split out → LAB-113** | Turning on `scripts` + `tests` surfaces **41 errors in 18 files** — five of them likely real bugs (a TypedDict mismatch in recorded metadata, a success-rate generator typed `object`, a Pillow-10 break in the demo-grid tool). Too large to fold in here without masking regressions. One freebie taken: `_fast_exit` is now `-> NoReturn`, which was causing a false *Missing return statement* on `main()`. |
+| 7 | E-1 mypy scope | 🟡 **tests done 2026-07-22; `scripts/` → LAB-113** | Turning on `scripts` + `tests` surfaces **41 errors in 18 files** — five of them likely real bugs (a TypedDict mismatch in recorded metadata, a success-rate generator typed `object`, a Pillow-10 break in the demo-grid tool). Too large to fold in here without masking regressions. One freebie taken: `_fast_exit` is now `-> NoReturn`, which was causing a false *Missing return statement* on `main()`. |
 | 8 | A-2 keyboard promise | ✅ done | Removed from `README.md`; struck through in `docs/milestones.md` with the reason. |
 | 9 | B-2 `command_ee_delta` | ✅ done | Comment cut 7 lines → 5 and re-headed **`NEGATIVE RESULT — do not enable`**. Knob kept: it is load-bearing evidence for the M7 result. |
 | 10 | C-3 `TrialConfig` | ✅ done — **not** as specified | No new config type. `run_paired` was a pure forwarder that re-declared 10 of `run_trial`'s defaults; it now takes `**trial_kwargs` and forwards. −25 lines, no new abstraction, and the defect class is *gone* rather than re-housed: there is exactly one definition of each default left. All four call sites already passed keywords, so none changed. The LAB-107 parity test now asserts `run_trial`'s default **and** that `run_paired` no longer has a second copy. (A shared `TrialConfig` would have been a third place for the same values to live, next to the existing `Config` ablation-arm type — worse, not better.) |
@@ -526,6 +526,26 @@ rewritten, because a reconstruction that produced different numbers would be wor
 `record_comparison_grid.py` was **not** promoted to `scripts/` + the `kvn` CLI as planned:
 mypy flags `Image.NEAREST` at line 99, removed in Pillow 10, so the project's demo-video tool
 may currently be broken. Promoting a broken tool is worse than leaving it. Tracked in LAB-113.
+
+### G-3 · `run_episode` types its controller nominally, unlike its two other collaborators · **KEEP — because**
+
+`sim/runner.py:73-77`. The runner takes `input_strategy: InputStrategy` and
+`assist: AssistProvider` — both Protocols from `domain/interfaces.py` — but
+`controller: Controller`, the concrete class. It only ever touches `controller.compute()`
+(`:165`) and `controller.status` (`:204`), so the nominal type is wider than the dependency.
+
+Surfaced by turning mypy on for `tests/`: `tests/test_episode_e2e.py`'s `_RecordingController`
+is a structural stand-in that wraps a real `Controller` to record commands, and it needs an
+`arg-type` ignore at each call site despite satisfying everything the runner uses.
+
+**Verdict: KEEP — because**, by this audit's own rule (see B-1 vs B-3). A Protocol earns its
+keep when *the seam is the contribution* — that is true of the assistance seam (`InputStrategy`,
+`AssistProvider`), which is what M3 exists to deliver and what let the learned policy drop in
+untouched. The controller is the seam's downstream *consumer*, not the seam itself, and it has
+exactly one implementation. Adding a `ControlLaw` Protocol here would be the same
+one-implementation abstraction B-1 deleted. Two `type: ignore`s in one test file is the cheaper
+side of that trade — recorded here so a future reader doesn't "fix" it and re-introduce the
+inconsistency in the other direction.
 
 ### G outcomes (2026-07-22)
 
@@ -570,3 +590,25 @@ disk, which is how the original drift survived.
 key. They are untracked scratch corpora from the LAB-105 rounds, already superseded, and
 rewriting their metadata would change artifacts whose provenance is the point. The fix applies
 to everything written from here.
+
+### E-1 revisited — `tests/` is now type-checked (2026-07-22)
+
+E-1 (mypy scope) was split to LAB-113 in Phase 2 on the strength of "41 errors in 18 files".
+Re-measured after C-1/C-3/F/G-1 landed, that number had collapsed: **`tests/` was down to 2
+errors** — most of the original debt was in the 31 dev scripts finding F deleted and in the
+400 lines G-1 moved into `src/`.
+
+But 2 was a trap. `mypy` **skips the bodies of unannotated functions by default**, and pytest
+test functions are unannotated (**218 of 229** here), so adding `tests` to `files` alone would
+have checked almost nothing while reporting a green gate — type-checking theatre. With
+`check_untyped_defs = true` the true figure was **20 errors in 7 files**, all fixed:
+
+| Kind | Count | What it was |
+|---|---:|---|
+| Optional never narrowed | 9 | `provider._ft_bias` / `_hidden` (`ndarray \| None`, `Tensor \| None`), `meta["wall_seed"]` (`int \| None`) used directly. A `None` there fails as an obscure `AttributeError`/`TypeError` mid-assertion instead of at an explicit `assert`. Fixed by narrowing. |
+| Deliberately partial fixtures | 6 | Tests that write minimal/legacy metadata blobs on purpose (the loader's back-compat cases, the recorder round-trip, the empty-save rejection). Now carry a narrow `typeddict-item` ignore **and a comment saying the sparseness is the point** — the annotation documents intent instead of hiding drift. |
+| Stub/nominal-typing warts | 5 | `DataLoader(list)` and `len(Dataset)` (the torch stubs under-type both), and G-3's `_RecordingController`. Consolidated behind one `_episode_loader` helper and narrow ignores. |
+
+`src/` was already clean under `check_untyped_defs`, so the flag is set globally rather than
+per-module. Gate coverage went **60 → 86 files**. `scripts/` (19 errors in 8 files, including
+the Pillow-10 break in the demo-grid tool) stays out — that remains LAB-113.

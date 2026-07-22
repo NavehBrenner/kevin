@@ -35,12 +35,27 @@ def _linear_episode(index: int, length: int, weight: torch.Tensor, *, seed: int 
     )
 
 
+def _episode_loader(episodes: list[Episode], *, shuffle: bool) -> DataLoader:
+    """Batch a plain list of episodes.
+
+    The torch stubs type ``DataLoader``'s first argument as ``Dataset``, but a list is a
+    valid map-style dataset at runtime (``__getitem__`` + ``__len__``) — and is exactly
+    what ``build_dataloaders`` hands over in production.
+    """
+    return DataLoader(
+        episodes,  # type: ignore[arg-type]
+        batch_size=4,
+        shuffle=shuffle,
+        collate_fn=collate_episodes,
+    )
+
+
 def _loader(weight: torch.Tensor, *, n_episodes: int, base_index: int, seed: int) -> DataLoader:
     episodes = [
         _linear_episode(base_index + i, length=12 + i, weight=weight, seed=seed)
         for i in range(n_episodes)
     ]
-    return DataLoader(episodes, batch_size=4, shuffle=True, collate_fn=collate_episodes)
+    return _episode_loader(episodes, shuffle=True)
 
 
 def test_train_drives_train_and_val_loss_down():
@@ -88,7 +103,7 @@ def test_vision_epoch_encodes_cnn_once_per_batch_regardless_of_tbptt():
     device = torch.device("cpu")
     # One batch (batch_size 4 ≥ 3 episodes), each episode long enough to span many chunks.
     episodes = [_vision_episode(i, length=10) for i in range(3)]
-    loader = DataLoader(episodes, batch_size=4, shuffle=False, collate_fn=collate_episodes)
+    loader = _episode_loader(episodes, shuffle=False)
 
     def count_encode_calls(tbptt_steps: int) -> int:
         torch.manual_seed(0)

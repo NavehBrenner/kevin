@@ -60,12 +60,14 @@ def test_recorder_roundtrip(tmp_path):
     for step in range(10):
         recorder.add(**_synthetic_row(step))
     path = tmp_path / "episode_00000.npz"
-    recorder.save(path, metadata={"master_seed": 0, "episode_index": 0})
+    # Deliberately partial: this exercises the recorder's round-trip, not the corpus
+    # spec, and mirrors the sparse blobs pre-LAB-96 episodes carry.
+    recorder.save(path, metadata={"master_seed": 0, "episode_index": 0})  # type: ignore[typeddict-item]
 
     columns, metadata = load_episode(path)
     assert set(columns) == set(COLUMN_SHAPES)
     for name, per_step_shape in COLUMN_SHAPES.items():
-        assert columns[name].shape == (10, *per_step_shape)
+        assert columns[name].shape == (10, *per_step_shape)  # type: ignore[literal-required]
     np.testing.assert_array_equal(columns["step"], np.arange(10))
     assert metadata["schema_version"] == SCHEMA_VERSION
     assert metadata["n_steps"] == 10
@@ -90,7 +92,9 @@ def test_recorder_rejects_wrong_shape():
 
 def test_recorder_refuses_empty_save(tmp_path):
     with pytest.raises(ValueError, match="empty"):
-        EpisodeRecorder().save(tmp_path / "x.npz", metadata={})
+        # Empty on purpose — save() must reject an empty episode before it ever
+        # looks at the metadata.
+        EpisodeRecorder().save(tmp_path / "x.npz", metadata={})  # type: ignore[typeddict-item]
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +203,11 @@ def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
     for orig_path, regen_path in zip(original, regenerated, strict=True):
         cols_orig, _ = load_episode(orig_path)
         cols_regen, _ = load_episode(regen_path)
-        for column in COLUMN_SHAPES:
-            np.testing.assert_array_equal(cols_orig[column], cols_regen[column])
+        for column in COLUMN_SHAPES:  # dynamic key over the TypedDict's own keys
+            np.testing.assert_array_equal(
+                cols_orig[column],  # type: ignore[literal-required]
+                cols_regen[column],  # type: ignore[literal-required]
+            )
 
     # The regenerated dataset carries the same fingerprint as the source metadata.
     src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text(encoding="utf-8"))

@@ -80,7 +80,8 @@ def tiny_dataset(tmp_path_factory: pytest.TempPathFactory) -> Path:
         for step in range(length):
             recorder.add(**_random_row(rng, step))
         path = episode_npz_path(runs, index)
-        recorder.save(path, metadata={"episode_index": index})
+        # Minimal by design: the loader must cope with sparse per-episode metadata.
+        recorder.save(path, metadata={"episode_index": index})  # type: ignore[typeddict-item]
         episodes.append({
             "episode_index": index,
             "file": f"runs/{path.parent.name}/{path.name}",
@@ -264,7 +265,8 @@ def tiny_dataset_with_images(tmp_path_factory: pytest.TempPathFactory) -> Path:
         for step in range(length):
             recorder.add(**_random_row(rng, step))
         path = episode_npz_path(runs, index)
-        recorder.save(path, metadata={"episode_index": index})
+        # Minimal by design (see the F/T fixture above).
+        recorder.save(path, metadata={"episode_index": index})  # type: ignore[typeddict-item]
         imgs_dir = episode_imgs_dir(runs, index)
         for step in range(0, length, RENDER_EVERY):
             _write_frame(imgs_dir, step, rng)
@@ -361,6 +363,7 @@ def test_collate_episodes_pads_images_for_mixed_length_batch():
     assert batch.images.shape == (2, 3, 3, FRAME_SIZE, FRAME_SIZE)
     assert batch.image_frame_index.shape == (2, 8)
     # Short episode's true frame_index (length 3) is preserved, untouched by padding.
+    assert short.image_frame_index is not None
     assert torch.equal(batch.image_frame_index[0, :3], short.image_frame_index)
 
 

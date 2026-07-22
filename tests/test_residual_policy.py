@@ -117,7 +117,10 @@ def test_inference_assembly_matches_loader():
         "delta_orientation": np.zeros((1, 3)),
         "delta_grip": np.zeros(1),
     }
-    loader_episode = extract_training_episode((columns, {"episode_index": 0}))  # type: ignore[arg-type]
+    # Only the columns matter here; the metadata is a stub.
+    loader_episode = extract_training_episode(
+        (columns, {"episode_index": 0})  # type: ignore[arg-type,typeddict-item]
+    )
 
     provider = _provider()
     provider._ft_bias = np.zeros(6)  # match the loader (no bias subtraction)
@@ -141,10 +144,12 @@ def test_ft_bias_captured_on_first_step_of_episode():
     provider = _provider()
     first = _observation(sim_time=0.0, wrist_ft=np.array([5.0, -2.0, 1.0, 0.0, 0.0, 0.0]))
     provider.get_delta(first, _command())
+    assert provider._ft_bias is not None
     np.testing.assert_allclose(provider._ft_bias, first.wrist_ft)
 
     # A later step in the same episode (sim_time increased) keeps the same bias.
     provider.get_delta(_observation(sim_time=0.5, wrist_ft=np.full(6, 9.0)), _command())
+    assert provider._ft_bias is not None
     np.testing.assert_allclose(provider._ft_bias, first.wrist_ft)
 
 
@@ -157,6 +162,7 @@ def test_sim_time_restart_recaptures_bias_and_resets_hidden():
     # New episode: sim_time jumps back → bias re-captured to the new episode's F/T.
     new_episode_ft = np.array([7.0, 7.0, 7.0, 0.0, 0.0, 0.0])
     provider.get_delta(_observation(sim_time=0.0, wrist_ft=new_episode_ft), _command())
+    assert provider._ft_bias is not None
     np.testing.assert_allclose(provider._ft_bias, new_episode_ft)
 
 
@@ -172,9 +178,11 @@ def test_explicit_reset_clears_state():
 def test_hidden_state_advances_across_steps():
     provider = _provider()
     provider.get_delta(_observation(sim_time=0.1), _command())
+    assert provider._hidden is not None
     hidden_after_one = provider._hidden.clone()
     provider.get_delta(_observation(sim_time=0.2), _command())
     hidden_after_two = provider._hidden
+    assert hidden_after_two is not None
     assert not torch.allclose(hidden_after_one, hidden_after_two)
 
 

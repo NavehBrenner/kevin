@@ -134,4 +134,5 @@ def test_aggregate_unions_and_loads(tmp_path: Path) -> None:
     train_loader, val_loader, _ = build_dataloaders(
         aggregate, batch_size=1, val_fraction=0.25, load_images=False, download=False
     )
-    assert len(train_loader.dataset) + len(val_loader.dataset) == 4
+    # `Dataset` isn't `Sized` in the torch stubs; every dataset here is a list.
+    assert len(train_loader.dataset) + len(val_loader.dataset) == 4  # type: ignore[arg-type]

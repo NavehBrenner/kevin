@@ -114,11 +114,15 @@ preview = true
 
 [tool.mypy]
 python_version = "3.12"
-# The gate type-checks the package only. `scripts/` + `tests/` (14.7k LOC, more than
-# src/) are deliberately outside it *for now*: turning them on surfaces 41 pre-existing
-# errors in 18 files, which is its own piece of work rather than something to fold into
-# an unrelated change. Inventory + plan: LAB-113. Widen this list when that lands.
-files = ["src"]
+# The gate type-checks the package **and the tests**. `scripts/` stays out for now
+# (19 errors in 8 files, incl. a Pillow-10 break in the demo-grid tool) — inventory
+# and plan in LAB-113; add it here when that lands.
+files = ["src", "tests"]
+# Required for the tests to be checked at all: pytest test functions are unannotated
+# (218 of 229 here), and mypy skips the *bodies* of unannotated functions by default.
+# Listing tests/ without this flag would report ~2 errors and check almost nothing —
+# type-checking theatre. src/ is fully annotated, so this changes nothing there.
+check_untyped_defs = true
 # Third-party scientific/CAD libs (mujoco, trimesh, shapely, scipy, cadquery)
 # ship no type stubs; don't fail the gate on their missing-import noise.
 ignore_missing_imports = true

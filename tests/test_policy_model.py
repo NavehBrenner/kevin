@@ -274,7 +274,7 @@ def test_vision_changes_the_output():
             batch.command,
             batch.force_torque,
             batch.proprioception,
-            images=torch.randn_like(batch.images),
+            images=torch.randn_like(batch.images),  # type: ignore[arg-type]
             image_frame_index=batch.image_frame_index,
         )
 
