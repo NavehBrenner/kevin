@@ -363,6 +363,102 @@ Recorded so a later cleanup pass doesn't mistake deliberate design for accident:
 
 ---
 
+## G. Round-2 findings — Naveh's read (2026-07-22)
+
+Two findings from Naveh reading the post-Phase-2 tree. Both verified with `file:line` and, for
+G-2, against episodes on disk. **Neither is fixed yet** — they are the agreed next work item,
+ahead of the 1A round-2 sweep.
+
+### G-1 · Training lives in `scripts/`, so `dagger.py` shells out to it · **FIX**
+
+`dagger.py:291-372` imports `subprocess` and `sys` inside `run_dagger()`, resolves
+`scripts/train_policy.py` by path (`parents[2] / "scripts" / "train_policy.py"`), builds a
+14-element argv, and runs it with `check=True` — once per DAgger round.
+
+The subprocess is a **symptom, not the cause**. `dagger.py` is in `src/ai_teleop/`; `scripts/`
+is not a package and is not importable from installed code, so shelling out is the only option
+*given where training lives*. The actual finding is that **training is core functionality
+sitting in a script**: `scripts/train_policy.py` is 504 lines and holds `train()` (the epoch
+loop, early stopping, best-weight restore) plus `main()`, while a slice of the same
+concern — `policy/run_artifacts.py`, 150 lines of run-folder/history/provenance writing — is
+already in the package. The seam between them is arbitrary.
+
+This is the one place the repo breaks its own stated pattern. `scripts/generate_dataset.py`
+opens by declaring it: *"The generation pipeline is core functionality and lives in the package
+(`ai_teleop.data.generate`); this script is just its command-line front door."* Data generation
+follows that. Training does not — and `dagger.py` pays for it.
+
+Concrete costs, not stylistic ones:
+
+- **No type checking across the call.** The 14-element argv is stringly-typed; mypy checks
+  neither the flag names nor the value types. A renamed `--action-rate-weight` fails at
+  runtime, mid-round, after the rollouts have already been simulated.
+- **Errors arrive as an exit code.** `check=True` raises `CalledProcessError` — no exception
+  type, no traceback into the training loop, no structured result. The return value that
+  matters (the checkpoint path) is *reconstructed by string convention*
+  (`runs_root / run_name / "checkpoint.pt"`, `dagger.py:373`) rather than returned.
+- **Process-per-round overhead** — a fresh interpreter and a fresh `import torch` every round.
+
+**Verdict: FIX** — move the training pipeline into `ai_teleop.policy.train` (mirroring
+`ai_teleop.data.generate`), leave `scripts/train_policy.py` as the thin argparse front door it
+claims to be, and have `dagger.py` call `train_policy(...)` directly. That is the same
+front-door-over-package refactor the repo already applies everywhere else, and it makes the
+subprocess disappear on its own.
+
+**Also asked: does anything else shell out where an import would do?** Swept `src/`,
+`scripts/`, `tests/` — five `subprocess` sites, and only one more is this pattern:
+
+| Site | Verdict |
+|---|---|
+| `dagger.py:352` → `scripts/train_policy.py` | **the finding above** |
+| `scripts/dev/record_then_render.py:66,80` → `scripts/run_episode.py` (×2) | same shape, dev script; low stakes, but it inherits the fix if `run_episode`'s core ever moves into the package |
+| `cli.py:117` → the `kvn` target script / poe task | **correct.** A launcher's job is to launch; sub-process isolation is the point. |
+| `policy/run_artifacts.py:52` → `git rev-parse` | **correct.** External binary. |
+| `scripts/dev/lab42_fingerprint_audit.py:24` → `git ls-files` | **correct.** External binary. |
+
+### G-2 · The metadata schema exists and the writers ignore it · **FIX**
+
+`data/schema.py:85-140` defines `EpisodeMetadata` — a thorough `TypedDict` (17 required keys +
+a documented `total=False` tail for the replay spec and the LAB-96/98/100 knobs). So the single
+place that defines the contract *does* exist. It is enforced on exactly one side:
+
+| Side | Typed? | Where |
+|---|---|---|
+| **Readers** | ✅ `EpisodeMetadata` | `trajectory.py:162` `load_episode`, `dataset.py:144`, `run_episode.py:174,233,270` |
+| **Writers** | ❌ `dict[str, object]` | `generate.py:496` and `dagger.py:192`; `EpisodeRecorder.save(metadata: dict[str, object])` (`trajectory.py:149`) passes it straight through |
+
+`load_episode` *annotates* the result of `json.loads` as `EpisodeMetadata` (`trajectory.py:165`)
+— a declaration on trust. Nothing verifies the blob ever matched. So the contract is asserted
+where it is consumed and unchecked where it is produced, which is exactly backwards.
+
+**It has already drifted.** Two hand-rolled writer dicts exist, and they disagree — `dagger.py`
+omits `expert_d_far`, `speed_lognormal_median`, `speed_lognormal_sigma`, `expert_brake_gain`,
+`expert_brake_lead_floor` and `delta_clamp`. `expert_d_far` is **required** in
+`_EpisodeMetadataBase`, so every DAgger episode on disk violates the declared schema:
+
+```
+$ data/dagger_agg1/runs/episode_1000021/episode.npz
+missing required keys: ['expert_d_far']
+```
+
+No consumer breaks *today* — `expert_d_far` happens to be read from the dataset-level config
+(`dagger.py:104`), never from the episode blob — so this is a latent violation, not a live bug.
+That is precisely why it survived: mypy cannot see it, and no test asserts a written blob
+against the schema. The same untyped-writer pattern covers the other two on-disk shapes:
+`_episode_summary` (`generate.py:558`) and `_write_dataset_metadata` (`generate.py:619`) both
+name their `EpisodeSummary` / `ResBCDatasetMetadata` shape **in a docstring** instead of
+annotating it. C-1 has just made the inconsistency visible — `GenerationConfig.to_dataset_config()
+-> DatasetConfig` is typed, and it sits ten lines from two dicts that are not.
+
+**Verdict: FIX** — annotate the writers (`-> EpisodeMetadata`, `-> EpisodeSummary`,
+`config: DatasetConfig`), tighten `EpisodeRecorder.save` to take `EpisodeMetadata`, and let
+mypy close the loop. Expect it to *fail first* on `dagger.py`'s missing keys — that failure is
+the finding proving itself, and the fix is to stamp the corpus knobs DAgger rollouts actually
+ran under. Where DAgger genuinely has no value for a key, move that key out of the required
+base rather than writing a fake one.
+
+---
+
 ## Coverage — what this round actually read
 
 Honest scope, so round 2 knows where to look:
