@@ -774,6 +774,58 @@ belong in the ledger:
   identical to the episode. So a corpus-level statistic (*"expert 71.5%"*) is reproducible even
   though the trajectories are not — which is exactly why this went unnoticed for a month.
 
+### H-8 outcome · the headline does not reproduce · **the review's most consequential finding**
+
+The retrain H-8 forced was run (2026-07-22). It answered a question nobody had asked.
+
+| Run | checkpoint | `human_only` seeds 0–29 | `residual` seeds 0–29 | 100-seed paired |
+|---|---|---|---|---|
+| published 2026-07-07 | CPU, `dataset_9`, epoch 22 | **36.7%** | **70.0%** | — (30 seeds, +33.3 pp, p=0.006) |
+| retrain `ar0` | GPU, `dataset_10`, epoch 22 | **36.7%** | **46.7%** | 50.0 → 46.0%, **−4.0 pp** (p=0.557) |
+| retrain `ar100` | GPU, `dataset_10`, epoch 14 | **36.7%** | **46.7%** | 50.0 → 41.0%, **−9.0 pp** (p=0.136) |
+
+Records committed as `docs/results/phase-1/repro_2026-07-22_{ar0,ar100}_trials.csv`;
+decomposition by `scripts/dev/lab42_seed_overlap.py` (new, kept).
+
+**The environment is exonerated, conclusively.** `human_only` consumes no checkpoint, and it
+returns **36.7% seed-for-seed across all 30 shared seeds in all three runs** — two weeks, the
+whole LAB-104…110 series, and this session's H-1…H-6 changes in between. Same walls, operator,
+controller config, step budget and scoring. Given H-9 just proved the *corpus* drifts, an
+eval path that is bit-stable is a genuinely reassuring result and worth stating in D-4.
+
+**So the only variable is the checkpoint** — and the headline was two stacked lucky draws:
+
+1. **A hard baseline slice.** `human_only` is 36.7% on seeds 0–29 and **55.7%** on seeds
+   30–99. The true in-band baseline is ~50%. A 30-seed sample drawn low inflates any lift
+   measured against it, and nothing in the original write-up could have detected this — which
+   is precisely what H-1's missing-`n` finding and this run's 100 seeds are for.
+2. **An unreproducible checkpoint.** Re-running the same recipe lands at 46.7% on those same
+   30 seeds, twice, from two different loss configurations. The original checkpoint cannot be
+   re-evaluated to arbitrate because it was never committed (H-8).
+
+**Ruled out — the action-rate penalty.** `ar0` and `ar100` differ *only* in that knob and are
+**indistinguishable on the shared seeds** (both 46.7%). The penalty does exactly what LAB-104
+promised — jerk **153.6 → 85.7** — at no success cost. This retires a D-6 candidate: "apply
+the action-rate penalty to the headline run" is now measured, and it works; there is simply no
+lift left for it to protect.
+
+**Corroboration that `ar0` is the faithful reproduction:** it early-stopped at **epoch 22**
+(the wiki records the lost checkpoint as "early-stopped at epoch 22") and produced jerk
+**153.6** against the published **149.1**. Same recipe, same signature, different result.
+
+**Left open, deliberately** (Naveh's call — stop measuring, write it up): whether the
+checkpoint gap is corpus drift (H-9's 35 differing trajectories), CPU→GPU training RNG, or
+plain training-run variance. **Training-run variance has never been measured on this project**,
+which is itself a finding: every conclusion in M5–M7 rests on single checkpoints, and this is
+the first evidence that a single checkpoint may not represent its recipe. D-6 should carry it
+as a named methodological gap, not a to-do.
+
+**Consequence for the project.** Phase 1's positive result — the thing the whole review was
+meant to protect while the M7 vision arc was written up as a negative — **does not currently
+stand**. The honest measurement is no significant lift over 100 paired seeds at a corrected
+~50% baseline. `docs/phase-1-results.md` now leads with that; the 2026-07-07 result is kept
+verbatim below the notice because it happened and its records are committed.
+
 ### H-7 addendum · the outcome mix shows the mechanism
 
 `scripts/dev/lab42_outcome_breakdown.py` (new, kept) prints each config's success /

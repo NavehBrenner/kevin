@@ -5,11 +5,50 @@ KPI comparison of the F/T-only residual policy against the unassisted human-only
 on the same task under matched operator conditions. This is the artifact the **D1 Design
 Review** repackages.
 
-**Headline.** In the calibrated chamfer-contact band, the F/T residual lifts insertion
-success from **36.7% → 70.0%** — a **+33.3 pp** paired improvement (McNemar exact
-*p* = 0.006; 11 seeds won by the residual vs 1 by human-only). Peak contact force trends
-lower (−5.4 N) and is **bounded by construction**. The residual's one cost is
-**trajectory smoothness** (jerk rises ~5×) — an honest negative discussed below.
+> ## ⚠️ This result did not reproduce (2026-07-22)
+>
+> Scaling this run to 100 paired seeds — the "final D1 figure" the status note below
+> promised — **failed to reproduce the headline.** Two independently retrained residuals
+> both measured **no significant lift**:
+>
+> | Run | `human_only` | `residual` | Δ (paired, 100 seeds) | p |
+> |---|---|---|---|---|
+> | published (below) | 36.7% | **70.0%** | **+33.3 pp** | 0.006 |
+> | retrain, no action-rate penalty | 50.0% | 46.0% | **−4.0 pp** | 0.557 |
+> | retrain, action-rate penalty 100 | 50.0% | 41.0% | **−9.0 pp** | 0.136 |
+>
+> Records: `results/phase-1/repro_2026-07-22_{ar0,ar100}_trials.csv`.
+>
+> **The environment is not the cause.** `human_only` uses no checkpoint, and it scores
+> **36.7% seed-for-seed on all 30 shared seeds in all three runs** — identical walls,
+> operator, controller config, budget and scoring. The only variable is the checkpoint.
+>
+> **Two stacked lucky draws made the headline.** (1) The 30-seed sample was a hard
+> baseline slice: `human_only` is 36.7% on seeds 0–29 but **55.7%** on seeds 30–99, so the
+> true in-band baseline is ~50%, not ~37%. (2) The original checkpoint was not
+> reproducible: re-running the same recipe lands at **46.7%** on those same 30 seeds, and
+> the original checkpoint no longer exists to re-evaluate (`outputs/` is gitignored).
+>
+> Even taken at face value the published figure was loosely pinned: +33.3 pp rests on
+> **12 discordant pairs**, exact 95% CI **+9.2 … +39.8 pp**.
+>
+> **What is *not* implicated:** the action-rate penalty. The two retrains differ only in
+> that knob and are indistinguishable on the shared seeds; the penalty does exactly what
+> LAB-104 predicted (jerk 153.6 → 85.7) and costs no success.
+>
+> **Unresolved:** whether the checkpoint gap is corpus drift (the rebuilt corpus differs
+> from `dataset_9` in 35 of 200 trajectories — see `docs/review/code-audit.md` H-9),
+> CPU→GPU training RNG, or plain training-run variance, which has never been measured on
+> this project. Deliberately left open rather than chased.
+>
+> Everything below is the 2026-07-07 result **as it was measured**. It is kept verbatim
+> because it happened and its records are committed — not because it stands.
+
+**Headline (2026-07-07, superseded by the note above).** In the calibrated chamfer-contact
+band, the F/T residual lifts insertion success from **36.7% → 70.0%** — a **+33.3 pp**
+paired improvement (McNemar exact *p* = 0.006; 11 seeds won by the residual vs 1 by
+human-only). Peak contact force trends lower (−5.4 N) and is **bounded by construction**.
+The residual's one cost is **trajectory smoothness** (jerk rises ~5×).
 
 > **Status — preliminary slice.** These numbers come from a residual trained on
 > `data/dataset_9` on a **CPU-only** box (early-stopped at epoch 22, best val 0.00140,
@@ -18,6 +57,9 @@ lower (−5.4 N) and is **bounded by construction**. The residual's one cost is
 > D1 figure scales the same run to ~100 paired seeds on GPU** — the reporting and ablation
 > code are unchanged, only the seed count and the training budget grow. Regenerate with
 > the commands in [Reproducing this result](#reproducing-this-result).
+>
+> *(2026-07-22: that scaling was done. See the reproduction note above — the checkpoint
+> this paragraph describes was never committed and no longer exists.)*
 
 ## What is compared
 

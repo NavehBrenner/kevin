@@ -14,12 +14,13 @@ Read-only. Run: `uv run python scripts/dev/lab42_seed_overlap.py`
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from ai_teleop.eval.report import group_by_config, load_trials
 
 OLD = Path("docs/results/phase-1/band_scale0.4_trials.csv")
-NEW = Path("runs/eval_lab101_band100/trials.csv")
+NEW = Path(sys.argv[1] if len(sys.argv) > 1 else "runs/eval_lab101_band100/trials.csv")
 
 
 def by_seed(path: Path, label: str) -> dict[int, bool]:
