@@ -36,10 +36,15 @@ Review** repackages.
 > that knob and are indistinguishable on the shared seeds; the penalty does exactly what
 > LAB-104 predicted (jerk 153.6 → 85.7) and costs no success.
 >
-> **Unresolved:** whether the checkpoint gap is corpus drift (the rebuilt corpus differs
-> from `dataset_9` in 35 of 200 trajectories — see `docs/review/code-audit.md` H-9),
-> CPU→GPU training RNG, or plain training-run variance, which has never been measured on
-> this project. Deliberately left open rather than chased.
+> **Root cause identified: training is not seeded.** `grep manual_seed` over `src/` and
+> `scripts/` returns nothing. The `--seed` flag reaches only the train/val episode split;
+> torch's global RNG — weight initialization and batch shuffling — is never seeded, so **two
+> runs of the identical command produce different models.** The run folder records
+> `split_seed: 0`, the git commit and every hyperparameter, so it *looks* pinned; the one
+> thing that varies is the one thing that isn't. Corpus drift (`docs/review/code-audit.md`
+> H-9) and CPU→GPU are additional sources, not required ones. Until this is fixed, **no
+> checkpoint in `outputs/policy/runs/` is reproducible**, which qualifies every
+> single-checkpoint conclusion in M5–M7.
 >
 > Everything below is the 2026-07-07 result **as it was measured**. It is kept verbatim
 > because it happened and its records are committed — not because it stands.
@@ -60,6 +65,19 @@ The residual's one cost is **trajectory smoothness** (jerk rises ~5×).
 >
 > *(2026-07-22: that scaling was done. See the reproduction note above — the checkpoint
 > this paragraph describes was never committed and no longer exists.)*
+
+> **Do not compare the residual's success rate to the expert's.** The corpus manifests report
+> an `expert_success_rate` (e.g. **71.5%** for `dataset_9`) that sits suspiciously close to
+> the 70.0% above and is **not the same quantity**:
+>
+> | | actor | scored by | difficulty |
+> |---|---|---|---|
+> | `expert_success_rate` 71.5% | the **analytical expert** (reads true poses) | data-gen rule — success on the **first** seated step | the corpus's own |
+> | `residual` 70.0% | the **BC-trained policy** (no privileged state) | eval rule — seating must be **sustained**, 30 N cap | `error_scale=0.4` |
+>
+> Different actor, different success rule, different operating point. The expert's number is
+> the *ceiling the policy is cloning toward*, measured more leniently; the proximity is a
+> coincidence. See `docs/review/code-audit.md` (H-4, H-11).
 
 ## What is compared
 

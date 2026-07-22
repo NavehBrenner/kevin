@@ -826,6 +826,83 @@ stand**. The honest measurement is no significant lift over 100 paired seeds at 
 ~50% baseline. `docs/phase-1-results.md` now leads with that; the 2026-07-07 result is kept
 verbatim below the notice because it happened and its records are committed.
 
+### H-10 · Training is not seeded — **the root cause of the H-8 divergence** · **FIX**
+
+H-8's outcome left the checkpoint gap open between three candidates. Naveh asked the obvious
+question — *"we should have set a torch seed, so where's the RNG divergence coming from?"* —
+and the answer is that **there is no torch seed anywhere in the project**:
+
+```
+$ grep -rn "manual_seed" src scripts --include="*.py"
+(no matches)
+```
+
+`--seed` is threaded to exactly one place, `build_dataloaders(..., seed=seed)`
+(`policy/train.py:361`) — the **train/val episode split**. Torch's global RNG is never
+seeded, so both of the following are drawn from OS entropy on every run:
+
+- **weight initialization** of the GRU core and MLP heads;
+- **DataLoader batch shuffling** (`shuffle=True` on the train loader).
+
+(Dropout is not a third source — `model_config.dropout` is 0.)
+
+So **two runs of the identical command produce different models**, and this is sufficient on
+its own to explain H-8. Corpus drift (H-9) and CPU→GPU are *additional* sources, not
+required ones — which is why the "leave the cause open" decision costs nothing: the dominant
+term is now identified and it is the cheapest of the three to close.
+
+**The trap is that the run folder looks reproducible.** `metadata.json` records
+`split_seed: 0`, `git_commit`, the full `model_config` / `loss_config` / `train_config`, and
+the corpus fingerprint. Everything a reader would check is pinned. The one thing that isn't
+pinned is the one thing that varies, and nothing in the artifact says so.
+
+**Verdict: FIX**, and it is small: seed torch (and the DataLoader generator) from the existing
+`--seed`, rename the metadata key `split_seed` → `seed` to stop it advertising a narrower
+guarantee than a reader assumes, and record in the run folder whether the run was
+deterministic. Until then, **no result in `outputs/policy/runs/` can be reproduced**, which
+retroactively qualifies every single-checkpoint conclusion in M5–M7.
+
+**The larger methodological finding, which outlives the fix:** every M5–M7 conclusion rests on
+**one checkpoint per condition**, and training-run variance has never been measured here. The
+paired-seed design controls operator variance rigorously and controls **nothing** about the
+policy draw. Seeding makes a result *repeatable*; it does not make one checkpoint
+*representative*. Both are needed, and the project currently has neither.
+
+### H-11 · "Expert 71.5%" and "residual 70.0%" are different metrics that look comparable · **DOCUMENT**
+
+Raised by Naveh reading the H-8 write-up: *was the 70% a measured result, or the expert's
+lift?* It is measured, and it is the learned residual — but the question is the finding,
+because the docs make the two indistinguishable:
+
+| Number | What it is | Scored by | Operating point |
+|---|---|---|---|
+| **71.5%** `expert_success_rate` | the **analytical expert** (privileged), during **data generation** | `episode_terminal_reason` — **first seated step** (H-4) | the corpus's own difficulty |
+| **70.0%** `residual` | the **BC-trained F/T policy**, during **evaluation** | `TrialObserver` — **sustained** seating, 30 N cap (H-4) | `error_scale=0.4` |
+
+They differ in *who acts*, *what counts as success*, and *what difficulty is sampled* — and
+they land 1.5 pp apart, in adjacent paragraphs, both called "success rate". That is precisely
+the collision H-4 predicted, and it produced a real misreading on first contact.
+
+Evidence the 70.0% is genuinely the learned policy, not the expert leaking into the eval arm:
+
+- `eval/ablation.py:104` defines only `HUMAN_ONLY = Config(label="human_only",
+  assist_factory=NoAssist)`; the `residual` label is constructed **exclusively** from
+  `--residual-checkpoint` (`scripts/evaluate.py:86`). The harness has never had an expert arm.
+- **Signature check.** The published `residual` arm carries jerk **149.06** against human-only's
+  31.15 — the ~5× inflation that is the *learned* policy's known artifact (a jittery
+  near-zero residual added every step). The 2026-07-22 retrained policy reproduces it
+  (**153.57**). An analytical expert would not produce that signature.
+
+Also worth stating plainly because it was asked: **70% was never a project target.**
+`project-scope.md:287` states Phase-1 acceptance qualitatively — *"Phase 1 (F/T-only residual)
+outperforms human-only on success rate"* — with no number. The only numeric targets in the
+scope are dataset-volume ones.
+
+**Verdict: DOCUMENT.** D-4's operating-point ledger needs an **actor** column (expert /
+human / residual) beside the *scored-by* column H-4 already requires; and
+`docs/phase-1-results.md` should say once, explicitly, that the expert's rate and the
+residual's rate are not comparable quantities.
+
 ### H-7 addendum · the outcome mix shows the mechanism
 
 `scripts/dev/lab42_outcome_breakdown.py` (new, kept) prints each config's success /
