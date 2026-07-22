@@ -744,6 +744,36 @@ carry the **same fingerprint** as `dataset_9` with different trajectories — th
 possible demonstration of G-4, now sitting in the repo as two directories. The checkpoint
 trained on the hybrid was discarded rather than annotated.
 
+**The rebuild made G-4 reproducible on demand.** `dataset_10` finished 2026-07-22 (765 s for
+200 episodes). Comparing it against `dataset_9` —
+`scripts/dev/lab42_corpus_diff.py data/dataset_9 data/dataset_10`, new, kept:
+
+```
+data/dataset_9   generated 2026-07-06T21:24:10Z  fingerprint 54dccad9cc778bba
+data/dataset_10  generated 2026-07-22T10:37:58Z  fingerprint 54dccad9cc778bba
+  fingerprint identical: True      config identical: True
+  expert success: 143/200 (71.5%)  vs  143/200 (71.5%)
+  episodes with a different n_steps: 35/200
+    ep32   8061 -> 3978  (-4083)      ep25  7389 -> 7438  (+49)
+    ep98   4304 -> 4298  (-6)         …33 more within ±6 steps
+  episodes whose outcome flipped: 0
+```
+
+Two directories, **the same content hash**, 35 different trajectories — including one episode
+that runs less than half as long — and identical labels. That is the cleanest possible
+statement of the hole G-4 described: the fingerprint certifies *"same knobs"*, and the repo
+now contains a worked counter-example to reading it as *"same data"*. `docs/data-schema.md`'s
+byte-identical-regeneration claim should cite this pair.
+
+Two observations that make the drift less alarming than the ep32 headline suggests, and both
+belong in the ledger:
+
+- **33 of 35 differences are ≤6 steps**, which reads as accumulated floating-point divergence
+  in a contact-rich sim, not a behaviour change.
+- **Nothing reclassified.** All 200 terminal reasons match and the expert success rate is
+  identical to the episode. So a corpus-level statistic (*"expert 71.5%"*) is reproducible even
+  though the trajectories are not — which is exactly why this went unnoticed for a month.
+
 ### H-7 addendum · the outcome mix shows the mechanism
 
 `scripts/dev/lab42_outcome_breakdown.py` (new, kept) prints each config's success /
