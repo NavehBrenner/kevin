@@ -5,7 +5,7 @@ KPI comparison of the F/T-only residual policy against the unassisted human-only
 on the same task under matched operator conditions. This is the artifact the **D1 Design
 Review** repackages.
 
-> ## ⚠️ This result did not reproduce (2026-07-22)
+> ## ⚠️ This result did not reproduce — investigation closed (LAB-114, 2026-07-23)
 >
 > Scaling this run to 100 paired seeds — the "final D1 figure" the status note below
 > promised — **failed to reproduce the headline.** Two independently retrained residuals
@@ -36,15 +36,39 @@ Review** repackages.
 > that knob and are indistinguishable on the shared seeds; the penalty does exactly what
 > LAB-104 predicted (jerk 153.6 → 85.7) and costs no success.
 >
-> **Root cause identified: training is not seeded.** `grep manual_seed` over `src/` and
-> `scripts/` returns nothing. The `--seed` flag reaches only the train/val episode split;
-> torch's global RNG — weight initialization and batch shuffling — is never seeded, so **two
-> runs of the identical command produce different models.** The run folder records
-> `split_seed: 0`, the git commit and every hyperparameter, so it *looks* pinned; the one
-> thing that varies is the one thing that isn't. Corpus drift (`docs/review/code-audit.md`
-> H-9) and CPU→GPU are additional sources, not required ones. Until this is fixed, **no
-> checkpoint in `outputs/policy/runs/` is reproducible**, which qualifies every
-> single-checkpoint conclusion in M5–M7.
+> **Root cause, found and fixed (LAB-114): training was not seeded.** `grep manual_seed` over
+> `src/` and `scripts/` returned nothing — `--seed` reached only the train/val episode split,
+> so weight init and batch shuffling came from OS entropy and **two runs of the identical
+> command produced different models**, while the run folder recorded `split_seed: 0` and a git
+> commit and *looked* pinned. Fixed by one `torch.manual_seed(seed)`, with a train-twice-
+> assert-identical-weights test that keeps it fixed.
+>
+> **The honest Phase-1 result is a distribution, not a point.** With training seeded, five
+> checkpoints of the *same recipe* (`dataset_10`, seeds 0–4), each over 100 paired eval seeds:
+>
+> | | `human_only` | `residual` | paired Δ |
+> |---|---|---|---|
+> | mean over 5 training seeds | 50.0% | 46.0% | **−4.0 pp** |
+> | range | 50.0% (all five) | 35.0 … 53.0% | **−15.0 … +3.0 pp** |
+>
+> The **18 pp spread** across nothing but the training seed is the noise floor under every
+> single-checkpoint number in M5–M7. Full analysis, and the two rules it forces, in
+> `docs/review/divergence-investigation.md` and `project-wiki/concepts/training-seed-variance`.
+>
+> **The +33.3 pp headline is not a draw of this recipe.** Re-scored on the exact 30 seeds that
+> produced 70.0%, the five checkpoints span **26.7 … 53.3%** — 70.0% sits 16.7 pp above the
+> best of five. All three explanations were tested and none reaches it: **seed variance** (H-A)
+> is 18 pp wide but centred at ~46%; **corpus drift** (H-B) is unanswerable because the
+> 2026-07-06 corpus was overwritten in place (today's drift is 1 flipped outcome in 200); and
+> **CPU-vs-GPU** (H-C) moves the weights ‖Δw‖/‖w‖ = 5e-04 and closed-loop success by one eval
+> seed. Two of the three artifacts behind the headline — the checkpoint and the corpus — no
+> longer exist, so its provenance is **unknown**, not disputed.
+>
+> **Phase 1's standing positive results are the ones that don't rest on a sampled success
+> rate:** the peak-force safety guarantee (bounded by construction, never exceeded) and the
+> mechanism findings (identifiability, far-field gating, the bounded-expert/DAgger argument),
+> which rest on theory and byte-identical sweeps. The success-rate *lift* is, on the honest
+> measurement, **not established** — mean −4 pp, and no version of the recipe reproduces +33.
 >
 > Everything below is the 2026-07-07 result **as it was measured**. It is kept verbatim
 > because it happened and its records are committed — not because it stands.

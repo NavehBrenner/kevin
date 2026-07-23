@@ -1,9 +1,12 @@
 # Spec — the checkpoint-divergence investigation (LAB-42 follow-on)
 
-> **Status (2026-07-22, S5):** **G1 done** (training is seeded, with a test). **G2 done** —
-> the spread is **18 pp** and it does **not** contain the headline. **Phase 4 is therefore
-> required, not optional**: H-B is running. G3 waits on it. Results below, under
-> *Findings*; the plan they came from is unchanged beneath it.
+> **Status (2026-07-23, S5): investigation complete.** G1 done (training seeded + test).
+> G2: the recipe's spread is **18 pp**, centred ~−4 pp, and does **not** contain the +33 pp
+> headline. Phase 4: **H-B unanswerable** (the headline corpus was overwritten in place),
+> **H-C null** (device is a rounding-level perturbation). G3 done: `docs/phase-1-results.md`
+> now leads with the distribution. All four hypotheses closed — see *Verdict* below. What
+> remains is D-4/D-6 mirroring this, and merging PR #86. Results under *Findings*; the
+> original plan is unchanged beneath it.
 
 ## Findings (S5, 2026-07-22)
 
@@ -91,12 +94,40 @@ So corpus drift is **real but tiny** — one flipped outcome in 200. It remains 
 for a 20+ pp shift in a trained policy, which is the prior the spec assigned it. The honest
 statement is that H-B is untestable *and* implausible, not that it was ruled out.
 
-### H-C — the last live hypothesis (running)
+### H-C — null: device is a rounding-level perturbation (commits `490f008`, records `lab114/hc/`)
 
-CPU vs GPU training is now the only recorded difference between the original run and every
-retrain that can still be varied. Note the limit up front: it can only be tested against
-*today's* corpus, so a null here does not reconstruct the original conditions — it leaves the
-2026-07-07 checkpoint's provenance **unknown**, which is then the finding.
+CPU vs GPU training was the only recorded difference between the original run and every retrain
+that could still be varied. It moves nothing that matters.
+
+- **Offline:** the same seed on CPU and GPU trains for the same 22 epochs to the same
+  `best_val_loss` to six decimals. `scripts/dev/lab114_weight_distance.py` scales the weight
+  difference: **‖Δw‖/‖w‖ = 5.0e-04 for device vs 1.4e+00 for a seed change** — device perturbs
+  the weights ~2900× less than the seed does. It is float-accumulation order, not a different
+  model.
+- **Closed-loop:** the CPU twin of `seed0` scores **49.0%** against the GPU twin's 48.0% (Δ vs
+  `human_only`: −1.0 pp vs −2.0 pp), and the two disagree on **exactly 1 of 100 eval seeds**.
+  The rounding-level perturbation stays contained through the contact loop; no chaotic
+  amplification.
+
+CPU training cost 36.5 min vs 45.5 s on GPU (47×), which is why H-C was run last and at n=1.
+One twin is enough: the effect is a rounding difference, and a rounding difference does not
+have a wide success distribution hiding behind it.
+
+## Verdict — all three hypotheses closed
+
+| | | |
+|---|---|---|
+| **H-A** seed variance | half-confirmed, insufficient | 18 pp spread swallows every M5–M7 single-checkpoint margin, but 70.0% is 16.7 pp above the best of five |
+| **H-B** corpus drift | **unanswerable** | the 2026-07-06 corpus was overwritten in place; today's drift is 1 flipped outcome in 200 |
+| **H-C** device | **null** | CPU vs GPU is ‖Δw‖/‖w‖ = 5e-04, one eval-seed of difference |
+| **H-D** wrong arm | refuted (earlier) | the published arm carries the learned policy's jerk signature |
+
+**No recorded combination of seed, corpus and device reproduces the 2026-07-07 checkpoint's
+70.0%.** Two of the three artifacts behind it — the checkpoint and the training corpus — no
+longer exist (H-8, and H-B here), so its provenance cannot be reconstructed and is stated as
+**unknown**, not disputed. What the recipe *does* produce, measured five ways, is a
+distribution centred near **−4 pp** (residual ≈46%, human ≈50%) with an 18 pp spread. That is
+the honest Phase-1 result, and G3 writes it.
 
 ---
 
@@ -279,7 +310,8 @@ number G2 produces anyway.
 - [x] `torch.manual_seed` wired from `--seed`; a same-seed-twice test asserts identical weights.
 - [x] ≥5 seeds trained and evaluated at 100 paired seeds; spread reported with mean and range.
 - [x] `best_val_loss` vs closed-loop success plotted across those seeds.
-- [ ] The Phase-1 claim rewritten as a distribution, in `docs/phase-1-results.md` and D-4.
+- [x] The Phase-1 claim rewritten as a distribution, in `docs/phase-1-results.md` (top box).
+      D-4 (in `PROJECT-REVIEW.md`) still to mirror it.
 - [x] M7's sign-claims audited against the measured spread (wording only, no new compute).
       Done S5, wiki-side only — `docs/` carries no M7 numbers (1B: `phase-1-results.md` is the
       only doc with a measured outcome). `concepts/vision-conditioned-policy` now reads *"no
