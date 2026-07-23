@@ -18,16 +18,26 @@ milestone is started.
 | # | Milestone | Phase | Component(s) | Status |
 |---|-----------|-------|--------------|--------|
 | M1 | Sim environment online | Foundation | 1 | ✅ done |
-| M2 | Backbone controller online | Foundation | 2 (partial) | ⬜ next |
-| M3 | Assistance seam + scripted input online | Foundation | seam, 5 (stub) | ⬜ |
-| M4 | Expert + data generation online | Foundation | 3 | ⬜ |
-| M5 | Residual policy — Phase 1 (F/T-only) | Phase 1 | 4 | ⬜ |
-| M6 | Evaluation harness + Phase 1 results | Phase 1 | 6 | ⬜ |
-| M7 | Vision-conditioned residual — Phase 2 | Phase 2 | 4 (vision) | ⬜ |
-| M8 | Human teleop input (stereo hand tracking) | Phase 2 | 5 | ⬜ |
-| M9 | Final evaluation + polish | Delivery | 6, 7 | ⬜ |
+| M2 | Backbone controller online | Foundation | 2 | ✅ done |
+| M3 | Assistance seam + scripted input online | Foundation | seam, 5 | ✅ done |
+| M4 | Expert + data generation online | Foundation | 3 | ✅ done |
+| M5 | Residual policy — Phase 1 (F/T-only) | Phase 1 | 4 | ✅ done † |
+| M6 | Evaluation harness + Phase 1 results | Phase 1 | 6 | ✅ done † |
+| M7 | Vision-conditioned residual — Phase 2 | Phase 2 | 4 (vision) | ✅ done ‡ |
+| M8 | Human teleop input (stereo hand tracking) | Phase 2 | 5 | ✅ done |
+| M9 | Final evaluation + polish | Delivery | 6, 7 | 🟡 in progress |
 
-Two **graded course checkpoints** (D1, D2) draw on these — see *Course checkpoints* below.
+† The Phase-1 success-rate **headline is under revision** — it did not reproduce under seeded
+training (LAB-114); the standing results are the bounded-force guarantee + the mechanism
+findings. See [`phase-1-results.md`](phase-1-results.md) and
+[`results/kpi-dashboard.md`](results/kpi-dashboard.md).
+‡ M7 closed as a **documented negative result** (vision/DAgger/better-expert all explored, none
+lifted closed-loop success); the mechanism is the deliverable. Spec:
+[`milestone-7-spec.md`](milestone-7-spec.md).
+
+The M9 delivery arc runs through the **LAB-42 project-state review** (code/doc audit, the KPI
+dashboard, the policy guide, a go-forward decision). Two **graded course checkpoints** (D1, D2)
+draw on these — see *Course checkpoints* below.
 
 ---
 
@@ -185,6 +195,11 @@ main ML contribution.
 **Acceptance**: vision-conditioned policy trained and evaluated; ablation shows the
 contribution of vision; runs in real time within the control budget.
 
+**Status**: ✅ done, closed as a **documented negative result** — vision trained and evaluated
+(the ablation shows *no detectable* contribution at this power) and runs in real time; the
+deliverable is the *mechanism* that explains why per-step imitation cannot lift closed-loop
+success here. Full retrospective spec: [`milestone-7-spec.md`](milestone-7-spec.md).
+
 **Depends on**: M6 (eval harness reused). **Component**: 4 (Phase 2). **Rough effort**: 14–20 h.
 
 ---
@@ -269,7 +284,10 @@ well-engineered Phase-1 project is a strong submission on its own). **Rough effo
 
 ## Indicative timeline
 
-Solo, ~10–15 h/week, today ≈ 2026-05-21 → deadline 2026-08-31 (~15 weeks). M1 already done.
+Solo, ~10–15 h/week, deadline 2026-08-31. **Actuals (as of 2026-07-23): M1–M8 landed on
+schedule; M7 closed as a documented negative; M9 (final eval + polish, via the LAB-42 review) is
+in progress ahead of the D2 submission.** The windows below are the original plan, kept for the
+record.
 
 | Window | Target |
 |---|---|
