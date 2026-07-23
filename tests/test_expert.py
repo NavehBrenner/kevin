@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 from ai_teleop.common.command import Command
+from ai_teleop.common.geometry import axis_from_quat
 from ai_teleop.common.observation import Observation
-from ai_teleop.common.utils.rotations import axis_from_quat
 from ai_teleop.domain import AssistProvider, apply_delta
 from ai_teleop.expert import Expert
 

@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import numpy as np  # noqa: E402
 
-from ai_teleop.common.utils.rotations import axis_from_quat  # noqa: E402
+from ai_teleop.common.geometry import axis_from_quat  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 

@@ -292,7 +292,9 @@ def test_observer_runs_as_step_callback_through_run_episode():
 def _module_dir(module_name: str) -> pathlib.Path:
     import importlib
 
-    return pathlib.Path(importlib.import_module(module_name).__file__).parent
+    module_file = importlib.import_module(module_name).__file__
+    assert module_file is not None, f"{module_name} is a namespace package, not a module"
+    return pathlib.Path(module_file).parent
 
 
 # The eval *measurement core* — the observer + its record/trace contracts — must

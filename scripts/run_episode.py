@@ -31,7 +31,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -64,8 +64,8 @@ from ai_teleop.input import (  # noqa: E402
     calibrate_neutral,
 )
 from ai_teleop.sim.config import EnvConfig  # noqa: E402
-from ai_teleop.sim.runner import DEFAULT_MAX_STEPS, SIM_DT, run_episode  # noqa: E402
-from ai_teleop.sim.scene import SimEnv  # noqa: E402
+from ai_teleop.sim.runner import DEFAULT_LIVE_MAX_STEPS, SIM_DT, run_episode  # noqa: E402
+from ai_teleop.sim.scene import DEFAULT_WRIST_RENDER_EVERY, SimEnv  # noqa: E402
 from ai_teleop.sim.scene_source import resolve_scene_path  # noqa: E402
 
 log = get_logger("episode")
@@ -73,7 +73,7 @@ log = get_logger("episode")
 _DEFAULT_RECORD_RUNS = Path("data/recorded/runs")
 
 
-def _fast_exit(code: int = 0) -> None:
+def _fast_exit(code: int = 0) -> NoReturn:
     """Hard-exit without tearing down the MuJoCo viewer / offscreen renderer GL context.
 
     That teardown (an un-invoked `env.close()`) blocks ~10s under WSLg; everything
@@ -160,15 +160,15 @@ def _build_assist(policy: str, checkpoint: str | None) -> AssistProvider:
             brake_gain=DEFAULT_EXPERT_BRAKE_GAIN,
             brake_lead_floor=DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
         )
-    if policy == "tf":
-        if not checkpoint:
-            raise SystemExit("--policy tf requires --checkpoint PATH (a trained residual .pt).")
-        from ai_teleop.policy import LearnedResidual  # lazy: pulls in torch
+    if not checkpoint:
+        raise SystemExit("--policy tf requires --checkpoint PATH (a trained residual .pt).")
+    from ai_teleop.policy import LearnedResidual  # lazy: pulls in torch
 
-        return LearnedResidual.from_checkpoint(checkpoint)
-    # ponytail: vision (Phase-2 vision-conditioned residual) isn't trained yet; fail
-    # loud rather than silently fall back. Add the branch when the checkpoint exists.
-    raise SystemExit(f"--policy {policy} is not implemented yet.")
+    # F/T-only and vision checkpoints load through the same path: the serialized
+    # PolicyConfig carries `use_vision`, so the checkpoint selects its own modality
+    # and the caller only has to feed it wrist frames (`main` turns on the env's wrist
+    # capture for it). There is no separate --policy vision; the checkpoint is the switch.
+    return LearnedResidual.from_checkpoint(checkpoint)
 
 
 def _rebuild_for_replay(meta: EpisodeMetadata, render_mode):
@@ -453,7 +453,7 @@ def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
 
     A replay plays back exactly the recorded commands, so it runs for the recorded length;
     a regenerated baseline (see ``replay_as_baseline``) runs for the recorded baseline length
-    so it reproduces the scored human-only rollout; live input falls back to DEFAULT_MAX_STEPS.
+    so it reproduces the scored human-only rollout; live input falls back to DEFAULT_LIVE_MAX_STEPS.
     Probe-terminated recordings get one extra iteration — see
     :func:`_terminal_callback_extra`. Explicit 0/negative => run effectively forever
     (``range()`` is lazy, so ``sys.maxsize`` costs nothing).
@@ -471,7 +471,7 @@ def resolve_max_steps(config: EpisodeConfig) -> tuple[int, str]:
             config.replay_meta.get("terminal_reason")
         )
     else:
-        requested_steps = DEFAULT_MAX_STEPS
+        requested_steps = DEFAULT_LIVE_MAX_STEPS
     max_steps = requested_steps if requested_steps > 0 else sys.maxsize
     budget = "unlimited" if requested_steps <= 0 else f"{requested_steps} steps"
     return max_steps, budget
@@ -565,7 +565,7 @@ def add_run_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Episode step budget (one step == one 2 ms sim tick). Default: the recorded "
         f"length when --input is an episode path (so a replay reproduces it to the step), "
-        f"else {DEFAULT_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
+        f"else {DEFAULT_LIVE_MAX_STEPS}. Use 0 for no limit — run until you close the viewer or "
         "Ctrl-C (handy for free-play with --input vision).",
     )
     group.add_argument(
@@ -713,17 +713,28 @@ def add_policy_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("policy", "The correction layer under test.")
     group.add_argument(
         "--policy",
-        choices=["noassist", "expert", "tf", "vision"],
+        choices=["noassist", "expert", "tf"],
         default="noassist",
         help="Correction layer applied on top of the base commands: 'noassist' (default, raw "
-        "operator), 'expert' analytical residual, 'tf' trained residual (needs --checkpoint), "
-        "'vision' Phase-2 vision-conditioned residual (not implemented). On replay the recorded "
-        "commands are the same under every policy — only the correction differs.",
+        "operator), 'expert' analytical residual, 'tf' trained residual (needs --checkpoint). "
+        "A vision-conditioned checkpoint also loads under 'tf' — the checkpoint's own config "
+        "selects the modality and the wrist camera is enabled automatically. On replay the "
+        "recorded commands are the same under every policy — only the correction differs.",
     )
     group.add_argument(
         "--checkpoint",
         default=None,
-        help="Trained residual checkpoint .pt for --policy tf (e.g. runs/train/<run>/checkpoint.pt).",
+        help="Trained residual checkpoint .pt for --policy tf, F/T-only or vision "
+        "(e.g. outputs/policy/runs/<run>/checkpoint.pt).",
+    )
+    group.add_argument(
+        "--wrist-render-every",
+        type=int,
+        default=DEFAULT_WRIST_RENDER_EVERY,
+        help="Wrist-camera capture cadence for a vision checkpoint: render a new frame every N "
+        f"observation ticks and hold it between (default {DEFAULT_WRIST_RENDER_EVERY}, matching "
+        "the M7 corpus so the deploy frame stream decimates like the training one). Ignored "
+        "unless the loaded checkpoint is vision-conditioned.",
     )
 
 
@@ -785,6 +796,14 @@ def main() -> int:
     target_position = observation.hole_poses[target_hole_index][:3].copy()
     home_quaternion = controller.home_pose[3:]
     assist = _build_assist(args.policy, args.checkpoint)
+    # A vision checkpoint needs a live wrist frame on each Observation; turn on the
+    # env's rate-limited capture for it (duck-typed, same as `eval.ablation.run_trial`).
+    # An F/T-only checkpoint leaves `use_vision` False → the env renders nothing.
+    if getattr(assist, "use_vision", False):
+        log.info(
+            "vision checkpoint — enabling wrist capture every %d ticks", args.wrist_render_every
+        )
+        env.enable_wrist_capture(args.wrist_render_every)
     input_strategy, tracker = build_input(config, env, target_position, home_quaternion)
 
     start_dist = float(np.linalg.norm(observation.ee_pose[:3] - target_position))

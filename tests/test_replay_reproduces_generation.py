@@ -15,7 +15,7 @@ import numpy as np
 
 from ai_teleop.common import Command
 from ai_teleop.control import Controller
-from ai_teleop.data.generate import generate_dataset
+from ai_teleop.data.generate import GenerationConfig, generate_dataset
 from ai_teleop.data.step_callbacks import TerminationProbe, episode_terminal_reason
 from ai_teleop.data.trajectory import TerminalReason, load_episode
 from ai_teleop.domain import Delta, NoAssist
@@ -71,7 +71,9 @@ class _PegRecorder:
 
 
 def test_replay_reproduces_recorded_trajectory(tmp_path):
-    paths = generate_dataset(tmp_path, n_episodes=2, seed=0, max_steps=300, baseline=False)
+    paths = generate_dataset(
+        tmp_path, n_episodes=2, config=GenerationConfig(max_steps=300), baseline=False
+    )
 
     for path in paths:
         columns, meta = load_episode(path)
@@ -80,6 +82,7 @@ def test_replay_reproduces_recorded_trajectory(tmp_path):
         # Rebuild the exact scene from the stored wall_seed (the part that was broken —
         # it used to come from CLI args). Arg-less reset() lands on the same wall.
         # The controller config is part of the episode's spec too (LAB-96).
+        assert meta["wall_seed"] is not None  # generated-wall episode
         env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
         controller = Controller(
             env,
@@ -107,7 +110,9 @@ def test_regenerated_baseline_matches_the_scored_baseline(tmp_path):
     truncated commands) reproduces the exact baseline the dataset scored — length and all.
     Guards the viewer-artifact fix and the ``baseline_n_steps`` measurement.
     """
-    (path,) = generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=300, baseline=True)
+    (path,) = generate_dataset(
+        tmp_path, n_episodes=1, config=GenerationConfig(max_steps=300), baseline=True
+    )
     _, meta = load_episode(path)
     assert meta["source"] == "scripted" and meta["policy"] == "expert"
     baseline_n_steps = meta["baseline_n_steps"]
@@ -115,6 +120,7 @@ def test_regenerated_baseline_matches_the_scored_baseline(tmp_path):
 
     # Rebuild the operator exactly as run_episode.py's replay-as-baseline path does:
     # ScriptedNoisyHuman(target ⊕ home_quat, seed=human_seed) on the same wall + reset.
+    assert meta["wall_seed"] is not None  # generated-wall episode
     env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
     controller = Controller(
         env,
@@ -150,9 +156,12 @@ def test_replay_is_faithful_under_finite_time_factor(tmp_path):
     (viewer) can't run in CI but only adds a sync that never touches sim data, so headless
     coverage carries the guarantee.
     """
-    (path,) = generate_dataset(tmp_path, n_episodes=1, seed=0, max_steps=300, baseline=False)
+    (path,) = generate_dataset(
+        tmp_path, n_episodes=1, config=GenerationConfig(max_steps=300), baseline=False
+    )
     columns, meta = load_episode(path)
 
+    assert meta["wall_seed"] is not None  # generated-wall episode
     env = make_env(EnvConfig(wall_seed=int(meta["wall_seed"])), render_mode="headless")
     controller = Controller(
         env,

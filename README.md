@@ -13,6 +13,8 @@ Course project for *Workshop in Autonomous Systems Simulation* (OpenU course 209
 ## Documents
 
 - **[project-scope.md](./project-scope.md)** — full scope, design decisions, KPIs, architecture overview, deferred design questions.
+- **[docs/architecture-tour.md](./docs/architecture-tour.md)** — a guided walk through the code in the order the data flows: operator input → the assistance seam → sim → the episode loop → corpus → policy → evaluation. Start here to find your way around `src/`.
+- **[docs/phase-1-results.md](./docs/phase-1-results.md)** — measured outcomes. *The headline figure is currently under revision.*
 - **[docs/milestone-1-spec.md](./docs/milestone-1-spec.md)** — current milestone: simulation environment online.
 
 ## Quick start
@@ -65,7 +67,9 @@ at runtime with `kvn episode --input {scripted,vision}` (default `scripted`):
   hold an open palm still for 3 s) to re-anchor; make a fist to squeeze, open your
   hand to release. Needs the `stereo-input` extra, a one-time stereo calibration,
   and the viewer (no `--headless`).
-- **keyboard** — developer fallback, *deferred* (not yet implemented).
+
+A keyboard fallback was scoped in M8 and **dropped** — `scripted` covers repeatable
+benchmarking and `vision` covers the live demo, so nothing needed it.
 
 ### Stereo (vision) setup
 

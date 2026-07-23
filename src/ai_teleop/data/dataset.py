@@ -22,8 +22,8 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
+from ai_teleop.common.geometry import quat_to_6d
 from ai_teleop.common.log import get_logger
-from ai_teleop.common.utils.rotations import quat_to_6d
 from ai_teleop.data.generate import regenerate_from_metadata
 from ai_teleop.data.images import (
     decode_frames,

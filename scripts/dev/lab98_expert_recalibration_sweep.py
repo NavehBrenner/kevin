@@ -60,12 +60,12 @@ from lab95_recorded_forensics import contact_forensics, print_forensics_table  #
 
 import ai_teleop.domain.delta as delta_module  # noqa: E402
 import ai_teleop.sim.scenegen.config as scenegen_config  # noqa: E402
+from ai_teleop.common.geometry import axis_from_quat  # noqa: E402
 from ai_teleop.common.log import (  # noqa: E402
     add_logging_arguments,
     configure_from_args,
     get_logger,
 )
-from ai_teleop.common.utils.rotations import axis_from_quat  # noqa: E402
 from ai_teleop.control import Controller  # noqa: E402
 from ai_teleop.data.step_callbacks import TerminationProbe  # noqa: E402
 from ai_teleop.domain import NoAssist  # noqa: E402

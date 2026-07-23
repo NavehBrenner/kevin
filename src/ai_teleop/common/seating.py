@@ -19,8 +19,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ai_teleop.common.geometry import axis_from_quat
 from ai_teleop.common.observation import Observation
-from ai_teleop.common.utils.rotations import axis_from_quat
 
 # The peg tip sits half a peg-length down the peg body's local +z axis. This is
 # a fixed property of the peg body in the MJCF, identical for generation and

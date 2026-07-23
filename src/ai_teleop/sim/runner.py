@@ -22,20 +22,34 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ai_teleop.common.command import Command
 from ai_teleop.common.observation import Observation
 from ai_teleop.control import LockStatus
 from ai_teleop.control.backbone import Controller
 from ai_teleop.domain import apply_delta
+from ai_teleop.domain.delta import Delta
 from ai_teleop.domain.interfaces import AssistProvider, InputStrategy
 from ai_teleop.sim.scene import SimEnv
+
+# The loop's one extension point: `f(step, observation, base_command, delta, command) -> bool`,
+# called per tick with the *pre-step* observation, returning True to end the episode. Data
+# generation (`data.step_callbacks`), the eval harness (`eval.observer`) and DAgger all hang
+# off it, so the contract is named once here and mypy checks every implementation against it.
+# A callable alias, not a Protocol — there is no state or extra method to declare.
+StepCallback = Callable[[int, Observation, Command, Delta, Command], bool]
 
 # Sim runs at 500 Hz (dt=2 ms in the MJCF). The loop is always physics-rate: exactly one
 # base command + one controller recompute + one mj_step per iteration. This is what makes a
 # replay reproduce its recording tick-for-tick — no wall-clock-dependent substepping.
 SIM_DT = 0.002
-DEFAULT_MAX_STEPS = 5000  # ~10 s of sim time — a full M3 episode budget.
+# Budget for a *live* (interactive / free-play) episode — ~10 s of sim time. Deliberately
+# NOT named DEFAULT_MAX_STEPS: `data.generate.DEFAULT_MAX_STEPS` is the *task* budget (9000)
+# that data generation and eval must share, and a same-named 5000 here is how LAB-107's
+# harness bug happened (eval scored at 5000 against a corpus generated at 9000).
+DEFAULT_LIVE_MAX_STEPS = 5000
 DEFAULT_RENDER_FPS = 30.0  # target viewer frames per *sim* second when there's spare time.
 DEFAULT_MIN_RENDER_FPS = 15.0  # floor — render at least this often even if it costs wall-time.
 
@@ -81,7 +95,7 @@ def run_episode(
     time_factor: float = math.inf,
     render_fps: float = DEFAULT_RENDER_FPS,
     min_render_fps: float = DEFAULT_MIN_RENDER_FPS,
-    step_callback=None,
+    step_callback: StepCallback | None = None,
 ) -> EpisodeResult:
     """Run one episode of the composed M3 loop; return the terminal state.
 

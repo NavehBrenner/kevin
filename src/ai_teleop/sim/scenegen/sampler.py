@@ -27,8 +27,7 @@ from .config import (
     resolve_seed,
 )
 
-# Shapes the generator can currently realise. Extended with the shape library;
-# the sampler only ever draws from this set.
+# The shapes the generator realises — round bores only, matching `HoleShape`.
 IMPLEMENTED_SHAPES = ("circle",)
 
 _MAX_PLACEMENT_ATTEMPTS = 2000
@@ -129,18 +128,12 @@ def _resolve_shape_size_chamfer(
     given = given or {}
     shape = given.get("shape") or str(rng.choice(IMPLEMENTED_SHAPES))
     if shape not in IMPLEMENTED_SHAPES:
-        raise NotImplementedError(f"hole shape {shape!r} not implemented yet")
+        raise ValueError(f"unknown hole shape {shape!r}; expected one of {IMPLEMENTED_SHAPES}")
     chamfer = given.get("chamfer")
     if chamfer is None:
         chamfer = float(rng.uniform(*ranges.chamfer))
-    size = given.get("size") or _sample_size(rng, ranges, shape)
+    size = given.get("size") or {"diameter": float(rng.uniform(*ranges.diameter))}
     return shape, size, float(chamfer)
-
-
-def _sample_size(rng: np.random.Generator, ranges: SamplingRanges, shape: str) -> dict[str, float]:
-    if shape == "circle":
-        return {"diameter": float(rng.uniform(*ranges.diameter))}
-    raise NotImplementedError(f"size sampling for {shape!r} not implemented yet")
 
 
 def _place_holes(

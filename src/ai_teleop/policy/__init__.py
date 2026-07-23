@@ -33,6 +33,7 @@ from ai_teleop.policy.residual_policy import (
     save_checkpoint,
 )
 from ai_teleop.policy.run_artifacts import build_metadata, plot_history, write_run_artifacts
+from ai_teleop.policy.train import TrainedRun, train, train_policy
 
 __all__ = [
     "PolicyConfig",
@@ -49,4 +50,7 @@ __all__ = [
     "build_metadata",
     "plot_history",
     "write_run_artifacts",
+    "train",
+    "train_policy",
+    "TrainedRun",
 ]

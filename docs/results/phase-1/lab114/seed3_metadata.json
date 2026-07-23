@@ -1,0 +1,67 @@
+{
+  "created_at": "2026-07-22T13:57:18+00:00",
+  "git_commit": "07629ed",
+  "dataset": {
+    "dir": "data/dataset_10",
+    "master_seed": 9,
+    "fingerprint": "54dccad9cc778bba",
+    "schema_version": "2.0",
+    "n_episodes_total": 200,
+    "n_train_episodes": 160,
+    "n_val_episodes": 40,
+    "expert_success_rate": 0.715
+  },
+  "model_config": {
+    "command_dim": 9,
+    "force_torque_dim": 6,
+    "proprioception_dim": 24,
+    "use_command_ee_delta": false,
+    "use_vision": false,
+    "image_embed_dim": 128,
+    "image_backbone": "mobilenet_v3_small",
+    "image_pretrained": true,
+    "freeze_image_encoder": false,
+    "hidden_size": 128,
+    "num_layers": 2,
+    "head_hidden": [
+      128
+    ],
+    "dropout": 0,
+    "output_dim": 7
+  },
+  "loss_config": {
+    "weight_position": 1.0,
+    "weight_orientation": 0.5,
+    "weight_grip": 0.1,
+    "weight_action_rate": 0.0,
+    "orientation": "geodesic",
+    "huber_beta": 1.0
+  },
+  "train_config": {
+    "epochs": 40,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0,
+    "tbptt_steps": 256,
+    "patience": 8,
+    "min_delta": 0.0001,
+    "lr_patience": 3,
+    "lr_factor": 0.5,
+    "use_amp": false,
+    "checkpoint_image_encoder": false,
+    "image_encode_chunk": 0
+  },
+  "results": {
+    "epochs_run": 15,
+    "best_val_loss": 0.0019737149476224767,
+    "best_epoch": 14,
+    "final_train_loss": 0.0013829791590928675,
+    "final_val_loss": 0.0019737149476224767
+  },
+  "run_name": "lab114_seed3",
+  "batch_size": 16,
+  "seed": 3,
+  "val_fraction": 0.2,
+  "device": "cuda",
+  "wall_time_s": 35.7,
+  "checkpoint_sha256": "6094dabb2b0313c3f91376f4b2e9aa8405b3308cb9416369993f672ddc6b7792"
+}

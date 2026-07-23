@@ -32,7 +32,7 @@ callers that prefer to be explicit (e.g. the M6 ablation orchestration).
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import numpy as np
@@ -40,8 +40,9 @@ import torch
 from torch import Tensor
 
 from ai_teleop.common.command import Command
+from ai_teleop.common.geometry import quat_to_6d
+from ai_teleop.common.log import get_logger
 from ai_teleop.common.observation import Observation
-from ai_teleop.common.utils.rotations import quat_to_6d
 from ai_teleop.data.dataset import INPUT_STREAMS, NormStats
 from ai_teleop.data.images import normalize_frame
 from ai_teleop.data.trajectory import SCHEMA_VERSION as DATA_SCHEMA_VERSION
@@ -52,6 +53,8 @@ from ai_teleop.policy.model import ResidualPolicy
 
 # Bumped when the checkpoint payload layout changes (independent of the data schema).
 POLICY_CHECKPOINT_VERSION = "1.0"
+
+log = get_logger("residual_policy")
 
 # A backward jump in sim_time larger than this signals a new episode (the clock is
 # monotonic within an episode and resets toward 0 at reset).
@@ -103,13 +106,31 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def _policy_config_from_payload(payload_config: dict) -> PolicyConfig:
+    """Rebuild a :class:`PolicyConfig` from a checkpoint's serialized config dict.
+
+    Tolerates keys the current :class:`PolicyConfig` no longer defines, so retiring a
+    knob does not strand every checkpoint trained before the removal. (New keys already
+    round-trip: every field is defaulted precisely so an older, narrower payload loads.)
+    Dropped keys are logged rather than silently swallowed — a *weight-bearing* field
+    disappearing would change the model, and that should be visible in the run log.
+    """
+    known = {field.name for field in fields(PolicyConfig)}
+    dropped = sorted(set(payload_config) - known)
+    if dropped:
+        log.warning(
+            "checkpoint config carries retired key(s) %s — ignoring them", ", ".join(dropped)
+        )
+    return PolicyConfig(**{key: value for key, value in payload_config.items() if key in known})
+
+
 def load_checkpoint(path: str | Path, *, map_location: str = "cpu") -> LoadedCheckpoint:
     """Rebuild a :class:`LoadedCheckpoint` (eval-mode model + provenance) from disk."""
     # weights_only=False: the payload carries our own config/stats dicts, not just
     # tensors. The file is a first-party training artifact, so this is trusted.
     payload = torch.load(path, map_location=map_location, weights_only=False)
 
-    config = PolicyConfig(**payload["config"])
+    config = _policy_config_from_payload(payload["config"])
     norm_stats = NormStats(mean=payload["norm_stats"]["mean"], std=payload["norm_stats"]["std"])
 
     model = ResidualPolicy(config)

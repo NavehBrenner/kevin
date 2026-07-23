@@ -43,8 +43,10 @@ ml = [
 # Stereo two-webcam hand input (metric 3D, 6-DoF) — the live teleop sensor.
 # stereohand brings its own opencv-contrib + mediapipe (Tasks API) transitively.
 # See docs/design/teleop-input.md.
+# Pinned to a tag, not a bare branch: D2's acceptance is "clean clone -> run", and an
+# unpinned git dep silently re-resolves to whatever the default branch holds that day.
 stereo-input = [
-    "stereohand @ git+https://github.com/NavehBrenner/stereohand.git",
+    "stereohand @ git+https://github.com/NavehBrenner/stereohand.git@v0.1.0",
 ]
 # Visualisation / recording for dev scripts (MP4 + GIF episode captures).
 # Not imported by the sim runtime; only the scripts/dev recorders use it.
@@ -112,7 +114,15 @@ preview = true
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src"]
+# The gate type-checks the package **and the tests**. `scripts/` stays out for now
+# (19 errors in 8 files, incl. a Pillow-10 break in the demo-grid tool) — inventory
+# and plan in LAB-113; add it here when that lands.
+files = ["src", "tests"]
+# Required for the tests to be checked at all: pytest test functions are unannotated
+# (218 of 229 here), and mypy skips the *bodies* of unannotated functions by default.
+# Listing tests/ without this flag would report ~2 errors and check almost nothing —
+# type-checking theatre. src/ is fully annotated, so this changes nothing there.
+check_untyped_defs = true
 # Third-party scientific/CAD libs (mujoco, trimesh, shapely, scipy, cadquery)
 # ship no type stubs; don't fail the gate on their missing-import noise.
 ignore_missing_imports = true

@@ -33,11 +33,7 @@ import sys
 from pathlib import Path
 
 from ai_teleop.common.log import add_logging_arguments, configure_from_args, get_logger
-from ai_teleop.data.generate import (
-    DEFAULT_DELTA_CLAMP,
-    DEFAULT_EXPERT_BRAKE_LEAD_FLOOR,
-    generate_dataset,
-)
+from ai_teleop.data.generate import GenerationConfig, generate_dataset
 
 log = get_logger("lab108-brake")
 
@@ -59,8 +55,9 @@ log = get_logger("lab108-brake")
 # (re-opened 2026-07-11) — braking provably can't fix a lateral miss. A larger clamp
 # widens the assist envelope (the label bound the BC clone reproduces), so it must
 # stay bounded; the sweep finds the smallest clamp that lifts the ceiling.
-_F = DEFAULT_EXPERT_BRAKE_LEAD_FLOOR  # 0.008
-_C = DEFAULT_DELTA_CLAMP  # 0.03
+_DEFAULTS = GenerationConfig()
+_F = _DEFAULTS.expert_brake_lead_floor  # 0.008
+_C = _DEFAULTS.delta_clamp  # 0.03
 
 # DIAGNOSTIC (sweep-4): the Δ-clamp proved inert (sweep-3) — the correction is
 # `gate*lateral_error`, and the distance gate is ~0 until the peg is almost at the
@@ -115,11 +112,13 @@ def main() -> None:
         generate_dataset(
             out_dir,
             args.episodes,
-            seed=args.seed,
-            expert_brake_gain=brake_gain,
-            expert_brake_lead_floor=brake_lead_floor,
-            expert_d_far=d_far,
-            delta_clamp=delta_clamp,
+            GenerationConfig(
+                seed=args.seed,
+                expert_brake_gain=brake_gain,
+                expert_brake_lead_floor=brake_lead_floor,
+                expert_d_far=d_far,
+                delta_clamp=delta_clamp,
+            ),
             baseline=False,
             render_images=False,
             cache=False,

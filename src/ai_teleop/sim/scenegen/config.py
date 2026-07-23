@@ -23,7 +23,12 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-HoleShape = Literal["circle", "rect", "slot", "keyhole", "polygon"]
+# Round bores only — the task is a round peg in a round hole, and every consumer
+# (sampler, 2D rings, CAD cutter, collision decomposition) implements exactly this
+# one. Kept as a Literal rather than dropped because `shape` is serialized into each
+# wall's header.json, so cached walls stay loadable. Widen here first if a second
+# bore profile is ever genuinely needed.
+HoleShape = Literal["circle"]
 
 # --- Defaults -------------------------------------------------------------
 
@@ -55,13 +60,6 @@ class SamplingRanges:
     # Circle bore diameter (m). Default peg is 8 mm Ø; keep openings comfortably
     # above peg+clearance.
     diameter: tuple[float, float] = (0.010, 0.030)
-    # Rect / slot footprint (m): (min, max) applied independently per axis.
-    rect_side: tuple[float, float] = (0.012, 0.040)
-    # Slot aspect: length is rect_side; width is this fraction of length.
-    slot_width_frac: tuple[float, float] = (0.30, 0.60)
-    # Regular-polygon circumradius (m) and vertex count.
-    polygon_radius: tuple[float, float] = (0.008, 0.020)
-    polygon_sides: tuple[int, int] = (3, 8)
     # Rim chamfer width (m). The primary difficulty knob. LAB-77 calibration: swept
     # 1-9mm fixed values against the LAB-37 harness; epsilon_lateral/d_far/advance_per_step
     # (expert/expert.py) showed zero effect (failures are geometrically unwinnable
@@ -92,12 +90,8 @@ DEFAULT_RANGES = SamplingRanges()
 class HoleSpec:
     """A fully-resolved hole. Every field is concrete (nothing left to sample).
 
-    ``size`` is shape-dependent:
-        circle  -> {"diameter": d}
-        rect    -> {"width": w, "height": h}
-        slot    -> {"length": l, "width": w}
-        polygon -> {"radius": r, "sides": n}
-        keyhole -> {"diameter": d, "slot_width": w, "slot_length": l}
+    ``size`` carries the bore dimensions for the hole's ``shape`` — for the only
+    shape, ``circle``, that is ``{"diameter": d}``.
     """
 
     shape: HoleShape
@@ -114,21 +108,7 @@ class HoleSpec:
         is added because the rim extends ``chamfer`` beyond the nominal bore, so
         spacing must keep rims (not just bores) apart.
         """
-        size = self.size
-        if self.shape == "circle":
-            bore = 0.5 * size["diameter"]
-        elif self.shape == "rect":
-            bore = 0.5 * (size["width"] ** 2 + size["height"] ** 2) ** 0.5
-        elif self.shape == "slot":
-            bore = 0.5 * (size["length"] ** 2 + size["width"] ** 2) ** 0.5
-        elif self.shape == "polygon":
-            bore = size["radius"]
-        elif self.shape == "keyhole":
-            # Bore plus the slot reaching out along +z; bound generously.
-            bore = 0.5 * size["diameter"] + size["slot_length"]
-        else:
-            raise ValueError(f"unknown hole shape: {self.shape!r}")
-        return bore + self.chamfer
+        return 0.5 * self.size["diameter"] + self.chamfer
 
 
 @dataclass

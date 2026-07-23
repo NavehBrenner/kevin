@@ -81,7 +81,13 @@ class _RecordingInput:
 
 
 class _RecordingController:
-    """Wraps a Controller, recording every Command handed to compute()."""
+    """Wraps a Controller, recording every Command handed to compute().
+
+    ``run_episode`` types its controller argument as the concrete ``Controller``, not a
+    Protocol, so this structural stand-in needs an ignore at each call site even though
+    the runner only ever touches ``compute``/``status``/``reset``. Noted as audit
+    finding G-3.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -156,7 +162,14 @@ def test_dummy_delta_reaches_controller_through_seam(env):
     # --- no-assist: the controller receives the base command unchanged ---
     rec_input_na = _RecordingInput(ScriptedNoisyHuman(target_pose, seed=3))
     rec_ctrl_na = _RecordingController(Controller(env))
-    run_episode(env, rec_ctrl_na, rec_input_na, NoAssist(), max_steps=SEAM_STEPS, render=False)
+    run_episode(
+        env,
+        rec_ctrl_na,  # type: ignore[arg-type]
+        rec_input_na,
+        NoAssist(),
+        max_steps=SEAM_STEPS,
+        render=False,
+    )
 
     assert len(rec_ctrl_na.commands) == SEAM_STEPS
     for base, received in zip(rec_input_na.commands, rec_ctrl_na.commands, strict=True):
@@ -172,7 +185,7 @@ def test_dummy_delta_reaches_controller_through_seam(env):
     rec_ctrl_dd = _RecordingController(Controller(env))
     run_episode(
         env,
-        rec_ctrl_dd,
+        rec_ctrl_dd,  # type: ignore[arg-type]
         rec_input_dd,
         _FixedDelta(fixed_delta),
         max_steps=SEAM_STEPS,

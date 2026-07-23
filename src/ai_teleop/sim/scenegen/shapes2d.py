@@ -10,9 +10,7 @@ inner annulus (bore..rim) with per-facet wedges, so these two rings drive the
 whole collision decomposition. They share vertex count and ordering so facet
 ``j`` is the quad ``inner[j], inner[j+1], outer[j+1], outer[j]``.
 
-Only ``circle`` is implemented here for now; the rect/slot/keyhole/polygon
-shapes are added with the shape library (they reduce to the same paired-ring
-contract, e.g. via a shapely offset of the base polygon).
+Bores are round (``HoleShape``), so the rings are two concentric regular polygons.
 """
 
 from __future__ import annotations
@@ -24,12 +22,6 @@ from .config import HoleSpec
 
 def hole_rings(hole: HoleSpec, facets: int) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(inner_ring, outer_ring)``, each ``(facets, 2)`` in (y, z) metres."""
-    if hole.shape == "circle":
-        return _circle_rings(hole, facets)
-    raise NotImplementedError(f"hole shape {hole.shape!r} not implemented yet")
-
-
-def _circle_rings(hole: HoleSpec, facets: int) -> tuple[np.ndarray, np.ndarray]:
     center = np.asarray(hole.pos, dtype=np.float64)
     bore_radius = 0.5 * hole.size["diameter"]
     rim_radius = bore_radius + hole.chamfer

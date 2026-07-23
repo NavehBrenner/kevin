@@ -225,6 +225,17 @@ class PairedComparison:
     kpi_stats: tuple[KpiPairedStat, ...]
 
 
+def _reject_duplicate_seeds(trials: Sequence[TrialKPIs], side: str) -> None:
+    """Raise if a seed appears twice on one side of a pairing."""
+    seeds = [t.seed for t in trials if t.seed is not None]
+    duplicates = sorted({seed for seed in seeds if seeds.count(seed) > 1})
+    if duplicates:
+        raise ValueError(
+            f"{side} has repeated seeds {duplicates} — paired stats need one trial per seed "
+            "per config (concatenated eval sets reuse seeds; aggregate them separately)"
+        )
+
+
 def pair_by_seed(
     baseline: Sequence[TrialKPIs], treatment: Sequence[TrialKPIs]
 ) -> list[tuple[TrialKPIs, TrialKPIs]]:
@@ -232,7 +243,15 @@ def pair_by_seed(
 
     Seeds present in only one config are dropped (an unmatched trial cannot
     contribute a paired delta). Requires seeds to be set on both sides.
+
+    A **repeated** seed within either arm raises: the pairing is a dict lookup, so a
+    duplicate would silently overwrite (treatment side) or silently double-count
+    (baseline side), and the resulting p-value would still look plausible. Duplicates
+    are what concatenating two eval sets produces — they reuse seeds 0…N by
+    construction — so this is the one place to fail loud.
     """
+    _reject_duplicate_seeds(baseline, "baseline")
+    _reject_duplicate_seeds(treatment, "treatment")
     by_seed_treatment = {t.seed: t for t in treatment if t.seed is not None}
     pairs: list[tuple[TrialKPIs, TrialKPIs]] = []
     for base in baseline:
@@ -359,7 +378,12 @@ def _fmt_p(value: float | None) -> str:
 
 
 def format_marginal_table(summaries: Sequence[ConfigSummary]) -> str:
-    """Per-config marginal KPI table (means) as GitHub-flavored markdown."""
+    """Per-config marginal KPI table (means) as GitHub-flavored markdown.
+
+    A ``success_only`` KPI's mean is over the *successful* trials, which at a 10–40%
+    success rate is a fraction of the column's trial count — so its cell carries its own
+    ``n``. The other KPIs are over every trial, the count already in the success row.
+    """
     header = ["KPI"] + [s.config_label for s in summaries]
     lines = ["| " + " | ".join(header) + " |", "|" + "|".join(["---"] * len(header)) + "|"]
 
@@ -368,23 +392,36 @@ def format_marginal_table(summaries: Sequence[ConfigSummary]) -> str:
 
     for index, spec in enumerate(CONTINUOUS_KPIS):
         label = f"{spec.label} ({spec.unit})" if spec.unit else spec.label
-        cells = [_fmt(s.kpi_stats[index].mean) for s in summaries]
+        cells = [
+            _fmt(s.kpi_stats[index].mean)
+            + (f" (n={s.kpi_stats[index].n})" if spec.success_only else "")
+            for s in summaries
+        ]
         lines.append("| " + " | ".join([label, *cells]) + " |")
     return "\n".join(lines)
 
 
 def format_paired_table(comparison: PairedComparison) -> str:
-    """The paired comparison (per-seed deltas + significance) as markdown."""
+    """The paired comparison (per-seed deltas + significance) as markdown.
+
+    Every row carries its own ``n`` — the pair count a KPI's p-value is actually over.
+    That is **not** the footer's matched-seed count for a ``success_only`` KPI: a pair
+    contributes to time-to-insert only when *both* trials seated, so at these success
+    rates its n collapses to single digits while the footer still reads 20 or 30. A
+    signed-rank test cannot reach p<0.05 below n=6, so a row's n is the only thing that
+    says whether its p could ever have been significant.
+    """
     baseline = comparison.baseline_label
     treatment = comparison.treatment_label
     success = comparison.success
-    header = ["KPI", baseline, treatment, "Δ (paired)", "p"]
+    header = ["KPI", "n", baseline, treatment, "Δ (paired)", "p"]
     lines = ["| " + " | ".join(header) + " |", "|" + "|".join(["---"] * len(header)) + "|"]
 
     lines.append(
         "| "
         + " | ".join([
             "**Success rate**",
+            str(success.n_pairs),
             f"{100 * success.baseline_rate:.1f}%",
             f"{100 * success.treatment_rate:.1f}%",
             f"{100 * success.rate_delta:+.1f}pp",
@@ -403,6 +440,7 @@ def format_paired_table(comparison: PairedComparison) -> str:
             "| "
             + " | ".join([
                 f"{stat.label} ({stat.unit})" if stat.unit else stat.label,
+                str(stat.n_pairs),
                 _fmt(stat.baseline_mean),
                 _fmt(stat.treatment_mean),
                 delta,
@@ -474,7 +512,9 @@ def plot_paired_deltas(comparison: PairedComparison, path: str | Path) -> None:
     """Bar chart of the mean paired per-seed delta for each continuous KPI.
 
     Bars are colored by whether the treatment moved the KPI in its good direction
-    (green) or the wrong way (red); a KPI with no matched pairs is left blank.
+    (green) or the wrong way (red); an exactly-flat KPI is grey, not red (contact
+    events are identical on both arms in the Phase-1 tables, so flat is the expected
+    case, not a corner). A KPI with no matched pairs is left blank.
     """
     stats_with_data = [s for s in comparison.kpi_stats if s.mean_delta is not None]
     figure, axes = plt.subplots(figsize=(6.0, 4.0))
@@ -486,7 +526,10 @@ def plot_paired_deltas(comparison: PairedComparison, path: str | Path) -> None:
         return
     labels = [f"{s.label}\n({s.unit})" if s.unit else s.label for s in stats_with_data]
     deltas = [s.mean_delta or 0.0 for s in stats_with_data]
-    colors = ["#3aa657" if s.treatment_better else "#d1495b" for s in stats_with_data]
+    colors = [
+        "#8c8c8c" if s.treatment_better is None else "#3aa657" if s.treatment_better else "#d1495b"
+        for s in stats_with_data
+    ]
     axes.bar(labels, deltas, color=colors)
     axes.axhline(0.0, color="black", linewidth=0.8)
     axes.set_ylabel(f"mean Δ ({comparison.treatment_label} − {comparison.baseline_label})")

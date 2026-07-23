@@ -8,6 +8,7 @@ columns and metadata.
 from __future__ import annotations
 
 import json
+from dataclasses import fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -17,10 +18,12 @@ from ai_teleop.data import (
     COLUMN_SHAPES,
     SCHEMA_VERSION,
     EpisodeRecorder,
+    GenerationConfig,
     generate_dataset,
     load_episode,
     regenerate_from_metadata,
 )
+from ai_teleop.data.generate import _UNFINGERPRINTED
 
 SCENE_PATH = Path(__file__).resolve().parents[1] / "assets" / "mjcf" / "full_scene.xml"
 
@@ -57,12 +60,14 @@ def test_recorder_roundtrip(tmp_path):
     for step in range(10):
         recorder.add(**_synthetic_row(step))
     path = tmp_path / "episode_00000.npz"
-    recorder.save(path, metadata={"master_seed": 0, "episode_index": 0})
+    # Deliberately partial: this exercises the recorder's round-trip, not the corpus
+    # spec, and mirrors the sparse blobs pre-LAB-96 episodes carry.
+    recorder.save(path, metadata={"master_seed": 0, "episode_index": 0})  # type: ignore[typeddict-item]
 
     columns, metadata = load_episode(path)
     assert set(columns) == set(COLUMN_SHAPES)
     for name, per_step_shape in COLUMN_SHAPES.items():
-        assert columns[name].shape == (10, *per_step_shape)
+        assert columns[name].shape == (10, *per_step_shape)  # type: ignore[literal-required]
     np.testing.assert_array_equal(columns["step"], np.arange(10))
     assert metadata["schema_version"] == SCHEMA_VERSION
     assert metadata["n_steps"] == 10
@@ -87,7 +92,9 @@ def test_recorder_rejects_wrong_shape():
 
 def test_recorder_refuses_empty_save(tmp_path):
     with pytest.raises(ValueError, match="empty"):
-        EpisodeRecorder().save(tmp_path / "x.npz", metadata={})
+        # Empty on purpose — save() must reject an empty episode before it ever
+        # looks at the metadata.
+        EpisodeRecorder().save(tmp_path / "x.npz", metadata={})  # type: ignore[typeddict-item]
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +105,10 @@ def test_recorder_refuses_empty_save(tmp_path):
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_smoke(tmp_path):
     paths = generate_dataset(
-        tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=False, generated_walls=False
+        tmp_path,
+        n_episodes=2,
+        config=GenerationConfig(max_steps=120, generated_walls=False),
+        baseline=False,
     )
     assert len(paths) == 2
     assert all(p.exists() for p in paths)
@@ -119,7 +129,10 @@ def test_generate_dataset_smoke(tmp_path):
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_writes_layout_and_metadata(tmp_path):
     paths = generate_dataset(
-        tmp_path, n_episodes=2, seed=0, max_steps=120, baseline=True, generated_walls=False
+        tmp_path,
+        n_episodes=2,
+        config=GenerationConfig(max_steps=120, generated_walls=False),
+        baseline=True,
     )
 
     meta_path = tmp_path / "metadata.json"
@@ -160,7 +173,10 @@ def test_generate_dataset_writes_layout_and_metadata(tmp_path):
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_no_baseline_omits_baseline_stats(tmp_path):
     generate_dataset(
-        tmp_path, n_episodes=1, seed=0, max_steps=80, baseline=False, generated_walls=False
+        tmp_path,
+        n_episodes=1,
+        config=GenerationConfig(max_steps=80, generated_walls=False),
+        baseline=False,
     )
     summary = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
     assert "baseline_no_assist" not in summary
@@ -174,10 +190,8 @@ def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
     original = generate_dataset(
         tmp_path / "orig",
         n_episodes=2,
-        seed=1,
-        max_steps=100,
+        config=GenerationConfig(seed=1, max_steps=100, generated_walls=False),
         baseline=False,
-        generated_walls=False,
     )
     regenerated = regenerate_from_metadata(
         tmp_path / "orig" / "metadata.json", out_dir=tmp_path / "regen"
@@ -189,8 +203,11 @@ def test_regenerate_from_metadata_reproduces_episodes(tmp_path):
     for orig_path, regen_path in zip(original, regenerated, strict=True):
         cols_orig, _ = load_episode(orig_path)
         cols_regen, _ = load_episode(regen_path)
-        for column in COLUMN_SHAPES:
-            np.testing.assert_array_equal(cols_orig[column], cols_regen[column])
+        for column in COLUMN_SHAPES:  # dynamic key over the TypedDict's own keys
+            np.testing.assert_array_equal(
+                cols_orig[column],  # type: ignore[literal-required]
+                cols_regen[column],  # type: ignore[literal-required]
+            )
 
     # The regenerated dataset carries the same fingerprint as the source metadata.
     src_meta = json.loads((tmp_path / "orig" / "metadata.json").read_text(encoding="utf-8"))
@@ -204,32 +221,21 @@ def test_fingerprint_of_legacy_config_is_unchanged():
     # legacy config (kd=4.0, speed draw disabled) must keep producing that exact
     # hash, or every committed pre-LAB-96 manifest would spuriously mismatch on
     # regeneration. Pinned to data/dataset_6's committed fingerprint.
-    from ai_teleop.data.generate import _episode_fingerprint
-
-    legacy = _episode_fingerprint(
+    dataset_6 = GenerationConfig(
         seed=6,
         max_steps=6000,
         max_dpos=0.025,
         expert_d_far=0.1,
         generated_walls=True,
-        joint_damping=4.0,
-        speed_lognormal_median=0.0,
+        expert_brake_gain=0.0,
+        delta_clamp=0.02,
         speed_lognormal_sigma=0.76,
     )
+    legacy = replace(dataset_6, joint_damping=4.0, speed_lognormal_median=0.0).fingerprint()
     assert legacy == "b8dafbe9171f768f"
     # And the LAB-96 knobs do enter the hash once they leave the legacy config.
     assert (
-        _episode_fingerprint(
-            seed=6,
-            max_steps=6000,
-            max_dpos=0.025,
-            expert_d_far=0.1,
-            generated_walls=True,
-            joint_damping=1.5,
-            speed_lognormal_median=0.09,
-            speed_lognormal_sigma=0.76,
-        )
-        != legacy
+        replace(dataset_6, joint_damping=1.5, speed_lognormal_median=0.09).fingerprint() != legacy
     )
 
 
@@ -238,9 +244,7 @@ def test_fingerprint_of_legacy_delta_clamp_is_unchanged():
     # clamped at the then-module-wide ±2 cm bound. The legacy bound must keep
     # producing the exact committed hash (pinned to data/dataset_8's), and the
     # knob must enter the hash once it leaves the legacy value.
-    from ai_teleop.data.generate import _episode_fingerprint
-
-    dataset_8 = dict(
+    dataset_8 = GenerationConfig(
         seed=8,
         max_steps=6000,
         max_dpos=0.3,
@@ -252,18 +256,38 @@ def test_fingerprint_of_legacy_delta_clamp_is_unchanged():
         expert_brake_gain=1.0,
         expert_brake_lead_floor=0.008,
     )
-    assert _episode_fingerprint(**dataset_8, delta_clamp=0.02) == "492c9509df3c11cb"
-    assert _episode_fingerprint(**dataset_8, delta_clamp=0.03) != "492c9509df3c11cb"
+    assert replace(dataset_8, delta_clamp=0.02).fingerprint() == "492c9509df3c11cb"
+    assert replace(dataset_8, delta_clamp=0.03).fingerprint() != "492c9509df3c11cb"
+
+
+def test_fingerprint_covers_every_config_field():
+    # The point of GenerationConfig: a knob that changes trajectories must change
+    # the fingerprint, or a regenerated dataset silently differs from its metadata.
+    # Perturbing any field flips the hash — except the three termination thresholds,
+    # which are a known, documented hole (see `_UNFINGERPRINTED`). Adding a field
+    # without hashing it fails here.
+    base = GenerationConfig()
+    baseline_hash = base.fingerprint()
+    for field in fields(GenerationConfig):
+        current = getattr(base, field.name)
+        perturbed = (not current) if isinstance(current, bool) else current + 1
+        changed = replace(base, **{field.name: perturbed}).fingerprint() != baseline_hash
+        assert changed is (field.name not in _UNFINGERPRINTED), field.name
+
+
+def test_generation_config_round_trips_through_metadata():
+    # `from_metadata` must invert `to_dataset_config` — this is what makes a
+    # committed manifest regenerate the corpus it describes.
+    config = GenerationConfig(seed=5, max_steps=1234, lateral_tolerance=0.006)
+    metadata = {"master_seed": config.seed, "config": config.to_dataset_config()}
+    assert GenerationConfig.from_metadata(metadata) == config  # type: ignore[arg-type]
 
 
 @pytest.mark.skipif(not SCENE_PATH.exists(), reason="scene file not found")
 def test_generate_dataset_is_reproducible(tmp_path):
-    paths_a = generate_dataset(
-        tmp_path / "a", n_episodes=1, seed=3, max_steps=80, baseline=False, generated_walls=False
-    )
-    paths_b = generate_dataset(
-        tmp_path / "b", n_episodes=1, seed=3, max_steps=80, baseline=False, generated_walls=False
-    )
+    config = GenerationConfig(seed=3, max_steps=80, generated_walls=False)
+    paths_a = generate_dataset(tmp_path / "a", n_episodes=1, config=config, baseline=False)
+    paths_b = generate_dataset(tmp_path / "b", n_episodes=1, config=config, baseline=False)
     cols_a, _ = load_episode(paths_a[0])
     cols_b, _ = load_episode(paths_b[0])
     np.testing.assert_array_equal(cols_a["delta_position"], cols_b["delta_position"])

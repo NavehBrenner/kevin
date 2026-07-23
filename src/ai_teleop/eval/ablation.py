@@ -30,6 +30,8 @@ from typing import Any
 
 import numpy as np
 
+from ai_teleop.common.command import Command
+from ai_teleop.common.observation import Observation
 from ai_teleop.control import Controller
 from ai_teleop.data.generate import (
     DEFAULT_JOINT_DAMPING,
@@ -37,7 +39,9 @@ from ai_teleop.data.generate import (
     DEFAULT_SPEED_LOGNORMAL_SIGMA,
 )
 from ai_teleop.data.generate import DEFAULT_MAX_DPOS as _DATAGEN_MAX_DPOS
+from ai_teleop.data.generate import DEFAULT_MAX_STEPS as _DATAGEN_MAX_STEPS
 from ai_teleop.domain import NoAssist
+from ai_teleop.domain.delta import Delta
 from ai_teleop.domain.interfaces import AssistProvider
 from ai_teleop.eval.observer import DEFAULT_FORCE_CAP, TrialObserver
 from ai_teleop.eval.schema import TrialKPIs
@@ -50,6 +54,7 @@ from ai_teleop.input.scripted_noisy_human import (
 from ai_teleop.sim.config import EnvConfig, episode_wall_seed
 from ai_teleop.sim.env_setup import make_env
 from ai_teleop.sim.runner import run_episode
+from ai_teleop.sim.scene import DEFAULT_WRIST_RENDER_EVERY
 
 # Both generated walls and the static escape hatch place the goal at hole_0; the
 # expert/observer/operator are all aimed there (the env stays target-agnostic).
@@ -63,12 +68,12 @@ _TARGET_HOLE_INDEX = 0
 # reachable per-trial via the ``max_dpos`` argument.
 DEFAULT_MAX_DPOS = _DATAGEN_MAX_DPOS
 
-# Per-episode step budget for an insertion trial (~18 s of sim @ 500 Hz). Moves in
-# lockstep with data.generate.DEFAULT_MAX_STEPS (6000 → 9000 by LAB-100: the operator
-# speed draw's slow tail needs the extra clock to finish seating); eval must use the
-# same task budget as data-gen or timeout rates measure the budget, not the policy.
-# Pre-LAB-100 corpora (dataset_8 and earlier) were generated at 6000.
-INSERTION_MAX_STEPS = 9000
+# Per-episode step budget for an insertion trial (~18 s of sim @ 500 Hz). **Bound to**
+# data.generate.DEFAULT_MAX_STEPS, not copied from it: eval must use the same task budget as
+# data-gen or timeout rates measure the budget, not the policy — LAB-107 was exactly that bug
+# (eval at 5000 against a corpus generated at 9000). Pre-LAB-100 corpora (dataset_8 and
+# earlier) were generated at 6000, before the operator speed draw's slow tail needed 9000.
+INSERTION_MAX_STEPS = _DATAGEN_MAX_STEPS
 
 # Difficulty knob for the LAB-53 pin: a multiplier on the scripted operator's lateral
 # error (per-episode bias + OU drift) relative to the M5 training distribution.
@@ -77,12 +82,9 @@ INSERTION_MAX_STEPS = 9000
 # the F/T residual has a lever and human-only sits below ceiling with headroom.
 DEFAULT_OPERATOR_ERROR_SCALE = 1.0
 
-# Wrist-camera capture cadence for a vision trial: render a new frame every N
-# observation ticks and hold it between (the env is the frame-rate limiter — see
-# SimEnv.enable_wrist_capture). Matches the M7 corpus's render_every=20
-# (dataset_vision), so the deploy frame stream decimates like the training one. Only
-# a vision policy triggers capture; F/T-only and human-only render nothing.
-DEFAULT_WRIST_RENDER_EVERY = 20
+# Wrist-camera capture cadence for a vision trial — the shared env default
+# (`sim.scene.DEFAULT_WRIST_RENDER_EVERY`). Only a vision policy triggers capture;
+# F/T-only and human-only render nothing.
 
 
 @dataclass(frozen=True)
@@ -190,7 +192,13 @@ def run_trial(
             else None
         )
 
-        def step_callback(step, obs, base_command, delta, command) -> bool:
+        def step_callback(
+            step: int,
+            obs: Observation,
+            base_command: Command,
+            delta: Delta,
+            command: Command,
+        ) -> bool:
             if recorder is not None:
                 recorder.record(obs, base_command, delta)
             return observer(step, obs, base_command, delta, command)
@@ -222,23 +230,21 @@ def run_paired(
     episode_index: int,
     configs: list[Config],
     *,
-    master_seed: int = 0,
     out_dir: str | Path | None = None,
-    generated_walls: bool = True,
-    max_steps: int = INSERTION_MAX_STEPS,  # insertion budget; see run_trial note (LAB-107)
-    max_dpos: float = DEFAULT_MAX_DPOS,
-    joint_damping: float = DEFAULT_JOINT_DAMPING,
-    operator_error_scale: float = DEFAULT_OPERATOR_ERROR_SCALE,
-    speed_lognormal_median: float = DEFAULT_SPEED_LOGNORMAL_MEDIAN,
-    speed_lognormal_sigma: float = DEFAULT_SPEED_LOGNORMAL_SIGMA,
-    force_cap: float = DEFAULT_FORCE_CAP,
-    wrist_render_every: int = DEFAULT_WRIST_RENDER_EVERY,
-    **observer_kwargs: Any,
+    **trial_kwargs: Any,
 ) -> dict[str, TrialKPIs]:
     """Run one paired trial — the same ``episode_index`` under each config.
 
     Returns ``{config.label: TrialKPIs}``. When ``out_dir`` is set, each config's
-    trace is written to ``out_dir/<label>/episode_<NNNNN>/trace.npz``.
+    trace is written to ``out_dir/<label>/episode_<NNNNN>/trace.npz``. Everything
+    else (``master_seed``, ``max_steps``, the controller/operator knobs, observer
+    kwargs) is forwarded verbatim to `run_trial` — see its signature for the
+    defaults.
+
+    It forwards rather than re-declares deliberately: LAB-107 was caused by this
+    function carrying its own copy of ``max_steps``'s default, which drifted from
+    `run_trial`'s and silently under-budgeted the DAgger eval path by 4000 steps.
+    One definition of each default is the fix (audit finding C-3).
     """
     results: dict[str, TrialKPIs] = {}
     for config in configs:
@@ -248,20 +254,7 @@ def run_paired(
                 Path(out_dir) / config.label / f"episode_{episode_index:05d}" / TRACE_NPZ_NAME
             )
         results[config.label] = run_trial(
-            episode_index,
-            config,
-            master_seed=master_seed,
-            generated_walls=generated_walls,
-            max_steps=max_steps,
-            max_dpos=max_dpos,
-            joint_damping=joint_damping,
-            operator_error_scale=operator_error_scale,
-            speed_lognormal_median=speed_lognormal_median,
-            speed_lognormal_sigma=speed_lognormal_sigma,
-            force_cap=force_cap,
-            wrist_render_every=wrist_render_every,
-            trace_path=trace_path,
-            **observer_kwargs,
+            episode_index, config, trace_path=trace_path, **trial_kwargs
         )
     return results
 
