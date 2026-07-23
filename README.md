@@ -13,6 +13,8 @@ Course project for *Workshop in Autonomous Systems Simulation* (OpenU course 209
 ## Documents
 
 - **[project-scope.md](./project-scope.md)** — full scope, design decisions, KPIs, architecture overview, deferred design questions.
+- **[docs/architecture-tour.md](./docs/architecture-tour.md)** — a guided walk through the code in the order the data flows: operator input → the assistance seam → sim → the episode loop → corpus → policy → evaluation. Start here to find your way around `src/`.
+- **[docs/phase-1-results.md](./docs/phase-1-results.md)** — measured outcomes. *The headline figure is currently under revision.*
 - **[docs/milestone-1-spec.md](./docs/milestone-1-spec.md)** — current milestone: simulation environment online.
 
 ## Quick start
