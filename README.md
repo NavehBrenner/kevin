@@ -14,6 +14,7 @@ Course project for *Workshop in Autonomous Systems Simulation* (OpenU course 209
 
 - **[project-scope.md](./project-scope.md)** — full scope, design decisions, KPIs, architecture overview, deferred design questions.
 - **[docs/architecture-tour.md](./docs/architecture-tour.md)** — a guided walk through the code in the order the data flows: operator input → the assistance seam → sim → the episode loop → corpus → policy → evaluation. Start here to find your way around `src/`.
+- **[docs/results/kpi-dashboard.md](./docs/results/kpi-dashboard.md)** — the consolidated M5→M7 experiment ledger: every training and eval run, its config, its measured result, and why it did or didn't work, reconstructed from artifacts.
 - **[docs/phase-1-results.md](./docs/phase-1-results.md)** — measured outcomes. *The headline figure is currently under revision.*
 - **[docs/milestone-1-spec.md](./docs/milestone-1-spec.md)** — current milestone: simulation environment online.
 
