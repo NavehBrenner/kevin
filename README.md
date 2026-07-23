@@ -4,7 +4,14 @@ A simulated robotic arm performs peg-in-hole insertions under shared-autonomy co
 
 Built in [MuJoCo](https://mujoco.org) for the Franka Emika Panda. The residual policy is trained via behavioral cloning against a scripted privileged-info expert. Two configurations — human-only and human + learned residual — are compared head-to-head in a KPI ablation, on a shared always-on impedance backbone.
 
-> **Status**: pre-implementation. Repository is currently being scaffolded. See [project-scope.md](./project-scope.md) for the full project definition and [docs/milestone-1-spec.md](./docs/milestone-1-spec.md) for the current work item.
+> **Status**: the simulation, control backbone, assistance seam, expert + data generation, both
+> policy arcs (Phase-1 F/T residual, Phase-2 vision), and live stereo-hand teleoperation are
+> built and evaluated (**M1–M8**); final evaluation and polish (**M9**) are in progress. To train
+> or deploy a policy see [docs/policy-guide.md](./docs/policy-guide.md); for measured outcomes see
+> [docs/results/kpi-dashboard.md](./docs/results/kpi-dashboard.md) — the Phase-1 success-rate
+> headline is under revision (it did not reproduce under seeded training; see
+> [docs/phase-1-results.md](./docs/phase-1-results.md)). Per-milestone status:
+> [docs/milestones.md](./docs/milestones.md). Full definition: [project-scope.md](./project-scope.md).
 
 ## Project context
 

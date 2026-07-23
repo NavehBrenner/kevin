@@ -49,7 +49,7 @@ uv run kvn sim --seed 7        # run a command
 ```
 
 > **Relocated-venv note.** A `.venv` that is moved after creation leaves
-> console-script shebangs stale (see [`kevin/CLAUDE.md`](../CLAUDE.md)). The setup
+> console-script shebangs stale. The setup
 > launcher avoids this by invoking the interpreter directly. If you skipped setup
 > and `uv run kvn` fails for that reason, use one of these — they don't rely on the
 > shebang:
@@ -73,6 +73,13 @@ flag list. The tables below are a quick reference.
 | `kvn episode` | `run_episode.py` | Run one end-to-end no-assist episode (scripted human → seam → controller → sim). |
 | `kvn harness` | `dev_harness_controller.py` | M2 backbone-controller dev harness: the five-phase tuning/regression run. |
 | `kvn gen` | `generate_dataset.py` | Generate the behavioral-cloning dataset: N unattended episodes → one NPZ per episode. |
+| `kvn train` | `train_policy.py` | Train the Phase-1 F/T residual (or a `--vision` policy) via BC → a deployable checkpoint. |
+| `kvn evaluate` | `evaluate.py` | Paired ablation (`pair`) + human-only difficulty sweep (`sweep`) → per-trial CSV. |
+
+> **Full how-to:** [`policy-guide.md`](policy-guide.md) walks `kvn train` / deploy /
+> `kvn evaluate` as three runnable recipes, with the checkpoint inventory. Two policy tools are
+> **not** in `kvn` and run as raw `python scripts/…`: `scripts/dagger.py` (on-policy DAgger
+> relabel) and `scripts/report_results.py` (KPI table + plot aggregation from a `trials.csv`).
 
 #### `kvn sim` — view a procedural wall
 
@@ -107,8 +114,8 @@ uv run kvn smoke --no-viewer    # headless (CI)
 |---|---|---|
 | `--headless` | off | Skip the viewer; run the loop and print a one-line summary. |
 | `--input {scripted,vision,PATH}` | `scripted` | Base command source: scripted noisy human, **two-webcam stereo** hand tracking (metric 3D + 6-DoF via the [stereohand](https://github.com/NavehBrenner/stereohand) package; needs the viewer, the `stereo-input` extra, and `--stereo-calib`), or a **path to a recorded episode** (folder / `episode.npz`) to replay its commands verbatim. On replay the scene + controller are rebuilt from the episode's own metadata, so it reproduces that episode to the step. |
-| `--policy {noassist,expert,tf,vision}` | `noassist` | Correction layer applied on top of the base commands: raw operator (`noassist`), analytical `expert` residual, `tf` trained residual (needs `--checkpoint`), or `vision` Phase-2 vision-conditioned residual (not implemented yet). A recorded episode can be replayed under any policy. |
-| `--checkpoint PATH` | — | Trained residual `.pt` for `--policy tf` (e.g. `runs/train/<run>/checkpoint.pt`). |
+| `--policy {noassist,expert,tf}` | `noassist` | Correction layer applied on top of the base commands: raw operator (`noassist`), analytical `expert` residual, or `tf` trained residual (needs `--checkpoint`). A **vision** checkpoint loads through `tf` too — the checkpoint's own `PolicyConfig.use_vision` selects the modality and enables the wrist camera, so there is no separate `--policy vision`. A recorded episode can be replayed under any policy. |
+| `--checkpoint PATH` | — | Trained residual `.pt` for `--policy tf` (e.g. `outputs/policy/runs/<run>/checkpoint.pt`). |
 | `--stereo-calib PATH` | — | **Required** for `--input vision`: a stereohand `stereo_calib.json` (one-time ChArUco calibration). Camera sources are `--cameras`. |
 | `--cameras LEFT RIGHT` | `0 2` | Left and right camera sources for `--input vision`: device indices (e.g. `0`) or stream URLs (e.g. `http://<host>:8080/0`). Use URLs on WSL2 — stream both cameras from Windows with the stereohand bridge. |
 | `--no-cam-window` | off | Hide the live stereo camera + 3D-skeleton window (`--input vision`; shown by default). |
