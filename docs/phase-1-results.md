@@ -71,7 +71,9 @@ Review** repackages.
 > measurement, **not established** — mean −4 pp, and no version of the recipe reproduces +33.
 >
 > Everything below is the 2026-07-07 result **as it was measured**. It is kept verbatim
-> because it happened and its records are committed — not because it stands.
+> because it happened and its records are committed — not because it stands. For this result
+> in the context of every M5→M7 experiment, see the
+> [KPI dashboard](results/kpi-dashboard.md).
 
 **Headline (2026-07-07, superseded by the note above).** In the calibrated chamfer-contact
 band, the F/T residual lifts insertion success from **36.7% → 70.0%** — a **+33.3 pp**
