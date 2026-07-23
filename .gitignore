@@ -61,6 +61,12 @@ mlruns/
 *.pth
 *.ckpt
 
+# ...except the pre-LAB-114 checkpoints behind published numbers. Training was unseeded
+# before LAB-114, so these two cannot be regenerated; everything trained after it can be
+# (corpus + seed + commit). See docs/results/phase-1/checkpoints/README.md.
+!docs/results/phase-1/checkpoints/
+!docs/results/phase-1/checkpoints/**
+
 # Media (allow committed assets, ignore generated)
 *.mp4
 *.avi

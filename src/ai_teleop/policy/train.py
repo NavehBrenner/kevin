@@ -353,6 +353,14 @@ def train_policy(
             f"no metadata.json under {dataset_dir} — is this an M4 dataset directory?"
         )
 
+    # Seed *everything* from the one `--seed`, not just the train/val split (LAB-114).
+    # Until this line existed, weight init and batch shuffling came from OS entropy, so the
+    # same command produced a different model every run and no result was arbitrable.
+    # `torch.manual_seed` covers CPU + all CUDA devices, and the DataLoader's shuffle sampler
+    # draws its per-epoch seed from this same global RNG (as do worker seeds when
+    # num_workers>0) — the call order below is fixed, so one seed pins the whole run.
+    torch.manual_seed(seed)
+
     log.info("loading corpus from %s ...", dataset_dir)
     train_loader, val_loader, norm_stats = build_dataloaders(
         dataset_dir,
@@ -387,7 +395,8 @@ def train_policy(
         extra={
             "run_name": run_dir.name,
             "batch_size": batch_size,
-            "split_seed": seed,
+            # Renamed from `split_seed` (LAB-114): it now seeds init + shuffling too.
+            "seed": seed,
             "val_fraction": val_fraction,
             "device": device,
             "wall_time_s": wall_time_s,

@@ -17,6 +17,9 @@ from ai_teleop.policy import LossConfig, PolicyConfig, TrainConfig, save_checkpo
 from ai_teleop.policy.residual_policy import load_checkpoint
 from ai_teleop.policy.train import _epoch, train, train_policy
 
+# Reuse the loader suite's on-disk synthetic corpus rather than rebuilding one here.
+from tests.test_dataset_loader import tiny_dataset  # noqa: F401
+
 
 def _linear_episode(index: int, length: int, weight: torch.Tensor, *, seed: int = 0) -> Episode:
     """An episode whose per-step Δ is a fixed linear function of its inputs."""
@@ -160,6 +163,39 @@ def test_checkpoint_persists_training_history(tmp_path):
     loaded = load_checkpoint(path)
     assert loaded.train_history == history
     assert loaded.policy_checkpoint_version != "unknown"
+
+
+def test_train_policy_is_reproducible_at_a_fixed_seed(tiny_dataset, tmp_path):  # noqa: F811
+    """LAB-114 acceptance: same command + same corpus ⇒ bit-identical weights.
+
+    Before this, `--seed` reached only the train/val split — weight init and batch
+    shuffling came from OS entropy, so every run of the same command produced a
+    different model and the Phase-1 headline could not be reproduced. Without this
+    test that regresses silently, exactly as it did originally.
+    """
+
+    def weights(name: str, *, seed: int) -> dict[str, torch.Tensor]:
+        run = train_policy(
+            tiny_dataset,
+            config=PolicyConfig(hidden_size=8, num_layers=1),
+            train_config=TrainConfig(epochs=2, patience=2),
+            runs_root=tmp_path,
+            name=name,
+            batch_size=4,
+            seed=seed,
+        )
+        return torch.load(run.checkpoint_path, weights_only=False)["model_state_dict"]
+
+    first, second, other = (
+        weights("a", seed=0),
+        weights("b", seed=0),
+        weights("c", seed=1),
+    )
+    assert first.keys() == second.keys()
+    assert all(torch.equal(first[key], second[key]) for key in first)
+    # And the seed has to actually *do* something — identical weights at every seed
+    # would pass the check above while proving nothing.
+    assert any(not torch.equal(first[key], other[key]) for key in first)
 
 
 def test_train_policy_rejects_a_non_dataset_directory(tmp_path):
