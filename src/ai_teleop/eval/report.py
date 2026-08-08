@@ -75,7 +75,27 @@ CONTINUOUS_KPIS: tuple[KpiSpec, ...] = (
     KpiSpec(
         "jerk_integral", "Trajectory jerk (∫|jerk|)", "", success_only=False, lower_is_better=True
     ),
+    # The near-miss KPI (LAB-121): how close the peg tip ever came to the hole centre. Unlike
+    # every other entry here it scores *failed* trials on their own terms, so an assist that
+    # improves approach accuracy without crossing the seating threshold is no longer invisible.
+    # Its two companions (`penetration_at_closest_mm`, `lateral_error_at_closest_mm`) are
+    # recorded in the CSV but deliberately not reported — they are the axial/lateral split of
+    # this number, for diagnosis, not a third and fourth headline. Same treatment
+    # `contact_events` gets. Millimetres, not metres — see `schema.TrialKPIs`.
+    KpiSpec(
+        "min_tip_hole_distance_mm",
+        "Closest approach to hole",
+        "mm",
+        success_only=False,
+        lower_is_better=True,
+    ),
 )
+
+
+def _optional_float(row: dict[str, str], key: str) -> float | None:
+    """A float column that may be absent (pre-LAB-121 CSV) or blank (undefined for the trial)."""
+    raw = row.get(key)
+    return None if raw is None or raw in ("", "None") else float(raw)
 
 
 def load_trials(csv_path: str | Path) -> list[TrialKPIs]:
@@ -83,7 +103,8 @@ def load_trials(csv_path: str | Path) -> list[TrialKPIs]:
 
     Inverts :meth:`TrialKPIs.to_dict` — the CSV stores every field as text, so the
     numeric columns are coerced back and an empty ``time_to_insert_s`` (a miss) is
-    restored to ``None``.
+    restored to ``None``. The near-miss columns are read leniently: a ``trials.csv``
+    written before LAB-121 (or by the trace-less DAgger loop) simply lacks them.
     """
     records: list[TrialKPIs] = []
     with Path(csv_path).open(newline="") as handle:
@@ -102,6 +123,11 @@ def load_trials(csv_path: str | Path) -> list[TrialKPIs]:
                     "duration_s": float(row["duration_s"]),
                     "seed": int(row["seed"]) if row.get("seed") not in (None, "", "None") else None,
                     "config_label": row.get("config_label") or None,
+                    "min_tip_hole_distance_mm": _optional_float(row, "min_tip_hole_distance_mm"),
+                    "penetration_at_closest_mm": _optional_float(row, "penetration_at_closest_mm"),
+                    "lateral_error_at_closest_mm": _optional_float(
+                        row, "lateral_error_at_closest_mm"
+                    ),
                 })
             )
     return records

@@ -28,7 +28,8 @@ What it reads off each ``Observation`` (all privileged ground truth — evaluati
 only, never fed to a deployed policy):
 
 * ``peg_pose`` + ``hole_poses[target_hole_index]`` → insertion depth along the
-  hole axis and lateral error → success/failure classification.
+  hole axis and lateral error → success/failure classification, plus the closest
+  approach the tip ever made to the hole centre (the LAB-121 near-miss trio).
 * ``wrist_ft`` → peak contact force and contact-event counts. The wrench is
   **tared at trial start** (bias captured on the first step, exactly as data-gen
   and the deployed policy tare at reset), so "contact force" is the static-offset
@@ -91,6 +92,11 @@ DEFAULT_CONTACT_FORCE_FLOOR = 5.0  # N
 DEFAULT_CONTACT_RELEASE_FLOOR = 2.5  # N
 
 
+def _to_millimetres(metres: float | None) -> float | None:
+    """The near-miss trio is reported in mm — see ``schema.TrialKPIs`` for why."""
+    return None if metres is None else 1000.0 * metres
+
+
 class TrialObserver:
     """``step_callback``-compatible passive observer producing a :class:`TrialKPIs`.
 
@@ -135,6 +141,12 @@ class TrialObserver:
         self._in_contact = False
         self._seated_since_time: float | None = None  # when the current seat began
         self._time_to_insert_s: float | None = None
+        # Closest approach (LAB-121) — the running argmin over tip→hole distance, plus that
+        # step's axial/lateral split. Captured together so the trio describes one instant.
+        # Tracked in metres here (the geometry's own unit); converted to mm on the way out.
+        self._min_tip_hole_distance: float | None = None
+        self._penetration_at_closest: float | None = None
+        self._lateral_error_at_closest: float | None = None
         self._ee_positions: list[np.ndarray] = []
         self._times: list[float] = []
 
@@ -163,11 +175,17 @@ class TrialObserver:
         self._peak_contact_force = max(self._peak_contact_force, contact_force)
         self._update_contact_events(contact_force)
 
+        # Geometry is computed *before* the force-abort check so the aborting step itself
+        # counts toward closest approach — on a force abort, where the peg was driven into
+        # the plate is the measurement of interest, and that is the last step there is
+        # (LAB-121). Pure computation, so hoisting it changes no other KPI.
+        geometry = SeatingGeometry.from_observation(observation, self._target_hole_index)
+        self._update_closest_approach(geometry)
+
         if contact_force > self._force_cap:
             self._outcome = TrialOutcome.FORCE_ABORT
             return True
 
-        geometry = SeatingGeometry.from_observation(observation, self._target_hole_index)
         if (
             geometry.penetration >= self._success_depth
             and geometry.lateral_error < self._lateral_tolerance
@@ -182,6 +200,13 @@ class TrialObserver:
             self._seated_since_time = None  # popped back out — not sustained
 
         return False
+
+    def _update_closest_approach(self, geometry: SeatingGeometry) -> None:
+        """Keep the trio from the step where the tip came nearest the hole centre."""
+        if self._min_tip_hole_distance is None or geometry.distance < self._min_tip_hole_distance:
+            self._min_tip_hole_distance = geometry.distance
+            self._penetration_at_closest = geometry.penetration
+            self._lateral_error_at_closest = geometry.lateral_error
 
     def _update_contact_events(self, contact_force: float) -> None:
         """Count rising edges above the contact floor with hysteresis debounce."""
@@ -204,6 +229,9 @@ class TrialObserver:
             duration_s=duration_s,
             seed=self._seed,
             config_label=self._config_label,
+            min_tip_hole_distance_mm=_to_millimetres(self._min_tip_hole_distance),
+            penetration_at_closest_mm=_to_millimetres(self._penetration_at_closest),
+            lateral_error_at_closest_mm=_to_millimetres(self._lateral_error_at_closest),
         )
 
     def _compute_jerk_integral(self) -> float:

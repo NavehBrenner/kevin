@@ -285,6 +285,82 @@ def test_observer_runs_as_step_callback_through_run_episode():
 
 
 # ---------------------------------------------------------------------------
+# Near-miss KPI: closest approach to the hole (LAB-121)
+# ---------------------------------------------------------------------------
+
+
+def test_closest_approach_is_zero_when_the_tip_passes_through_the_hole():
+    """A seated insertion drives the tip through the hole origin, so the min is ~0."""
+    observer = TrialObserver(sustained_duration_s=1.0)  # never satisfied — let it run
+    observations = [
+        _observation(peg_position=np.array([x, 0.0, -PEG_HALF_LENGTH]), sim_time=i * SIM_DT)
+        for i, x in enumerate(np.linspace(-0.05, 0.02, 8))
+    ]
+    kpis = _drive(observer, observations)
+    assert kpis.min_tip_hole_distance_mm == pytest.approx(0.0, abs=1e-6)
+
+
+def test_closest_approach_short_of_the_hole_is_axial():
+    """Halting 0.02 m short on-axis ⇒ 20 mm, all of it axial."""
+    observer = TrialObserver()
+    peg = np.array([-0.02, 0.0, -PEG_HALF_LENGTH])
+    kpis = _drive(observer, [_observation(peg_position=peg, sim_time=i * SIM_DT) for i in range(5)])
+    assert kpis.min_tip_hole_distance_mm == pytest.approx(20.0)
+    assert kpis.penetration_at_closest_mm == pytest.approx(-20.0)
+    assert kpis.lateral_error_at_closest_mm == pytest.approx(0.0, abs=1e-9)
+
+
+def test_closest_approach_off_axis_at_the_entry_plane_is_lateral():
+    """Reaching the entry plane but 0.03 m off-axis ⇒ the same 30 mm, all of it lateral."""
+    observer = TrialObserver()
+    peg = np.array([0.0, 0.03, -PEG_HALF_LENGTH])
+    kpis = _drive(observer, [_observation(peg_position=peg, sim_time=i * SIM_DT) for i in range(5)])
+    assert kpis.min_tip_hole_distance_mm == pytest.approx(30.0)
+    assert kpis.penetration_at_closest_mm == pytest.approx(0.0, abs=1e-9)
+    assert kpis.lateral_error_at_closest_mm == pytest.approx(30.0)
+
+
+def test_closest_approach_trio_comes_from_one_step():
+    """The split must be read at the argmin step, not from independent episode extrema.
+
+    Step 0 is the *deepest* (penetration 0.05) but far off-axis; step 1 is the *closest*
+    while barely penetrating. Reporting `max(penetration)` beside `min(distance)` would
+    describe two different instants — the trio must all come from step 1.
+    """
+    observer = TrialObserver(success_depth=10.0)  # unreachable — no early success exit
+    observations = [
+        _observation(peg_position=np.array([0.05, 0.10, -PEG_HALF_LENGTH]), sim_time=0.0),
+        _observation(peg_position=np.array([-0.01, 0.0, -PEG_HALF_LENGTH]), sim_time=SIM_DT),
+    ]
+    kpis = _drive(observer, observations)
+    assert kpis.min_tip_hole_distance_mm == pytest.approx(10.0)
+    assert kpis.penetration_at_closest_mm == pytest.approx(-10.0)  # not the 50 mm of step 0
+    assert kpis.lateral_error_at_closest_mm == pytest.approx(0.0, abs=1e-9)
+
+
+def test_force_abort_step_counts_toward_closest_approach():
+    """The aborting step is measured, not discarded.
+
+    On a force abort, *where* the peg was driven into the plate is the measurement of
+    interest — and it is the last step there is. Guards the ordering in `__call__`:
+    geometry must be taken before the force-cap early return.
+    """
+    observer = TrialObserver(force_cap=30.0)
+    observations = [
+        _observation(peg_position=np.array([-0.05, 0.0, -PEG_HALF_LENGTH]), sim_time=0.0),
+        # Closest point and the over-cap wrench land on the same step.
+        _observation(
+            peg_position=np.array([-0.005, 0.0, -PEG_HALF_LENGTH]),
+            sim_time=SIM_DT,
+            wrist_ft=np.array([40.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        ),
+    ]
+    kpis = _drive(observer, observations)
+    assert kpis.outcome is TrialOutcome.FORCE_ABORT
+    assert kpis.min_tip_hole_distance_mm == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
 # Dependency-Inversion: eval/ and control/ do not import each other
 # ---------------------------------------------------------------------------
 

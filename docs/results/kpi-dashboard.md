@@ -71,25 +71,40 @@ training seed: the absolute distributions, and the deltas paired **on the same w
 The short version: **a near-zero Δ is not an inert policy** — every checkpoint flips the
 outcome on 20–37 walls of 100, in both directions at once.
 
-## 4. [Mechanisms](mechanisms.md) — why it does not work, and what stands
+## 4. [Near-miss](near-miss.md) — did it *almost* insert?
+
+Every KPI above is either conditioned on seating or indifferent to it, so none can tell a
+policy that almost inserts from one that flails. This measures the closest the peg tip ever
+came to the hole, on all 4,200 official trials, recovered from the stored traces without
+re-running an episode.
+
+[![closest approach to the hole per recipe, box charts over training seeds against the human baseline](phase-1/near_miss_spread.png)](near-miss.md)
+
+The short version: **no — and that is the point.** No recipe moves closest approach by more
+than 0.8 mm on a 14.7 mm baseline, closing off the "better than the success rate says"
+explanation for the flat headline. Restricted to the walls the assist never flipped, nothing
+clears its noise floor at all. The per-outcome table looks like a large win and is Simpson's
+paradox; the page shows the arithmetic four ways.
+
+## 5. [Mechanisms](mechanisms.md) — why it does not work, and what stands
 
 The negative results with their explanations — the identifiability ceiling, the far-field
 gating floor, the offline/closed-loop anti-correlation, the bounded-expert argument — and the
 claims that survive them. Also the precise statement of what the architecture does and does
 **not** guarantee about contact force.
 
-## 5. [Experiment ledger](experiment-ledger.md) — what was run, on what data
+## 6. [Experiment ledger](experiment-ledger.md) — what was run, on what data
 
 Which corpus trained which policy, which difficulty each eval ran at, what each run measured.
 Not a conclusion: the key that makes everything above interpretable, because a closed-loop
 number means nothing without its operating point.
 
-## 6. [Further exploration](further-exploration.md) — what was tried, what might still work
+## 7. [Further exploration](further-exploration.md) — what was tried, what might still work
 
 Every lever tried and what it measured, then the candidates the mechanism findings predict
 could still move the number. Contact-recovery control is the strongest of them.
 
-## 7. [Human-operator trial](human-trial-protocol.md) — the protocol, fixed in advance
+## 8. [Human-operator trial](human-trial-protocol.md) — the protocol, fixed in advance
 
 Every number above was measured against `ScriptedNoisyHuman`, a *model* of an operator. This
 is the protocol for the one measurement where a real one closes the loop: blinded,
@@ -119,7 +134,7 @@ of the effect measurement. **Pre-registered, not yet run.**
 
 ---
 
-## 7. Provenance & how to regenerate
+## 9. Provenance & how to regenerate
 
 Every table above is a pure function of committed artifacts. Re-aggregate any eval set:
 
@@ -144,6 +159,19 @@ uv run python scripts/dev/official_kpi/plot_trial_forces.py
 
 # Figures 7–13 — per-training-seed trial distributions and paired per-wall deltas:
 uv run python scripts/dev/official_kpi/plot_within_seed.py   # → phase-1/within_seed_*.png
+
+# Near-miss (near-miss.md §4) — closest approach, paired + by outcome + mix-standardized:
+uv run python scripts/dev/official_kpi/near_miss.py
+```
+
+The near-miss columns are recovered from the stored per-tick traces rather than re-run. If a
+`trials.csv` predates LAB-121 it simply lacks them (every reader tolerates their absence);
+`backfill_near_miss.py` replays the traces to add them, and refuses to write any run whose
+replay does not first reproduce that run's already-stored KPI columns exactly:
+
+```bash
+uv run python scripts/dev/official_kpi/backfill_near_miss.py --glob 'eval_official_*'          # gate only
+uv run python scripts/dev/official_kpi/backfill_near_miss.py --glob 'eval_official_*' --write  # then write
 ```
 
 Every one of these reads the eval CSVs through `ai_teleop.eval.report` (`load_trials` →

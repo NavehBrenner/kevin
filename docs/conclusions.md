@@ -19,7 +19,9 @@ interface.
 The system is a **residual assist**: an operator issues coarse 6-DoF commands, an always-on
 impedance backbone tracks them, and a trained network adds a clamped micro-correction on top
 at 500 Hz. The operator in every reported measurement is a *scripted* noisy operator — open
-loop, seeded, reproducible — which is what makes a paired comparison possible at all.
+loop, seeded, reproducible — which is what makes a paired comparison possible at all. "Open
+loop" is verified, not assumed: across 200 matched episode pairs the recorded operator command
+is bit-identical with and without the assist (§4.1).
 
 ---
 
@@ -149,9 +151,95 @@ even odds.
 
 → [Within a single seed](results/within-seed.md) · [The KPI board](results/kpi-board.md)
 
+### 3.6 Did it *almost* work? — no, and this is the load-bearing null
+
+Every KPI above is either conditioned on seating or indifferent to it, so none of them can
+distinguish a policy that nearly inserts from one that flails: both score 0 on the headline.
+That left one explanation for the flat success rate untested — **that the assist was better than
+the binary metric could see**, improving approach accuracy without crossing the threshold.
+
+It was not. Measuring the closest the peg tip ever came to the hole, on all 4200 trials:
+
+| Recipe | closest approach | paired Δ | its own seed floor |
+|---|---|---|---|
+| F/T plain BC (batch 16) | 15.36 mm | +0.62 mm | 3.21 mm |
+| F/T plain BC (batch 2) | 14.94 mm | +0.21 mm | 4.31 mm |
+| F/T DAgger | 14.04 mm | −0.69 mm | 0.64 mm |
+| Vision plain BC | 15.50 mm | +0.77 mm | 3.14 mm |
+| Vision DAgger | 13.95 mm | −0.78 mm | 1.82 mm |
+
+Against an operator baseline of **14.73 mm**, no recipe moves the closest approach by even
+0.8 mm — under 5% — and four of five sit inside the spread retraining alone produces. Restricted
+to the walls where *both* arms ended the same way, which removes the outcome migration entirely,
+**nothing clears its floor at all**, at most 0.72 mm.
+
+This is a stronger negative than the success-rate null on its own, and it is why the metric was
+worth adding. A binary KPI cannot separate "nearly works" from "does not work" — both read 0%. A
+continuous one can, and it says the second. The explanation is closed by measurement rather than
+left open by the absence of one.
+
+→ [Near-miss](results/near-miss.md)
+
 ---
 
 ## 4. What was not possible, and why
+
+### 4.1 The diagnosis, in one place
+
+**The problem is not that the network failed to learn the expert. It is that imitating a bounded
+per-step expert is the wrong thing to learn** — the expert has no behaviour to demonstrate at the
+states that decide the outcome, and per-step fidelity to it is measurably *anti*-correlated with
+the closed-loop objective.
+
+The causal chain, in the order it bites:
+
+1. **Behavioral cloning is teacher-forced.** The corpus is generated with the *expert* acting, so
+   every state in it is a state the expert's own corrections produced. The policy's correction at
+   step *t* never influenced the state at *t+1*. Training asks only: *"at a state the expert
+   steered you into, what would the expert do?"*
+2. **At deployment the policy steers itself**, drifts, and reaches states the expert never
+   produced — misaligned, loaded against the wall, force-latched. This is covariate shift, and it
+   is not a thin-sampling problem: the expert's data has essentially **zero density** where the
+   policy ends up, so more expert episodes never reach it.
+3. **The standard fix was applied and made things worse.** DAgger swaps the actor — the policy
+   acts, the expert is demoted to labelling the visited states — which addresses (2) by
+   construction. Three F/T rounds: **40% → 30% → 15%**.
+4. **Because at those states there is nothing to demonstrate.** The policy's rollouts are
+   dominated by force-abort states, and a bounded per-step residual expert has no *realizable*
+   correction for a peg already pinned at the cap: it can nudge the next command but cannot
+   retract, re-align and retry. The implementation is explicit about it — DAgger **drops** the
+   force-latched frames, because "the arm is frozen in HOLD, so the expert's correction there is
+   unrealizable". Each round therefore aggregates more near-failure states carrying passive
+   labels, and the clone gets more passive. This is a **supervision gap, not a data gap.**
+5. **And the objective is the wrong one regardless.** A policy in this loop is a *feedback
+   element*. Offline it predicts a correction for a state it did not create; online its own output
+   becomes the next state, so an accurate tracking-error corrector becomes a high-gain loop that
+   amplifies its own error into impacts. Imitation loss measures pointwise accuracy and says
+   nothing about loop stability. Measured: driving offline error to its best value in the project
+   (3.5 mm, beating the do-nothing baseline for the first time) produced the **worst** closed-loop
+   result in the project (10% vs 35% for the operator alone).
+
+**Three things it is *not*** — the first three questions the result invites:
+
+- **Not overfitting.** Validation loss is 0.00107–0.00209 on held-out *episodes*, and on 209143
+  held-out *steps* the same network beats the do-nothing baseline in both contact bands. It
+  generalizes fine *inside* its training distribution; the deployment distribution is a different
+  one.
+- **Not model capacity.** A standardized linear ridge on the same F/T observables predicts the
+  expert's correction to **2.36 mm** against a 4.91 mm zero baseline. The target is learnable by a
+  model far smaller than the GRU.
+- **Not insufficient data.** The deficit is distributional, per (2). More expert episodes add
+  density where the policy already is not.
+
+One measured fact removes a fourth candidate explanation: **the operator never reacts to the
+policy.** Across 200 matched episode pairs the logged operator command stream is *bit-identical*
+between the assisted and unassisted arms — worst deviation exactly 0.0 m — because the scripted
+operator integrates its own command state and never reads the observation after reset. So the
+online failure cannot be attributed to an operator adapting around the assist; the only thing
+that differs online is the state distribution the policy induces on the arm, which is precisely
+what step (3) addressed.
+
+### 4.2 The levers, each tried and measured
 
 The negative result is not one failure. It is a sequence of levers, each tried, each measured,
 each with an identified mechanism — and the mechanisms are the transferable part.
@@ -229,8 +317,9 @@ The one in progress is the submission deliverables themselves.
 
 The project does not demonstrate that a behavioral-cloned residual improves insertion success
 for a human operator on this task, nor that it reduces contact force. It demonstrates, with a
-stated measurement resolution, that it does neither — that it costs a slower and rougher
-trajectory — and it identifies why.
+stated measurement resolution, that it does neither — not even partially, on a continuous metric
+built to catch a benefit the binary one would miss (§3.6) — that it costs a slower and rougher
+trajectory, and it identifies why (§4.1).
 
 ---
 
@@ -242,9 +331,15 @@ pre-contact impact that ends the trial, and no per-step imitation of a bounded e
 address it, because the expert cannot demonstrate the recovery. That is a control problem, not
 a supervision problem.
 
-Two others follow from §4 directly: an objective that models the far-field gate explicitly
-rather than averaging over it, and a competence signal that lets the assist defer when it
-cannot localize the target.
+**Reinforcement learning against a contact-aware reward** follows just as directly from §4.1
+step 5: every method tried here optimizes a per-step imitation objective, and the project's
+central finding is that per-step fidelity is anti-correlated with closed-loop success. RL
+optimizes the closed-loop objective directly, and needs no expert capable of demonstrating the
+recovery. It was scoped out at the start on cost, not on merit.
+
+Two smaller ones follow from §4.2: an objective that models the far-field gate explicitly rather
+than averaging over it, and a competence signal that lets the assist defer when it cannot
+localize the target.
 
 → [Further exploration](results/further-exploration.md)
 

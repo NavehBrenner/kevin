@@ -1,14 +1,16 @@
 """The official multi-seed run as figures — plain matplotlib interval charts.
 
-Four figures, all under ``docs/results/phase-1/``:
+Five figures, all under ``docs/results/phase-1/``:
 
 1. ``success_rate_spread.png`` — the headline. Paired Δ success rate per recipe: the
    mean over training seeds, whiskers to the lowest and highest seed, one dot per seed.
 2. ``kpi_spread_by_recipe.png`` — the same interval chart for **all five** metrics, in
    absolute units, against the ``human_only`` line.
-3. ``dagger_vs_plain.png`` — per modality and per metric, the three arms side by side:
+3. ``near_miss_spread.png`` — the near-miss KPI (LAB-121) pulled out of that grid at full
+   size, because ~1 mm of movement on a 14.7 mm baseline is invisible in a small multiple.
+4. ``dagger_vs_plain.png`` — per modality and per metric, the three arms side by side:
    ``human_only``, plain BC, DAgger.
-4. ``dagger_rounds_vision.png`` — every metric as a function of DAgger round, one line
+5. ``dagger_rounds_vision.png`` — every metric as a function of DAgger round, one line
    per training seed (vision only — the F/T arm has no per-round eval).
 
 Deliberately conventional: ``Axes.errorbar`` with asymmetric min/max whiskers, white
@@ -46,6 +48,7 @@ from kpi_data import (
     DEFAULT_RUNS_ROOT,
     METRICS,
     SUCCESS_METRIC,
+    MetricSpec,
     Recipe,
     Spread,
     baseline_spread,
@@ -396,42 +399,51 @@ def interval_legend(axes: Axes | None, figure: Figure, *, extra_baseline: bool =
         )
 
 
+def draw_metric_panel(axes: Axes, recipes: Sequence[Recipe], metric: MetricSpec) -> bool:
+    """One metric's interval panel: recipe means, ±1 SD, min/max over training seeds.
+
+    Shared by the all-metrics grid and any single-metric figure, so a standalone chart is
+    the same drawing code as its panel in the grid and cannot drift from it. Returns False
+    when the metric has no usable data (the caller decides whether to hide the axes).
+    """
+    pairs = [(r, treatment_spread(r, metric)) for r in recipes]
+    usable = [(r, s) for r, s in pairs if s is not None]
+    if not usable:
+        return False
+    positions = list(range(len(usable)))
+    spreads = [s for _, s in usable]
+    draw_intervals(axes, positions, spreads)
+    baselines = [
+        b for _, b in ((r, baseline_spread(r, metric)) for r, _ in usable) if b is not None
+    ]
+    baseline_mean: float | None = None
+    if baselines:
+        baseline_mean = sum(b.mean for b in baselines) / len(baselines)
+    every_value = [v for spread in spreads for v in spread.values]
+    if baseline_mean is not None:
+        every_value.append(baseline_mean)
+    flat = flatten_degenerate_axis(axes, every_value, "identical on every arm\n(and on human_only)")
+    if not flat:
+        add_headroom(axes, top=0.12, bottom=0.20 if metric.success_only else 0.10)
+    if baseline_mean is not None:
+        draw_baseline(axes, baseline_mean)
+    if metric.success_only:
+        annotate_counts(axes, positions, spreads)
+    axes.set_xticks(positions)
+    axes.set_xticklabels([r.label for r, _ in usable], rotation=30, ha="right")
+    axes.set_ylabel(metric.axis_label)
+    axes.set_title(f"{metric.label} ({metric.direction_note})")
+    axes.grid(True, axis="y", alpha=0.5)
+    axes.set_axisbelow(True)
+    return True
+
+
 def plot_kpi_spread_by_recipe(recipes: Sequence[Recipe], path: Path) -> Path:
     """One interval chart per metric: recipe means with min/max over training seeds."""
     figure, panels, spare = _metric_grid((11.5, 9.0))
     for axes, metric in zip(panels, METRICS, strict=False):
-        pairs = [(r, treatment_spread(r, metric)) for r in recipes]
-        usable = [(r, s) for r, s in pairs if s is not None]
-        if not usable:
+        if not draw_metric_panel(axes, recipes, metric):
             axes.set_visible(False)
-            continue
-        positions = list(range(len(usable)))
-        spreads = [s for _, s in usable]
-        draw_intervals(axes, positions, spreads)
-        baselines = [
-            b for _, b in ((r, baseline_spread(r, metric)) for r, _ in usable) if b is not None
-        ]
-        baseline_mean: float | None = None
-        if baselines:
-            baseline_mean = sum(b.mean for b in baselines) / len(baselines)
-        every_value = [v for spread in spreads for v in spread.values]
-        if baseline_mean is not None:
-            every_value.append(baseline_mean)
-        flat = flatten_degenerate_axis(
-            axes, every_value, "identical on every arm\n(and on human_only)"
-        )
-        if not flat:
-            add_headroom(axes, top=0.12, bottom=0.20 if metric.success_only else 0.10)
-        if baseline_mean is not None:
-            draw_baseline(axes, baseline_mean)
-        if metric.success_only:
-            annotate_counts(axes, positions, spreads)
-        axes.set_xticks(positions)
-        axes.set_xticklabels([r.label for r, _ in usable], rotation=30, ha="right")
-        axes.set_ylabel(metric.axis_label)
-        axes.set_title(f"{metric.label} ({metric.direction_note})")
-        axes.grid(True, axis="y", alpha=0.5)
-        axes.set_axisbelow(True)
     interval_legend(spare, figure)
     figure.suptitle(
         "Every reported KPI per recipe — box: mean ± 1 SD over training seeds, "
@@ -441,6 +453,36 @@ def plot_kpi_spread_by_recipe(recipes: Sequence[Recipe], path: Path) -> Path:
     # Bottom margin reserved for the figure-level legend: a 2×2 leaves no spare cell,
     # and without the inset the legend lands on the lower row's tick labels.
     figure.tight_layout(rect=(0, 0.07, 1, 0.95))
+    return finish(figure, path)
+
+
+# ---------------------------------------------------------------------------
+# Figure 2b — the near-miss KPI on its own (LAB-121)
+# ---------------------------------------------------------------------------
+
+
+def plot_near_miss_spread(recipes: Sequence[Recipe], path: Path) -> Path | None:
+    """`min_tip_hole_distance_mm` alone, full size — the near-miss result at a glance.
+
+    It is already a panel of `kpi_spread_by_recipe`, but at ~1 mm of movement on a 14.7 mm
+    baseline the whole result lives inside a few pixels there. Same `draw_metric_panel`, one
+    axes, so the standalone chart cannot disagree with its own panel in the grid.
+    """
+    metric = next((m for m in METRICS if m.key == "min_tip_hole_distance_mm"), None)
+    if metric is None:
+        return None
+    figure, axes = plt.subplots(figsize=(8.5, 6.0))
+    if not draw_metric_panel(axes, recipes, metric):
+        plt.close(figure)
+        return None
+    axes.set_title("")
+    interval_legend(None, figure)
+    figure.suptitle(
+        "Closest approach to the hole — how near the peg tip ever got (lower is better)\n"
+        "box: mean ± 1 SD over training seeds, whiskers: lowest–highest seed",
+        fontsize=13,
+    )
+    figure.tight_layout(rect=(0, 0.08, 1, 0.92))
     return finish(figure, path)
 
 
@@ -792,6 +834,7 @@ def main() -> None:
     written = [
         plot_success_rate_spread(ordered, arguments.figure_dir / "success_rate_spread.png"),
         plot_kpi_spread_by_recipe(ordered, arguments.figure_dir / "kpi_spread_by_recipe.png"),
+        plot_near_miss_spread(ordered, arguments.figure_dir / "near_miss_spread.png"),
         plot_dagger_vs_plain(recipes, arguments.figure_dir / "dagger_vs_plain.png"),
         plot_population_split(ordered, arguments.figure_dir / "kpi_population_split.png"),
         plot_dagger_rounds(

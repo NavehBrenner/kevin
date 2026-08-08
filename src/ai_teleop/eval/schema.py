@@ -5,7 +5,7 @@ runner (LAB-37) / reporting (LAB-38) consume. Kept implementation-free (no sim,
 control, or numpy import) so any layer can depend on it without a cycle —
 mirrors the rationale for ``data/schema.py``.
 
-The five KPIs are the evaluation-protocol set:
+The KPIs are the evaluation-protocol set:
 
 ================================  =====  =================================
 field                             type   role
@@ -15,7 +15,22 @@ field                             type   role
 ``peak_contact_force``            N      safety proxy — measured, not bounded
 ``contact_events``                count  supporting
 ``jerk_integral``                 —      trajectory smoothness (∫|jerk|dt)
+``min_tip_hole_distance_mm``      mm     near-miss — closest approach (LAB-121)
+``penetration_at_closest_mm``     mm     diagnostic (axial split of the above)
+``lateral_error_at_closest_mm``   mm     diagnostic (lateral split of the above)
 ================================  =====  =================================
+
+The near-miss trio (LAB-121) exists because every other field is either conditioned on
+seating or outcome-agnostic, so an assist that improves *approach accuracy* without
+crossing the seating threshold scores identically to one that flails. All three are read
+off the **same** step — the one minimizing tip→hole distance — so they describe one
+coherent instant rather than three unrelated episode extrema.
+
+**Millimetres, not metres** — the one place this package departs from SI, hence the
+explicit ``_mm`` suffixes. The effects here live at ~1 mm against a ~15 mm baseline, so in
+metres every shared two-decimal formatter in the reporting stack renders them as ``0.00``.
+Scaling the stored value is a smaller and less breakable change than threading a
+per-metric display precision through ``KpiSpec``, ``MetricSpec`` and every table writer.
 
 ``seed`` and ``config_label`` are the **pairing keys**: the ablation runs each
 seed once per configuration, and a (seed, config) pair identifies the matched
@@ -61,6 +76,13 @@ class TrialKPIs:
     # Pairing keys — set by the ablation runner, absent on a standalone observe.
     seed: int | None = None
     config_label: str | None = None
+    # Near-miss trio (LAB-121), all read off the step of closest approach, in MILLIMETRES.
+    # Optional with a ``None`` default so records predating LAB-121 — and the trace-less
+    # ``trials.csv`` the DAgger loop writes — still load; appended last so positional
+    # construction keeps working.
+    min_tip_hole_distance_mm: float | None = None
+    penetration_at_closest_mm: float | None = None
+    lateral_error_at_closest_mm: float | None = None
 
     @property
     def success(self) -> bool:
@@ -87,4 +109,7 @@ class TrialKPIs:
             duration_s=record["duration_s"],
             seed=record.get("seed"),
             config_label=record.get("config_label"),
+            min_tip_hole_distance_mm=record.get("min_tip_hole_distance_mm"),
+            penetration_at_closest_mm=record.get("penetration_at_closest_mm"),
+            lateral_error_at_closest_mm=record.get("lateral_error_at_closest_mm"),
         )
