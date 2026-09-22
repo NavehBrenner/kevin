@@ -31,6 +31,26 @@ on PATH. The individual steps, from this directory:
   (Prefer `./scripts/setup.sh --dev`, which syncs the committed `uv.lock` instead of re-resolving.)
 - `uv run python scripts/<script>.py` — run inside the venv.
 
+### Dependency pinning — every ceiling is deliberate
+
+Every requirement in `pyproject.toml`, runtime and extras, carries an **upper bound** at
+the major this code is tested against. An open `>=` hands the choice of major to upstream
+release timing, which is how `stereohand` silently moved to OpenCV 5: the whole suite
+stayed green and live calibration crashed the moment a board entered frame.
+
+`tests/test_dependency_pins.py` enforces both halves — that no declaration is
+open-ended, and that the installed environment matches what's declared. `ruff` and
+`qualety` are pre-1.0 and gate CI, so their ceiling is the **minor**, not the major.
+
+Two kevin-specific notes:
+
+- `uv.lock` **is** committed here (unlike `stereohand`, which is a library and gitignores
+  its lock), so the lock and `pyproject.toml` have to move together. Bump a ceiling and
+  re-run `uv lock` in the same change.
+- The `stereo-input` extra pulls `opencv-contrib-python` and `mediapipe` **transitively
+  through `stereohand`**, so those two majors are decided by *stereohand's* pins. Bumping
+  them means bumping stereohand's tag here, not adding a constraint of our own.
+
 ### Project CLI — `kvn`
 
 `kvn` (pronounced *"Kevin"*) is the project's command-line front door — one entry

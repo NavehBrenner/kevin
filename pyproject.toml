@@ -23,67 +23,74 @@ classifiers = [
 # Core runtime dependencies — only what's needed for Milestone 1 (sim online).
 # Larger deps (torch, mediapipe, opencv) are pinned in the extras below
 # so they can be added when their components come online.
+#
+# Every constraint here and in the extras carries an **upper bound** at the major this
+# code is tested against. An open `>=` delegates the choice of major to upstream release
+# timing: that is how `stereohand` silently moved to OpenCV 5 and broke live calibration
+# with a fully green test suite. Raising a ceiling is a deliberate act — see AGENTS.md.
 dependencies = [
-    "mujoco>=3.0",
-    "numpy>=1.26",
-    "scipy>=1.11",
-    "pyyaml>=6.0",
-    "matplotlib>=3.8",
-    "pillow>=10.0",
+    "mujoco>=3.8,<4",
+    # numpy 2.x: required by stereohand >=0.3, and what the sim/policy stack is tested on.
+    "numpy>=2.5,<3",
+    "scipy>=1.17,<2",
+    "pyyaml>=6.0,<7",
+    "matplotlib>=3.10,<4",
+    "pillow>=12,<13",
 ]
 
 [project.optional-dependencies]
 # Phase 2 vision + ML stack. Add when policy training comes online.
 ml = [
-    "torch>=2.2",
-    "torchvision>=0.17",
-    "pandas>=2.1",
-    "pyarrow>=15.0",
+    "torch>=2.12,<3",
+    "torchvision>=0.27,<0.28",
+    "pandas>=3.0,<4",
+    "pyarrow>=24,<25",
 ]
 # Stereo two-webcam hand input (metric 3D, 6-DoF) — the live teleop sensor.
-# stereohand brings its own opencv-contrib + mediapipe (Tasks API) transitively.
+# stereohand brings its own opencv-contrib + mediapipe (Tasks API) transitively, so
+# *its* ceilings decide those majors for us — keep the two repos' pins in step.
 # See docs/design/teleop-input.md.
 # Pinned to a tag, not a bare branch: D2's acceptance is "clean clone -> run", and an
 # unpinned git dep silently re-resolves to whatever the default branch holds that day.
 stereo-input = [
-    "stereohand @ git+https://github.com/NavehBrenner/stereohand.git@v0.2.0",
+    "stereohand @ git+https://github.com/NavehBrenner/stereohand.git@v0.3.0",
 ]
 # Visualisation / recording for dev scripts (MP4 + GIF episode captures).
 # Not imported by the sim runtime; only the scripts/dev recorders use it.
 viz = [
-    "imageio>=2.34",
-    "imageio-ffmpeg>=0.5",
+    "imageio>=2.37,<3",
+    "imageio-ffmpeg>=0.6,<0.7",
 ]
 # Offline scene generation — parametric wall/hole CAD → convex-decomposed MJCF.
 # Heavy CAD/decomposition deps; never imported by the sim runtime (assets are
 # generated offline and cached). See src/ai_teleop/sim/scenegen/.
 scenegen = [
-    "cadquery>=2.4",
-    "trimesh>=4.0",
-    "shapely>=2.0",
-    "mapbox-earcut>=1.0",
+    "cadquery>=2.4,<3",
+    "trimesh>=4.12,<5",
+    "shapely>=2.1,<3",
+    "mapbox-earcut>=2.0,<3",
 ]
 # Documentation / design-review deliverables (build the D1 .pptx from SVGs).
 docs = [
-    "python-pptx>=0.6.23",
-    "cairosvg>=2.7",
+    "python-pptx>=1.0,<2",
+    "cairosvg>=2.7,<3",
 ]
 # Prettier console logging. Optional: `ai_teleop.common.log` falls back to a
 # plain stdlib formatter when rich is absent (see its soft import).
 cli = [
-    "rich>=13",
+    "rich>=15,<16",
 ]
 # Dev tooling. Includes `cli` so dev/CI consoles render the rich log formatting.
 dev = [
-    "pytest>=8.0",
-    "pytest-cov>=4.1",
-    "ruff>=0.3",
-    "mypy>=1.8",
-    "poethepoet>=0.24",
-    "rich>=13",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.16,<0.17",
+    "mypy>=2.3,<3",
+    "poethepoet>=0.48,<1",
+    "rich>=15,<16",
     # Structural rules ruff/mypy can't express. Config + rationale for what is
     # enabled live in qualety.config.json; see AGENTS.md "Structural rules (qualety)".
-    "qualety>=0.1.4",
+    "qualety>=0.4,<0.5",
 ]
 
 # The project CLI front door — `kvn` (pronounced "Kevin"). After
@@ -101,6 +108,10 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# ruff >=0.16 formats Python code blocks inside Markdown. Our docs align inline comments
+# in their examples on purpose, which that formatter collapses; documentation prose is not
+# what this gate is for. Kept in step with stereohand's identical exclusion.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]

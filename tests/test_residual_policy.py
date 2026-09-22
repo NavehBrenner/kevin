@@ -325,7 +325,9 @@ def test_embedding_cache_does_not_change_the_policy_output():
     contents (cache misses, i.e. the old re-encode-every-tick path). Any divergence means
     the cache changed behaviour rather than just cost.
     """
-    frame = (np.arange(224 * 224 * 3, dtype=np.uint8) % 256).reshape(224, 224, 3)
+    # `arange(..., dtype=uint8)` already wraps at 256; an explicit `% 256` is redundant
+    # and, under numpy 2's NEP 50 rules, an OverflowError (256 does not fit in uint8).
+    frame = np.arange(224 * 224 * 3, dtype=np.uint8).reshape(224, 224, 3)
     cached, recomputed = _vision_provider(), _vision_provider()
 
     for tick in range(6):
