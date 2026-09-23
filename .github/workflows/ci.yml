@@ -9,12 +9,17 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`: the same discipline the dependencies follow. An
+    # implicit image means GitHub's migration schedule picks our OS — `ubuntu-latest`
+    # moves to Ubuntu 26 on 2026-10-19. Bump this deliberately.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # setup-uv stopped publishing floating major tags after v7, so this is an exact
+      # version rather than a major — which suits the pinning policy anyway.
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
 
